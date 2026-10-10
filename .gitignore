@@ -1,0 +1,33 @@
+# POC-001 Root Git Ignore
+
+# Quarantine legacy salvage repository and external pool
+/_salvage/
+
+# Secrets, credentials and authentication tokens (never commit)
+GithubPersonalAccessTokenFORAG.env
+TinyFish.env
+Eulerpool.txt
+Alpaca_Key.txt
+*Key*.txt
+*key*.txt
+*Token*.txt
+*token*.txt
+*.env
+*.env.*
+*.env.local
+*.key
+*.token
+*.secret
+
+# Research corpus raw inputs (preserved locally; indexed in RESEARCH_CORPUS_INDEX.md)
+*.docx
+
+# Build outputs, caches, and runtime artifacts
+node_modules/
+dist/
+build/
+*.log
+
+# Operating system files
+.DS_Store
+Thumbs.db
