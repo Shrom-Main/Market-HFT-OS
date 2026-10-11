@@ -7,7 +7,9 @@
   "scripts": {
     "test": "vitest run",
     "test:json": "vitest run --reporter=json --outputFile=test-results.json",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "sync": "python scripts/sync_repos.py --once",
+    "sync:watch": "python scripts/sync_repos.py --daemon"
   },
   "dependencies": {
     "json-canonicalize": "3.0.1",
