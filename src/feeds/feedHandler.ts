@@ -22,13 +22,17 @@ export interface RawMarketDataMessage {
   ask_quantity: number;
   currency?: CurrencyCode;
   feed_status?: 'ACTIVE' | 'HALTED' | 'SUSPENDED';
+  is_authenticated_source_feed?: boolean;
 }
+
+export type NormalizedFeedStatus = 'ACTIVE' | 'HALTED' | 'SUSPENDED' | 'STALE';
 
 export interface FeedEvidenceProvenance {
   source_id: string;
   observed_at_utc: string;
   ingested_at_utc: string;
-  is_authenticated_source_feed: true;
+  is_authenticated_source_feed: boolean;
+  adapter_mode: 'SIMULATED_TEST' | 'AUTHENTICATED_FEED';
 }
 
 export interface NormalizedMarketFeedEvent {
@@ -42,7 +46,7 @@ export interface NormalizedMarketFeedEvent {
   ask_price: CanonicalMoney;
   bid_quantity: number;
   ask_quantity: number;
-  feed_status: 'ACTIVE' | 'HALTED' | 'STALE';
+  feed_status: NormalizedFeedStatus;
   provenance: FeedEvidenceProvenance;
   event_sha256: string;
 }
@@ -62,19 +66,33 @@ export interface FeedIngestionResult {
   event?: NormalizedMarketFeedEvent;
   gap_size?: number;
   reason?: string;
+  drained_sequences?: string[];
 }
 
 /**
- * Parses decimal string into canonical subunits string for target scale
+ * Parses decimal string into canonical subunits string for target scale.
+ * Strictly verifies decimal precision to prevent silent truncation.
+ * Excess nonzero fractional digits are rejected fail-closed.
+ * Extra trailing zeros are safely accepted.
  * E.g., "115.50" with scale 4 -> "1155000"
+ * E.g., "115.50000" with scale 4 -> "1155000"
+ * E.g., "115.50001" with scale 4 -> throws UNSUPPORTED_PRICE_PRECISION
  */
 export function parseDecimalPriceToSubunits(decimalStr: string, targetScale: number): string {
-  if (!/^(0|[1-9]\d*)(\.\d+)?$/.test(decimalStr)) {
+  if (typeof decimalStr !== 'string' || !/^(0|[1-9]\d*)(\.\d+)?$/.test(decimalStr)) {
     throw new Error(`E-ERR-024: INVALID_PRICE_FORMAT: Price '${decimalStr}' is not a valid non-negative decimal string`);
   }
   const parts = decimalStr.split('.');
   const intPart = parts[0];
   const fracPart = parts[1] || '';
+
+  if (fracPart.length > targetScale) {
+    const excess = fracPart.slice(targetScale);
+    if (/[^0]/.test(excess)) {
+      throw new Error(`E-ERR-024: UNSUPPORTED_PRICE_PRECISION: Price '${decimalStr}' exceeds target scale ${targetScale} with non-zero excess digits '${excess}'`);
+    }
+  }
+
   const paddedFrac = fracPart.padEnd(targetScale, '0').slice(0, targetScale);
   const combined = intPart + paddedFrac;
   return combined.replace(/^0+(?=\d)/, '') || '0';
@@ -84,6 +102,7 @@ export class MarketFeedHandler {
   private sequenceMap: Map<string, bigint> = new Map();
   private latestFeedMap: Map<string, NormalizedMarketFeedEvent> = new Map();
   private replayBuffer: Map<string, Map<string, NormalizedMarketFeedEvent>> = new Map();
+  private pendingGapBuffer: Map<string, Map<string, RawMarketDataMessage>> = new Map();
   private symbolMapping: Map<string, string> = new Map();
   private clockSkewToleranceMs: number;
   private maxReplayBufferSize: number;
@@ -157,6 +176,12 @@ export class MarketFeedHandler {
     }
 
     if (rawSeq > expectedSeq) {
+      // Buffer future message received during gap
+      if (!this.pendingGapBuffer.has(streamKey)) {
+        this.pendingGapBuffer.set(streamKey, new Map());
+      }
+      this.pendingGapBuffer.get(streamKey)!.set(rawSeq.toString(), raw);
+
       return {
         outcome: 'GAP_DETECTED',
         stream_key: streamKey,
@@ -176,6 +201,21 @@ export class MarketFeedHandler {
     const bid_price = createCanonicalMoney(bidSubunits, currency, def.internal_accounting_scale);
     const ask_price = createCanonicalMoney(askSubunits, currency, def.internal_accounting_scale);
 
+    // Explicit feed status mapping (SUSPENDED must never map to ACTIVE)
+    let feed_status: NormalizedFeedStatus;
+    if (raw.feed_status === 'HALTED') {
+      feed_status = 'HALTED';
+    } else if (raw.feed_status === 'SUSPENDED') {
+      feed_status = 'SUSPENDED';
+    } else if (raw.feed_status === 'ACTIVE' || raw.feed_status === undefined) {
+      feed_status = 'ACTIVE';
+    } else {
+      feed_status = 'HALTED'; // Fail-closed
+    }
+
+    const isAuthenticated = raw.is_authenticated_source_feed === true;
+    const adapterMode: 'AUTHENTICATED_FEED' | 'SIMULATED_TEST' = isAuthenticated ? 'AUTHENTICATED_FEED' : 'SIMULATED_TEST';
+
     const eventPayload = {
       event_id: `feed:${raw.venue_id}:${product_id}:${rawSeq.toString()}`,
       venue_id: raw.venue_id,
@@ -187,12 +227,13 @@ export class MarketFeedHandler {
       ask_price,
       bid_quantity: raw.bid_quantity,
       ask_quantity: raw.ask_quantity,
-      feed_status: (raw.feed_status === 'HALTED' ? 'HALTED' : 'ACTIVE') as 'ACTIVE' | 'HALTED' | 'STALE',
+      feed_status,
       provenance: {
         source_id: `venue:${raw.venue_id}`,
         observed_at_utc: raw.timestamp_utc,
         ingested_at_utc,
-        is_authenticated_source_feed: true as const
+        is_authenticated_source_feed: isAuthenticated,
+        adapter_mode: adapterMode
       }
     };
 
@@ -219,12 +260,28 @@ export class MarketFeedHandler {
       if (oldestKey !== undefined) streamBuffer.delete(oldestKey);
     }
 
+    // Automatically drain any consecutive buffered pending gap messages
+    const drainedSequences: string[] = [];
+    const pending = this.pendingGapBuffer.get(streamKey);
+    if (pending) {
+      let nextExpected = expectedSeq + 1n;
+      while (pending.has(nextExpected.toString())) {
+        const nextMsg = pending.get(nextExpected.toString())!;
+        pending.delete(nextExpected.toString());
+        drainedSequences.push(nextExpected.toString());
+        // Ingest the previously buffered future message exactly once
+        this.ingestRawMessage(nextMsg, ingested_at_utc);
+        nextExpected = this.sequenceMap.get(streamKey)!;
+      }
+    }
+
     return {
       outcome: 'ACCEPTED',
       stream_key: streamKey,
-      expected_sequence: (expectedSeq + 1n).toString(),
+      expected_sequence: this.sequenceMap.get(streamKey)!.toString(),
       received_sequence: rawSeq.toString(),
-      event: normalizedEvent
+      event: this.latestFeedMap.get(streamKey),
+      drained_sequences: drainedSequences.length > 0 ? drainedSequences : undefined
     };
   }
 
@@ -258,5 +315,11 @@ export class MarketFeedHandler {
     const streamKey = `${venue_id}:${product_id}`;
     const seq = this.sequenceMap.get(streamKey);
     return seq !== undefined ? seq.toString() : null;
+  }
+
+  public getPendingGapCount(venue_id: string, product_id: string): number {
+    const streamKey = `${venue_id}:${product_id}`;
+    const pending = this.pendingGapBuffer.get(streamKey);
+    return pending ? pending.size : 0;
   }
 }

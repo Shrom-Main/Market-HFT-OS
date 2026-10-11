@@ -12,4 +12,6 @@ export * from './financial/cashFlowEngine.js';
 export * from './ledger/actualsGuard.js';
 export * from './checkpoint/trustAnchor.js';
 export * from './feeds/feedHandler.js';
+export * from './feeds/streamingAdapter.js';
 export * from './execution/engine.js';
+export * from './execution/simulatedGateway.js';

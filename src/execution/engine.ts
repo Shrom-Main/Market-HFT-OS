@@ -75,8 +75,8 @@ export class DryRunExecutionEngine {
     const minSpread = options?.minimumSpreadSubunits ?? this.defaultMinimumSpreadSubunits;
     const release = options?.engineRelease ?? this.engineRelease;
 
-    // 1. Offer Status Verification
-    if (offer.offer_status !== 'VERIFIED_EXECUTABLE_OFFER') {
+    // 1. Offer Status & Verification Status Check
+    if (offer.offer_status !== 'VERIFIED_EXECUTABLE_OFFER' || offer.verification_status !== 'VERIFIED') {
       return this.createIntentResult({
         intentId,
         release,
@@ -84,7 +84,7 @@ export class DryRunExecutionEngine {
         feed,
         evaluated_at_utc,
         status: 'SKIP_UNVERIFIED_OFFER',
-        reason: `Offer '${offer.offer_id}' status '${offer.offer_status}' is not VERIFIED_EXECUTABLE_OFFER`,
+        reason: `Offer '${offer.offer_id}' requires offer_status 'VERIFIED_EXECUTABLE_OFFER' and verification_status 'VERIFIED' (got offer_status '${offer.offer_status}', verification_status '${offer.verification_status}')`,
         quantity: 0,
         marginSubunits: '0'
       });
