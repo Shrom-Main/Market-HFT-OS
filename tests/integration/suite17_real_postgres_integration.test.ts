@@ -62,29 +62,41 @@ describe('SUITE-17: Gate M3 — Real PostgreSQL Persistence & Concurrency Integr
 
   it('M3-REAL-POSTGRES-ROWLOCK-002: Real PostgreSQL SELECT ... FOR UPDATE serializes concurrent TCP client connections', async () => {
     const testOfferId = `live-off-${Date.now()}`;
-    const tx1 = await session.beginTransaction();
-    const head1 = await tx1.getOfferStreamHeadForUpdate(testOfferId);
-    expect(head1.sequence_number).toBe('0');
-
     let tx2Acquired = false;
     let head2Seq = '';
 
-    // Launch concurrent transaction on separate TCP connection
+    let resolveTx1: (() => void) | null = null;
+    const tx1WaitPromise = new Promise<void>(r => { resolveTx1 = r; });
+
+    // Client 1 transaction
+    const tx1Promise = session.executeTransaction(async (tx1) => {
+      const head1 = await tx1.getOfferStreamHeadForUpdate(testOfferId);
+      expect(head1.sequence_number).toBe('0');
+
+      // Hold lock until tx2 attempts acquisition
+      await tx1WaitPromise;
+
+      await tx1.updateOfferStreamHead(testOfferId, parseCanonicalStreamSequence('1'), 'FIRM_QUOTE', new Date().toISOString());
+    });
+
+    // Launch Client 2 transaction on separate TCP connection
     const tx2Promise = (async () => {
-      const tx2 = await session.beginTransaction();
-      const head2 = await tx2.getOfferStreamHeadForUpdate(testOfferId);
-      tx2Acquired = true;
-      head2Seq = head2.sequence_number;
-      await tx2.commit();
+      // Small delay to ensure tx1 has acquired lock
+      await new Promise(r => setTimeout(r, 50));
+      await session.executeTransaction(async (tx2) => {
+        const head2 = await tx2.getOfferStreamHeadForUpdate(testOfferId);
+        tx2Acquired = true;
+        head2Seq = head2.sequence_number;
+      });
     })();
 
     // Verify tx2 is blocked while tx1 holds row lock
     await new Promise(r => setTimeout(r, 100));
     expect(tx2Acquired).toBe(false);
 
-    // Update and commit tx1
-    await tx1.advanceOfferStreamHead(testOfferId, parseCanonicalStreamSequence('1'), 'FIRM_QUOTE', new Date().toISOString());
-    await tx1.commit();
+    // Release tx1
+    if (resolveTx1) (resolveTx1 as () => void)();
+    await tx1Promise;
 
     // tx2 unblocks and reads committed sequence '1'
     await tx2Promise;
@@ -94,15 +106,20 @@ describe('SUITE-17: Gate M3 — Real PostgreSQL Persistence & Concurrency Integr
 
   it('M3-REAL-POSTGRES-ROLLBACK-003: Real PostgreSQL transaction rollback discards staged writes without dirty records', async () => {
     const testOfferId = `live-off-rollback-${Date.now()}`;
-    const tx = await session.beginTransaction();
-    await tx.getOfferStreamHeadForUpdate(testOfferId);
-    await tx.advanceOfferStreamHead(testOfferId, parseCanonicalStreamSequence('1'), 'FIRM_QUOTE', new Date().toISOString());
-    await tx.rollback();
+    try {
+      await session.executeTransaction(async (tx) => {
+        await tx.getOfferStreamHeadForUpdate(testOfferId);
+        await tx.updateOfferStreamHead(testOfferId, parseCanonicalStreamSequence('1'), 'FIRM_QUOTE', new Date().toISOString());
+        throw new Error('SIMULATED_ABORT');
+      });
+    } catch (e: any) {
+      expect(e.message).toBe('SIMULATED_ABORT');
+    }
 
     // Verify aborted writes do not persist in live database
-    const verifyTx = await session.beginTransaction();
-    const verifyHead = await verifyTx.getOfferStreamHeadForUpdate(testOfferId);
-    expect(verifyHead.sequence_number).toBe('0'); // uninitialized default, staged seq 1 was dropped
-    await verifyTx.rollback();
+    await session.executeTransaction(async (verifyTx) => {
+      const verifyHead = await verifyTx.getOfferStreamHeadForUpdate(testOfferId);
+      expect(verifyHead.sequence_number).toBe('0'); // uninitialized default, staged seq 1 was dropped
+    });
   });
 });
