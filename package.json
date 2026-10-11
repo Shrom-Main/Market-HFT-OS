@@ -10,10 +10,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "json-canonicalize": "3.0.1"
+    "json-canonicalize": "3.0.1",
+    "ws": "8.19.0"
   },
   "devDependencies": {
     "@types/node": "20.12.7",
+    "@types/ws": "8.18.2",
     "typescript": "5.4.5",
     "vitest": "1.6.0"
   }

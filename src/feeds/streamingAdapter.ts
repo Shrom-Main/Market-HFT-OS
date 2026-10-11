@@ -12,7 +12,6 @@ export type AdapterConnectionState =
 
 export interface StreamingAdapterOptions {
   venue_id: string;
-  isAuthenticatedSource?: boolean;
   adapterId?: string;
 }
 
@@ -30,11 +29,15 @@ export interface ReplayRequestSummary {
  * Deterministic Simulated Streaming Market Feed Adapter
  * Emulates streaming WebSocket / event-stream connection lifecycle
  * without requiring external network connectivity or exchange API credentials.
+ * 
+ * Strict Provenance Constraint:
+ * This simulated adapter strictly identifies all messages as simulated (unauthenticated).
+ * It never claims or asserts source authentication, and strips any contradictory
+ * authentication assertions from raw inputs fail-closed.
  */
 export class SimulatedStreamingMarketFeedAdapter {
   private state: AdapterConnectionState = 'DISCONNECTED';
   private venue_id: string;
-  private isAuthenticatedSource: boolean;
   private adapterId: string;
   private feedHandler: MarketFeedHandler;
   private messageHistory: Map<string, RawMarketDataMessage> = new Map(); // key = `${venue_id}:${raw_symbol}:${sequence}`
@@ -43,7 +46,6 @@ export class SimulatedStreamingMarketFeedAdapter {
   constructor(feedHandler: MarketFeedHandler, options: StreamingAdapterOptions) {
     this.feedHandler = feedHandler;
     this.venue_id = options.venue_id;
-    this.isAuthenticatedSource = options.isAuthenticatedSource ?? false;
     this.adapterId = options.adapterId ?? `adapter:sim:${options.venue_id}`;
   }
 
@@ -55,8 +57,8 @@ export class SimulatedStreamingMarketFeedAdapter {
     return this.adapterId;
   }
 
-  public isAuthenticated(): boolean {
-    return this.isAuthenticatedSource;
+  public isSimulated(): boolean {
+    return true;
   }
 
   public connect(): void {
@@ -82,7 +84,8 @@ export class SimulatedStreamingMarketFeedAdapter {
   }
 
   /**
-   * Receives and streams a raw market data tick into the engine
+   * Receives and streams a raw market data tick into the engine.
+   * Forces is_authenticated_source_feed: false to ensure simulated feeds cannot masquerade as authenticated.
    */
   public pushMessage(msg: RawMarketDataMessage, ingested_at_utc: string): FeedIngestionResult {
     if (this.state !== 'CONNECTED') {
@@ -93,10 +96,10 @@ export class SimulatedStreamingMarketFeedAdapter {
       throw new Error(`E-ERR-024: VENUE_MISMATCH: Adapter venue '${this.venue_id}' does not match message venue '${msg.venue_id}'`);
     }
 
-    // Bind adapter's declared authentication status
+    // Strict Provenance Guard: force unauthenticated simulated status
     const boundMsg: RawMarketDataMessage = {
       ...msg,
-      is_authenticated_source_feed: this.isAuthenticatedSource
+      is_authenticated_source_feed: false
     };
 
     // Store in history for deterministic replay support

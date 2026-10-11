@@ -490,11 +490,11 @@ describe('SUITE-13: Gate M2 Market Feed Normalization, Streaming Adapter & Simul
     handler.registerSymbolMapping(venueId, rawSymbol, canonicalProductId);
 
     const adapter = new SimulatedStreamingMarketFeedAdapter(handler, {
-      venue_id: venueId,
-      isAuthenticatedSource: true
+      venue_id: venueId
     });
 
     expect(adapter.getConnectionState()).toBe('DISCONNECTED');
+    expect(adapter.isSimulated()).toBe(true);
 
     const tick: RawMarketDataMessage = {
       message_id: 'msg-ad-1',
@@ -505,7 +505,9 @@ describe('SUITE-13: Gate M2 Market Feed Normalization, Streaming Adapter & Simul
       bid_price: '115.50',
       bid_quantity: 50,
       ask_price: '116.00',
-      ask_quantity: 50
+      ask_quantity: 50,
+      // Contradictory flag in raw input message: simulated adapter must override to false
+      is_authenticated_source_feed: true
     };
 
     // Pushing while disconnected throws error fail-closed
@@ -515,10 +517,10 @@ describe('SUITE-13: Gate M2 Market Feed Normalization, Streaming Adapter & Simul
     adapter.connect();
     expect(adapter.getConnectionState()).toBe('CONNECTED');
 
-    // Now message push succeeds
+    // Now message push succeeds and strictly enforces unauthenticated simulated status
     const pushRes = adapter.pushMessage(tick, '2026-10-11T12:00:01Z');
     expect(pushRes.outcome).toBe('ACCEPTED');
-    expect(pushRes.event?.provenance.is_authenticated_source_feed).toBe(true);
+    expect(pushRes.event?.provenance.is_authenticated_source_feed).toBe(false);
 
     // Disconnect and reconnect
     adapter.disconnect();
@@ -725,7 +727,10 @@ describe('SUITE-13: Gate M2 Market Feed Normalization, Streaming Adapter & Simul
     const intent = engine.evaluateExecutionIntent(sampleOffer, feedRes.event!, '2026-10-11T12:00:02Z');
     const order = gateway.submitExecutionIntent(intent, '2026-10-11T12:00:03Z');
 
-    const cancelledOrder = gateway.requestCancellation(order.order_id, '2026-10-11T12:00:04Z');
+    const cancelRequested = gateway.requestCancellation(order.order_id, '2026-10-11T12:00:04Z');
+    expect(cancelRequested.status).toBe('CANCELLATION_REQUESTED');
+
+    const cancelledOrder = gateway.confirmCancellation(order.order_id, '2026-10-11T12:00:05Z');
     expect(cancelledOrder.status).toBe('CANCELLED');
   });
 
