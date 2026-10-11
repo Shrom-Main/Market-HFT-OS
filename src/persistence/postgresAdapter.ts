@@ -73,6 +73,38 @@ export interface PostgresPoolLike {
 }
 
 /**
+ * Adapter bridging native pg.Pool instance to PostgresPoolLike interface.
+ * Connects PostgresOfferPersistenceDatabaseSession to real PostgreSQL database.
+ */
+export class PostgresNativePoolAdapter implements PostgresPoolLike {
+  constructor(private pool: {
+    connect(): Promise<{
+      query(sql: string, params?: any[]): Promise<{ rows: any[]; rowCount?: number | null }>;
+      release(): void;
+    }>;
+    end(): Promise<void>;
+  }) {}
+
+  public async connect(): Promise<{
+    query(sql: string, params?: unknown[]): Promise<{ rows: any[]; rowCount: number }>;
+    release(): void;
+  }> {
+    const client = await this.pool.connect();
+    return {
+      query: async (sql: string, params?: unknown[]) => {
+        const res = await client.query(sql, params as any[]);
+        return { rows: res.rows, rowCount: res.rowCount ?? res.rows.length };
+      },
+      release: () => client.release()
+    };
+  }
+
+  public async end(): Promise<void> {
+    await this.pool.end();
+  }
+}
+
+/**
  * Production PostgreSQL Persistence Transaction Implementation
  * Implements parameterized queries with SELECT ... FOR UPDATE pessimistic row locking (§4.1)
  */
