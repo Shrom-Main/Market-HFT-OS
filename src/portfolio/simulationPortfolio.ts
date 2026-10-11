@@ -315,6 +315,83 @@ export class SimulationPortfolio {
     });
   }
 
+  public exportCheckpoint(): PortfolioCheckpoint {
+    const posList: PortfolioCheckpoint['positions'] = [];
+    for (const pos of this.positions.values()) {
+      posList.push({
+        product_id: pos.product_id,
+        net_quantity: pos.net_quantity,
+        total_bought_quantity: pos.total_bought_quantity,
+        total_sold_quantity: pos.total_sold_quantity,
+        aggregate_cost_subunits: pos.aggregate_cost_subunits,
+        cumulative_realized_pnl_subunits: pos.cumulative_realized_pnl_subunits,
+        epoch_start_cost_subunits: pos.epoch_start_cost_subunits,
+        epoch_start_quantity: pos.epoch_start_quantity,
+        epoch_cumulative_sold_quantity: pos.epoch_cumulative_sold_quantity
+      });
+    }
+
+    return deepFreeze({
+      currency: this.currency,
+      scale: this.scale,
+      initial_cash: { ...this.initialCash },
+      available_cash_subunits: this.availableCashSubunits,
+      cumulative_realized_pnl_subunits: this.cumulativeRealizedPnlSubunits,
+      allow_short: this.allowShort,
+      positions: posList,
+      processed_fill_ids: Array.from(this.processedFillIds),
+      processed_fill_fingerprints: Array.from(this.processedFillFingerprints.entries()),
+      journal: this.journal.map(e => ({ ...e }))
+    });
+  }
+
+  public static restoreFromCheckpoint(checkpoint: PortfolioCheckpoint): SimulationPortfolio {
+    if (!checkpoint || !checkpoint.initial_cash || typeof checkpoint.available_cash_subunits !== 'string') {
+      throw new Error('E-ERR-024: INVALID_CHECKPOINT: Checkpoint format invalid');
+    }
+    const portfolio = new SimulationPortfolio({
+      initialCash: checkpoint.initial_cash,
+      allowShort: false
+    });
+
+    portfolio.availableCashSubunits = checkpoint.available_cash_subunits;
+    portfolio.cumulativeRealizedPnlSubunits = checkpoint.cumulative_realized_pnl_subunits || '0';
+
+    if (Array.isArray(checkpoint.positions)) {
+      for (const pos of checkpoint.positions) {
+        portfolio.positions.set(pos.product_id, {
+          product_id: pos.product_id,
+          net_quantity: pos.net_quantity,
+          total_bought_quantity: pos.total_bought_quantity,
+          total_sold_quantity: pos.total_sold_quantity,
+          aggregate_cost_subunits: pos.aggregate_cost_subunits,
+          cumulative_realized_pnl_subunits: pos.cumulative_realized_pnl_subunits,
+          epoch_start_cost_subunits: pos.epoch_start_cost_subunits,
+          epoch_start_quantity: pos.epoch_start_quantity,
+          epoch_cumulative_sold_quantity: pos.epoch_cumulative_sold_quantity
+        });
+      }
+    }
+
+    if (Array.isArray(checkpoint.processed_fill_ids)) {
+      for (const id of checkpoint.processed_fill_ids) {
+        portfolio.processedFillIds.add(id);
+      }
+    }
+
+    if (Array.isArray(checkpoint.processed_fill_fingerprints)) {
+      for (const [id, fp] of checkpoint.processed_fill_fingerprints) {
+        portfolio.processedFillFingerprints.set(id, fp);
+      }
+    }
+
+    if (Array.isArray(checkpoint.journal)) {
+      portfolio.journal = checkpoint.journal.map(e => ({ ...e }));
+    }
+
+    return portfolio;
+  }
+
   /**
    * Consumes a recorded simulated fill from the execution gateway.
    * Atomic: fails closed without partial mutation if currency mismatch, impossible quantity,
