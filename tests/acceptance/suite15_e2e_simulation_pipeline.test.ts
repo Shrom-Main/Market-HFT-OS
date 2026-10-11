@@ -12,7 +12,8 @@ import {
   MockLocalWebSocketFeedServer,
   WebSocketStreamingFeedAdapter,
   UnrecoverableGapReport,
-  MAX_WS_FRAME_BYTES
+  MAX_WS_FRAME_BYTES,
+  getPayloadByteLength
 } from '../../src/feeds/localWebSocketTransport.js';
 import {
   SimulationPortfolio,
@@ -315,16 +316,20 @@ describe('SUITE-15: Gate M2 Increment 4 — End-to-End Simulation Pipeline & Int
     await new Promise((r) => setTimeout(r, 30));
     expect(activeAdapter.getConnectionState()).toBe('CONNECTED');
 
-    // 2. Send oversized frame exceeding 1MB
-    const oversized = JSON.stringify({
-      type: 'TICK',
-      payload: 'X'.repeat(MAX_WS_FRAME_BYTES + 50)
-    });
-    activeServer.sendRawFrame(oversized);
-    await new Promise((r) => setTimeout(r, 30));
-    expect(activeAdapter.getConnectionState()).toBe('CONNECTED');
+    // 2. Multibyte UTF-8 expansion test at application boundary:
+    // A string of 400,000 Euro signs '€' has string.length === 400,000 (< 1,048,576 UTF-16 code units),
+    // but UTF-8 byte length is 1,200,000 bytes (> 1,048,576 bytes).
+    const multibyteOversizedStr = '€'.repeat(400_000);
+    expect(multibyteOversizedStr.length).toBeLessThan(MAX_WS_FRAME_BYTES);
+    expect(getPayloadByteLength(multibyteOversizedStr)).toBeGreaterThan(MAX_WS_FRAME_BYTES);
+    expect(activeAdapter.handleWireMessage(multibyteOversizedStr)).toBe(false); // safely dropped fail-closed
 
-    // 3. Normal tick succeeds immediately afterwards
+    // 3. Oversized ASCII payload at application boundary
+    const oversizedAscii = 'X'.repeat(MAX_WS_FRAME_BYTES + 50);
+    expect(getPayloadByteLength(oversizedAscii)).toBeGreaterThan(MAX_WS_FRAME_BYTES);
+    expect(activeAdapter.handleWireMessage(oversizedAscii)).toBe(false); // safely dropped fail-closed
+
+    // 4. Normal tick succeeds immediately afterwards
     activeServer.publishTick({
       message_id: 'ws-after-malformed-tick',
       venue_id: venueId,
@@ -544,5 +549,64 @@ describe('SUITE-15: Gate M2 Increment 4 — End-to-End Simulation Pipeline & Int
 
     expect(() => pipeline.processMarketEvent(fakeLiveEvent, '2026-10-11T12:00:02Z'))
       .toThrow(/E-ERR-020: ACTUALS_LEDGER_WRITE_VIOLATION/);
+  });
+
+  it('M2-WS-BYTE-ACCURACY-010: Byte-accurate payload enforcement guards against multibyte character expansion and native maxPayload violations', async () => {
+    // 1. Precise UTF-8 byte length calculation checks across various types
+    expect(getPayloadByteLength('hello')).toBe(5);
+    expect(getPayloadByteLength('₹')).toBe(3); // Indian Rupee sign is 3 UTF-8 bytes
+    expect(getPayloadByteLength('€')).toBe(3); // Euro sign is 3 UTF-8 bytes
+    expect(getPayloadByteLength('🚀')).toBe(4); // Emoji is 4 UTF-8 bytes, 2 UTF-16 code units
+    expect('🚀'.length).toBe(2);
+    expect(getPayloadByteLength(Buffer.from('test-buffer'))).toBe(11);
+    expect(getPayloadByteLength(new Uint8Array([1, 2, 3, 4]).buffer)).toBe(4);
+    expect(getPayloadByteLength([Buffer.from('abc'), Buffer.from('defg')])).toBe(7);
+
+    // 2. Multibyte expansion: string length < byte limit, but UTF-8 byte count > byte limit
+    const smallLimit = 100;
+    const testServer = new MockLocalWebSocketFeedServer({ maxPayload: smallLimit });
+    const srvUrl = await testServer.start();
+
+    const handler = new MarketFeedHandler();
+    handler.registerSymbolMapping(venueId, rawSymbol, canonicalProductId);
+
+    const testAdapter = new WebSocketStreamingFeedAdapter(handler, {
+      wsUrl: srvUrl,
+      venue_id: venueId,
+      maxPayloadBytes: smallLimit
+    });
+
+    await testAdapter.connect();
+    expect(testAdapter.getMaxPayloadBytes()).toBe(smallLimit);
+
+    // 40 Euro signs = 40 characters (length 40 < 100), but 120 bytes (> 100 bytes)
+    const multibyteString = '€'.repeat(40);
+    expect(multibyteString.length).toBe(40);
+    expect(getPayloadByteLength(multibyteString)).toBe(120);
+    expect(testAdapter.handleWireMessage(multibyteString)).toBe(false);
+
+    // 3. Valid multibyte message within bounds parses and processes
+    const validMultibyteMessage = JSON.stringify({
+      type: 'TICK',
+      message: {
+        message_id: 'm-₹-1',
+        venue_id: venueId,
+        raw_symbol: rawSymbol,
+        sequence: 1,
+        timestamp_utc: '2026-10-11T12:00:00Z',
+        bid_price: '100.00',
+        bid_quantity: 10,
+        ask_price: '101.00',
+        ask_quantity: 10
+      }
+    });
+    const fullAdapter = new WebSocketStreamingFeedAdapter(handler, {
+      wsUrl: srvUrl,
+      venue_id: venueId
+    });
+    expect(fullAdapter.handleWireMessage(validMultibyteMessage)).toBe(true);
+
+    await testAdapter.disconnect();
+    await testServer.stop();
   });
 });

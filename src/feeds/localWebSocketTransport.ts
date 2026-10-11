@@ -59,8 +59,28 @@ export type WebSocketWireFrame =
   | ReplayResponseFrame
   | ReplayErrorFrame;
 
-/** Maximum permitted WebSocket payload frame size (1 Megabyte) */
+/** Maximum permitted WebSocket payload frame size (1 Megabyte in UTF-8 bytes) */
 export const MAX_WS_FRAME_BYTES = 1024 * 1024;
+
+/**
+ * Calculates accurate UTF-8 byte length across Buffer, ArrayBuffer, Buffer arrays, and JavaScript strings.
+ * Accurately prevents multibyte character overflow where string.length (UTF-16 code units) < byteLength.
+ */
+export function getPayloadByteLength(data: Buffer | ArrayBuffer | Buffer[] | string): number {
+  if (typeof data === 'string') {
+    return Buffer.byteLength(data, 'utf8');
+  }
+  if (Buffer.isBuffer(data)) {
+    return data.byteLength;
+  }
+  if (data instanceof ArrayBuffer) {
+    return data.byteLength;
+  }
+  if (Array.isArray(data)) {
+    return data.reduce((acc, b) => acc + (Buffer.isBuffer(b) ? b.byteLength : 0), 0);
+  }
+  return 0;
+}
 
 /**
  * Mock Local WebSocket Feed Server
@@ -72,12 +92,21 @@ export class MockLocalWebSocketFeedServer {
   private clients: Set<WebSocket> = new Set();
   private host: string = '127.0.0.1';
   private port: number = 0;
+  private maxPayload: number;
   private messageHistory: Map<string, RawMarketDataMessage> = new Map(); // key = `${venue_id}:${raw_symbol}:${seq}`
+
+  constructor(options?: { maxPayload?: number }) {
+    this.maxPayload = options?.maxPayload ?? MAX_WS_FRAME_BYTES;
+  }
 
   public async start(): Promise<string> {
     return new Promise((resolve, reject) => {
       try {
-        this.wss = new WebSocketServer({ host: this.host, port: 0 }, () => {
+        this.wss = new WebSocketServer({
+          host: this.host,
+          port: 0,
+          maxPayload: this.maxPayload
+        }, () => {
           const addr = this.wss?.address() as AddressInfo;
           this.port = addr.port;
           resolve(this.getUrl());
@@ -86,8 +115,8 @@ export class MockLocalWebSocketFeedServer {
         this.wss.on('connection', (socket: WebSocket) => {
           this.clients.add(socket);
 
-          socket.on('message', (rawBytes: Buffer | string) => {
-            this.handleClientMessage(socket, rawBytes.toString());
+          socket.on('message', (rawBytes: Buffer | ArrayBuffer | Buffer[]) => {
+            this.handleClientMessage(socket, rawBytes);
           });
 
           socket.on('close', () => {
@@ -145,9 +174,9 @@ export class MockLocalWebSocketFeedServer {
   }
 
   /**
-   * Sends raw string directly to clients (e.g. for testing malformed JSON or oversized frames)
+   * Sends raw string or buffer directly to clients (e.g. for testing malformed JSON or oversized frames)
    */
-  public sendRawFrame(payload: string): void {
+  public sendRawFrame(payload: string | Buffer): void {
     for (const client of this.clients) {
       if (client.readyState === WebSocket.OPEN) {
         client.send(payload);
@@ -165,12 +194,18 @@ export class MockLocalWebSocketFeedServer {
     this.clients.clear();
   }
 
-  private handleClientMessage(socket: WebSocket, dataStr: string): void {
-    if (dataStr.length > MAX_WS_FRAME_BYTES) {
+  private handleClientMessage(socket: WebSocket, rawBytes: Buffer | ArrayBuffer | Buffer[] | string): void {
+    if (getPayloadByteLength(rawBytes) > this.maxPayload) {
       return; // Oversized frame drop fail-closed
     }
 
     try {
+      const dataStr = typeof rawBytes === 'string'
+        ? rawBytes
+        : Buffer.isBuffer(rawBytes)
+          ? rawBytes.toString('utf8')
+          : Buffer.from(rawBytes as any).toString('utf8');
+
       const parsed = JSON.parse(dataStr) as WebSocketWireFrame;
       if (parsed.type === 'REPLAY_REQUEST') {
         const fromSeq = BigInt(parsed.from_sequence);
@@ -240,6 +275,7 @@ export interface WebSocketStreamingAdapterOptions {
   venue_id: string;
   maxReconnectAttempts?: number;
   reconnectBaseBackoffMs?: number;
+  maxPayloadBytes?: number;
 }
 
 /**
@@ -251,6 +287,7 @@ export interface WebSocketStreamingAdapterOptions {
  * - Always forces is_authenticated_source_feed: false fail-closed.
  * - Employs bounded exponential backoff on connection drops.
  * - Enforces connection instance isolation: frames from superseded socket instances are dropped.
+ * - Enforces transport-level and application-level byte-accurate payload limits (MAX_WS_FRAME_BYTES).
  * - Drops oversized and malformed JSON frames fail-closed without crashing.
  * - Detects sequence gaps, requests server replay, and raises explicit UNRECOVERABLE_SEQUENCE_GAP
  *   when server replay fails.
@@ -266,6 +303,7 @@ export class WebSocketStreamingFeedAdapter {
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number;
   private reconnectBaseBackoffMs: number;
+  private maxPayloadBytes: number;
   private autoReconnect: boolean = true;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private pendingReplayRequest: ReplayRequestFrame | null = null;
@@ -280,6 +318,7 @@ export class WebSocketStreamingFeedAdapter {
     this.venue_id = options.venue_id;
     this.maxReconnectAttempts = options.maxReconnectAttempts ?? 5;
     this.reconnectBaseBackoffMs = options.reconnectBaseBackoffMs ?? 25;
+    this.maxPayloadBytes = options.maxPayloadBytes ?? MAX_WS_FRAME_BYTES;
   }
 
   public isSimulated(): boolean {
@@ -296,6 +335,10 @@ export class WebSocketStreamingFeedAdapter {
 
   public getReconnectAttempts(): number {
     return this.reconnectAttempts;
+  }
+
+  public getMaxPayloadBytes(): number {
+    return this.maxPayloadBytes;
   }
 
   public onMessage(cb: (res: FeedIngestionResult) => void): () => void {
@@ -343,7 +386,9 @@ export class WebSocketStreamingFeedAdapter {
       let resolved = false;
 
       try {
-        const socket = new WebSocket(this.wsUrl);
+        const socket = new WebSocket(this.wsUrl, {
+          maxPayload: this.maxPayloadBytes
+        });
         this.ws = socket;
 
         socket.on('open', () => {
@@ -361,12 +406,12 @@ export class WebSocketStreamingFeedAdapter {
           }
         });
 
-        socket.on('message', (rawBytes: Buffer | string) => {
+        socket.on('message', (rawBytes: Buffer | ArrayBuffer | Buffer[]) => {
           // Late message guard: ignore message if socket instance is superseded
           if (this.currentConnectionInstanceId !== instanceId || this.ws !== socket) {
             return;
           }
-          this.handleWireMessage(rawBytes.toString());
+          this.handleWireMessage(rawBytes);
         });
 
         socket.on('close', () => {
@@ -432,11 +477,18 @@ export class WebSocketStreamingFeedAdapter {
     }, delayMs);
   }
 
-  private handleWireMessage(dataStr: string): void {
-    // 1. Oversized frame guard
-    if (dataStr.length > MAX_WS_FRAME_BYTES) {
-      return; // Dropped fail-closed
+  public handleWireMessage(rawBytes: Buffer | ArrayBuffer | Buffer[] | string): boolean {
+    // 1. Byte-accurate oversized frame guard (evaluates UTF-8 bytes, not UTF-16 code units)
+    const byteLength = getPayloadByteLength(rawBytes);
+    if (byteLength > this.maxPayloadBytes) {
+      return false; // Dropped fail-closed
     }
+
+    const dataStr = typeof rawBytes === 'string'
+      ? rawBytes
+      : Buffer.isBuffer(rawBytes)
+        ? rawBytes.toString('utf8')
+        : Buffer.from(rawBytes as any).toString('utf8');
 
     try {
       const parsed = JSON.parse(dataStr);
@@ -520,8 +572,10 @@ export class WebSocketStreamingFeedAdapter {
           }
         }
       }
+      return true;
     } catch {
       // Discard malformed socket frames fail-closed
+      return false;
     }
   }
 
