@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   CanonicalMoney,
   validateIso8601UtcTimestamp
@@ -12,6 +14,7 @@ import {
 import {
   SimulationPortfolio,
   PortfolioSnapshot,
+  PortfolioCheckpoint,
   computeFillFingerprint
 } from '../portfolio/simulationPortfolio.js';
 import { DeterministicClock } from '../canonical/deterministic.js';
