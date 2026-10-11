@@ -80,19 +80,26 @@ export class PostgresOfferPersistenceDatabaseTransaction implements OfferPersist
   constructor(private client: PostgresClientLike) {}
 
   public async getOfferStreamHeadForUpdate(offer_id: string): Promise<{ sequence_number: CanonicalStreamSequence; offer_status: CommercialOfferStatus }> {
-    const res = await this.client.query(
+    let res = await this.client.query(
       'SELECT sequence_number, offer_status FROM offer_stream_heads WHERE offer_id = $1 FOR UPDATE',
       [offer_id]
     );
     if (res.rows.length === 0) {
-      // Stream initialized at sequence 0
+      // Stream uninitialized. Insert initial head row (sequence 0, INDICATIVE_QUOTE)
       const initSeq = parseCanonicalStreamSequence('0');
       const initStatus = 'INDICATIVE_QUOTE' as CommercialOfferStatus;
       await this.client.query(
         'INSERT INTO offer_stream_heads (offer_id, sequence_number, offer_status, updated_at_utc) VALUES ($1, $2, $3, NOW()) ON CONFLICT (offer_id) DO NOTHING',
         [offer_id, initSeq, initStatus]
       );
-      return { sequence_number: initSeq, offer_status: initStatus };
+      // Authoritatively re-read and acquire row lock following initialization or conflict resolution
+      res = await this.client.query(
+        'SELECT sequence_number, offer_status FROM offer_stream_heads WHERE offer_id = $1 FOR UPDATE',
+        [offer_id]
+      );
+    }
+    if (res.rows.length === 0) {
+      throw new Error(`E-ERR-037: PERSISTENCE_STREAM_HEAD_UNAVAILABLE: Failed to acquire stream head lock for offer '${offer_id}'`);
     }
     const row = res.rows[0];
     return {

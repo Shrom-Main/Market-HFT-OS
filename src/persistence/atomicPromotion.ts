@@ -103,7 +103,7 @@ export class InMemoryOfferPersistenceDatabaseSession implements OfferPersistence
     created_at_utc: string;
   }> = new Map();
 
-  private is_locked: boolean = false;
+  private transactionQueue: Promise<void> = Promise.resolve();
   public simulate_connection_failure: boolean = false;
   public simulate_lock_timeout: boolean = false;
 
@@ -117,70 +117,87 @@ export class InMemoryOfferPersistenceDatabaseSession implements OfferPersistence
       throw new Error('E-ERR-037: DATABASE_UNREACHABLE_OR_LOCK_TIMEOUT');
     }
 
-    // Clone state for ACID rollback support
-    const clonedHeads = new Map(this.heads);
-    const clonedNonces = new Map(this.nonces);
-    const clonedAssessments = new Map(this.assessments);
-    const clonedEvents = new Map(this.events);
+    // Serialize in-memory transactions to model database row-lock queueing
+    const previousQueue = this.transactionQueue;
+    let releaseQueue: () => void = () => {};
+    this.transactionQueue = new Promise<void>((resolve) => {
+      releaseQueue = resolve;
+    });
 
-    const tx: OfferPersistenceDatabaseTransaction = {
-      getOfferStreamHeadForUpdate: async (offer_id: string) => {
-        if (this.simulate_lock_timeout) {
-          throw new Error('E-ERR-037: LOCK_TIMEOUT');
-        }
-        const existing = clonedHeads.get(offer_id);
-        if (!existing) {
-          const initHead = { sequence_number: parseCanonicalStreamSequence('0'), offer_status: 'INDICATIVE_QUOTE' as CommercialOfferStatus };
-          clonedHeads.set(offer_id, initHead);
-          return initHead;
-        }
-        return existing;
-      },
-      insertNonceIfUnused: async (nonce: string, gateway_id: string, expires_at_utc: string, consumed_at_utc: string) => {
-        if (clonedNonces.has(nonce)) {
-          return false;
-        }
-        clonedNonces.set(nonce, { gateway_id, expires_at_utc, consumed_at_utc });
-        return true;
-      },
-      putAssessment: async (assessment_sha256: string, canonical_bytes: Buffer, created_at_utc: string) => {
-        clonedAssessments.set(assessment_sha256, { bytes: canonical_bytes, created_at_utc });
-      },
-      getAssessment: async (assessment_sha256: string) => {
-        const item = clonedAssessments.get(assessment_sha256);
-        return item ? item.bytes : null;
-      },
-      appendOfferStreamEvent: async (ev) => {
-        const key = `${ev.stream_id}:${ev.sequence_number}`;
-        clonedEvents.set(key, {
-          ...ev,
-          created_at_utc: new Date().toISOString()
-        });
-      },
-      updateOfferStreamHead: async (offer_id: string, resulting_sequence_number: CanonicalStreamSequence, resulting_status: CommercialOfferStatus) => {
-        clonedHeads.set(offer_id, {
-          sequence_number: resulting_sequence_number,
-          offer_status: resulting_status
-        });
-      },
-      getOfferStreamEvent: async (stream_id: string, sequence_number: CanonicalStreamSequence) => {
-        const key = `${stream_id}:${sequence_number}`;
-        const item = clonedEvents.get(key);
-        return item || null;
-      }
-    };
+    await previousQueue;
 
     try {
-      const result = await fn(tx);
-      // Transaction succeeded, commit mutations
-      this.heads = clonedHeads;
-      this.nonces = clonedNonces;
-      this.assessments = clonedAssessments;
-      this.events = clonedEvents;
-      return result;
-    } catch (err) {
-      // Transaction failed, rollback (discard cloned modifications)
-      throw err;
+      if (this.simulate_lock_timeout || this.simulate_connection_failure) {
+        throw new Error('E-ERR-037: DATABASE_UNREACHABLE_OR_LOCK_TIMEOUT');
+      }
+
+      // Clone state for ACID rollback support
+      const clonedHeads = new Map(this.heads);
+      const clonedNonces = new Map(this.nonces);
+      const clonedAssessments = new Map(this.assessments);
+      const clonedEvents = new Map(this.events);
+
+      const tx: OfferPersistenceDatabaseTransaction = {
+        getOfferStreamHeadForUpdate: async (offer_id: string) => {
+          if (this.simulate_lock_timeout) {
+            throw new Error('E-ERR-037: LOCK_TIMEOUT');
+          }
+          const existing = clonedHeads.get(offer_id);
+          if (!existing) {
+            const initHead = { sequence_number: parseCanonicalStreamSequence('0'), offer_status: 'INDICATIVE_QUOTE' as CommercialOfferStatus };
+            clonedHeads.set(offer_id, initHead);
+            return initHead;
+          }
+          return existing;
+        },
+        insertNonceIfUnused: async (nonce: string, gateway_id: string, expires_at_utc: string, consumed_at_utc: string) => {
+          if (clonedNonces.has(nonce)) {
+            return false;
+          }
+          clonedNonces.set(nonce, { gateway_id, expires_at_utc, consumed_at_utc });
+          return true;
+        },
+        putAssessment: async (assessment_sha256: string, canonical_bytes: Buffer, created_at_utc: string) => {
+          clonedAssessments.set(assessment_sha256, { bytes: canonical_bytes, created_at_utc });
+        },
+        getAssessment: async (assessment_sha256: string) => {
+          const item = clonedAssessments.get(assessment_sha256);
+          return item ? item.bytes : null;
+        },
+        appendOfferStreamEvent: async (ev) => {
+          const key = `${ev.stream_id}:${ev.sequence_number}`;
+          clonedEvents.set(key, {
+            ...ev,
+            created_at_utc: new Date().toISOString()
+          });
+        },
+        updateOfferStreamHead: async (offer_id: string, resulting_sequence_number: CanonicalStreamSequence, resulting_status: CommercialOfferStatus) => {
+          clonedHeads.set(offer_id, {
+            sequence_number: resulting_sequence_number,
+            offer_status: resulting_status
+          });
+        },
+        getOfferStreamEvent: async (stream_id: string, sequence_number: CanonicalStreamSequence) => {
+          const key = `${stream_id}:${sequence_number}`;
+          const item = clonedEvents.get(key);
+          return item || null;
+        }
+      };
+
+      try {
+        const result = await fn(tx);
+        // Transaction succeeded, commit mutations
+        this.heads = clonedHeads;
+        this.nonces = clonedNonces;
+        this.assessments = clonedAssessments;
+        this.events = clonedEvents;
+        return result;
+      } catch (err) {
+        // Transaction failed, rollback (discard cloned modifications)
+        throw err;
+      }
+    } finally {
+      releaseQueue();
     }
   }
 }

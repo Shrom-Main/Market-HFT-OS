@@ -9,12 +9,23 @@ import {
   CanonicalOffer,
   createCanonicalMoney
 } from '../../src/canonical/domain.js';
-import { sha256 } from '../../src/canonical/crypto.js';
+import { sha256, ed25519Sign } from '../../src/canonical/crypto.js';
 import { canonicalizeJCS } from '../../src/canonical/jcs.js';
 import {
   InMemoryOfferPersistenceDatabaseSession,
+  SystemTrustedClock,
+  commitPromotionIfVersionAndConsumeNonces,
   reconcileAmbiguousPromotionCommit
 } from '../../src/persistence/atomicPromotion.js';
+import {
+  evaluateOfferPromotionReadOnly,
+  ServiceBoundaryEvaluatorTokenVerifier
+} from '../../src/verification/gate.js';
+import {
+  registerStreamEvidence,
+  validateAndBuildClaimSigningPayload,
+  VerificationClaimsAssessment
+} from '../../src/verification/claims.js';
 
 describe('SUITE-12: Durable Persistence & Ambiguous Commit Recovery', () => {
   const offer_id = 'off:din3017:sup-01:2026-q4';
@@ -35,6 +46,211 @@ describe('SUITE-12: Durable Persistence & Ambiguous Commit Recovery', () => {
     expect(POSTGRES_SCHEMA_DDL).toContain('PRIMARY KEY (stream_id, sequence_number)');
     expect(POSTGRES_SCHEMA_DDL).toContain('nonce VARCHAR(128) PRIMARY KEY');
     expect(POSTGRES_SCHEMA_DDL).toContain('assessment_sha256 CHAR(64) PRIMARY KEY');
+  });
+
+  it('POSTGRES-INIT-ROWLOCK-001: First-time stream initialization acquires exclusive row lock after INSERT ON CONFLICT', async () => {
+    const executedQueries: Array<{ sql: string; params?: unknown[] }> = [];
+    const mockClient: PostgresClientLike = {
+      async query(sql: string, params?: unknown[]) {
+        executedQueries.push({ sql, params });
+        if (sql.includes('SELECT sequence_number, offer_status FROM offer_stream_heads WHERE offer_id = $1 FOR UPDATE')) {
+          if (executedQueries.length === 1) {
+            // Initial check: row does not exist yet
+            return { rows: [], rowCount: 0 };
+          } else {
+            // Authoritative re-read after INSERT ON CONFLICT: row exists and is locked
+            return {
+              rows: [{ sequence_number: '0', offer_status: 'INDICATIVE_QUOTE' }],
+              rowCount: 1
+            };
+          }
+        }
+        if (sql.includes('INSERT INTO offer_stream_heads')) {
+          return { rows: [], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      }
+    };
+
+    const tx = new PostgresOfferPersistenceDatabaseTransaction(mockClient);
+    const head = await tx.getOfferStreamHeadForUpdate(offer_id);
+
+    // 1. Returns initial sequence 0 and INDICATIVE_QUOTE
+    expect(head.sequence_number).toBe('0');
+    expect(head.offer_status).toBe('INDICATIVE_QUOTE');
+
+    // 2. Exactly 3 queries executed in strict order
+    expect(executedQueries.length).toBe(3);
+    expect(executedQueries[0].sql).toContain('SELECT sequence_number, offer_status FROM offer_stream_heads WHERE offer_id = $1 FOR UPDATE');
+    expect(executedQueries[0].params).toEqual([offer_id]);
+
+    expect(executedQueries[1].sql).toContain('INSERT INTO offer_stream_heads');
+    expect(executedQueries[1].sql).toContain('ON CONFLICT (offer_id) DO NOTHING');
+    expect(executedQueries[1].params).toEqual([offer_id, '0', 'INDICATIVE_QUOTE']);
+
+    expect(executedQueries[2].sql).toContain('SELECT sequence_number, offer_status FROM offer_stream_heads WHERE offer_id = $1 FOR UPDATE');
+    expect(executedQueries[2].params).toEqual([offer_id]);
+  });
+
+  it('POSTGRES-CONCURRENT-INIT-RACE-002: Concurrent stream initialization authoritatively re-reads locked committed head', async () => {
+    const executedQueries: Array<{ sql: string; params?: unknown[] }> = [];
+    const mockClient: PostgresClientLike = {
+      async query(sql: string, params?: unknown[]) {
+        executedQueries.push({ sql, params });
+        if (sql.includes('SELECT sequence_number, offer_status FROM offer_stream_heads WHERE offer_id = $1 FOR UPDATE')) {
+          if (executedQueries.length === 1) {
+            // Initial check: absent
+            return { rows: [], rowCount: 0 };
+          } else {
+            // Concurrent transaction already inserted and committed sequence 1
+            return {
+              rows: [{ sequence_number: '1', offer_status: 'VERIFIED_EXECUTABLE_OFFER' }],
+              rowCount: 1
+            };
+          }
+        }
+        if (sql.includes('INSERT INTO offer_stream_heads')) {
+          // Conflict detected, 0 rows inserted
+          return { rows: [], rowCount: 0 };
+        }
+        return { rows: [], rowCount: 0 };
+      }
+    };
+
+    const tx = new PostgresOfferPersistenceDatabaseTransaction(mockClient);
+    const head = await tx.getOfferStreamHeadForUpdate(offer_id);
+
+    // Must return the authoritative committed state from the re-read SELECT FOR UPDATE, not stale '0'
+    expect(head.sequence_number).toBe('1');
+    expect(head.offer_status).toBe('VERIFIED_EXECUTABLE_OFFER');
+    expect(executedQueries.length).toBe(3);
+  });
+
+  it('CONCURRENT-PROMOTIONS-CAS-CONFLICT-003: Concurrent promotions against the same stream serialize under row-locking; second promotion fails with CONCURRENCY_CONFLICT', async () => {
+    const offer: CanonicalOffer = {
+      offer_id: 'off:din3017:sup-01:2026-q4',
+      product_id: 'prod:din3017:16-25mm',
+      unit_price: createCanonicalMoney('105000', 'INR', 4),
+      minimum_order_quantity: 10,
+      payment_terms_days: 30,
+      incoterms: 'EXW',
+      valid_until_utc: '2026-12-31T00:00:00Z',
+      offer_status: 'INDICATIVE_QUOTE',
+      verification_status: 'UNVERIFIED'
+    };
+
+    const nowUtc = '2026-10-10T12:00:00Z';
+    const EVALUATOR_SECRET_HEX = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const PRINCIPAL_KEY_SEED = '0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20';
+    const tokenVerifier = new ServiceBoundaryEvaluatorTokenVerifier(EVALUATOR_SECRET_HEX);
+
+    function createSignedClaim(claimType: any, params: any, evidenceId: string) {
+      const evSha = sha256(`content:${evidenceId}`);
+      registerStreamEvidence({
+        evidence_id: evidenceId,
+        event_sha256: evSha,
+        provenance: {
+          observed_at_utc: nowUtc,
+          is_authenticated_source_feed: true
+        }
+      });
+
+      const unsignedClaim = {
+        claim_type: claimType,
+        claim_parameters: params,
+        attestation: {
+          evidence_id: evidenceId,
+          evidence_sha256: evSha,
+          attester_id: 'op:sec:shrom-principal-01',
+          attested_at_utc: nowUtc,
+          claimed_role: 'PORTFOLIO_MANAGER' as const,
+          epistemic_type: 'HUMAN_EXPERT_DOCUMENT_APPRAISAL' as const,
+          auth: {
+            auth_mechanism: 'DIRECT_KEY_SIGNATURE' as const
+          }
+        }
+      };
+
+      const signingPayload = validateAndBuildClaimSigningPayload(offer.offer_id, offer.product_id, unsignedClaim as any);
+      const payloadBytes = Buffer.from(canonicalizeJCS(signingPayload), 'utf8');
+      const signature = ed25519Sign(payloadBytes, PRINCIPAL_KEY_SEED);
+
+      return {
+        ...unsignedClaim,
+        attestation: {
+          ...unsignedClaim.attestation,
+          auth: {
+            auth_mechanism: 'DIRECT_KEY_SIGNATURE' as const,
+            direct_signature: signature,
+            attestation_signature: signature
+          }
+        }
+      };
+    }
+
+    const assessment: VerificationClaimsAssessment = {
+      claim_source_authenticity: createSignedClaim(
+        'SOURCE_AUTHENTICITY',
+        { verification_mechanism: 'BUSINESS_REGISTRY_GSTIN_LOOKUP' },
+        'ev:src:c01'
+      ) as any,
+      claim_price_confirmation: createSignedClaim(
+        'PRICE_CONFIRMATION',
+        {
+          confirmed_unit_price: createCanonicalMoney('105000', 'INR', 4),
+          price_evidence_kind: 'PROFORMA_INVOICE'
+        },
+        'ev:prc:c01'
+      ) as any,
+      claim_stock_availability: createSignedClaim(
+        'STOCK_AVAILABILITY',
+        {
+          availability_evidence_kind: 'SUPPLIER_INVENTORY_REPORT',
+          confirmed_quantity_available: 500,
+          inventory_location: 'Hub-1'
+        },
+        'ev:stk:c01'
+      ) as any,
+      claim_commercial_terms: createSignedClaim(
+        'COMMERCIAL_TERMS',
+        {
+          incoterms: 'EXW',
+          minimum_order_quantity: 10,
+          payment_terms_days: 30,
+          terms_evidence_kind: 'PROFORMA_INVOICE',
+          valid_until_utc: '2026-12-31T00:00:00Z'
+        },
+        'ev:com:c01'
+      ) as any
+    };
+
+    // Both evaluations evaluate against initial stream sequence '0'
+    const draftA = evaluateOfferPromotionReadOnly(offer, assessment, '0', EVALUATOR_SECRET_HEX, nowUtc);
+    const draftB = evaluateOfferPromotionReadOnly(offer, assessment, '0', EVALUATOR_SECRET_HEX, nowUtc);
+
+    const db = new InMemoryOfferPersistenceDatabaseSession();
+    const clock = new SystemTrustedClock();
+
+    // Fire both promotion transactions concurrently
+    const promiseA = commitPromotionIfVersionAndConsumeNonces(db, clock, offer, '0', draftA, assessment, tokenVerifier);
+    const promiseB = commitPromotionIfVersionAndConsumeNonces(db, clock, offer, '0', draftB, assessment, tokenVerifier);
+
+    const results = await Promise.allSettled([promiseA, promiseB]);
+
+    const fulfilled = results.filter(r => r.status === 'fulfilled');
+    const rejected = results.filter(r => r.status === 'rejected');
+
+    // Exactly one promotion commits and advances head to sequence 1
+    expect(fulfilled.length).toBe(1);
+    expect((fulfilled[0] as PromiseFulfilledResult<any>).value.resulting_stream_sequence).toBe('1');
+
+    // Exactly one promotion is rejected with CONCURRENCY_CONFLICT because stream advanced
+    expect(rejected.length).toBe(1);
+    expect((rejected[0] as PromiseRejectedResult).reason.message).toContain('E-ERR-037: CONCURRENCY_CONFLICT');
+
+    // Authoritative stream head is now sequence '1'
+    const finalHead = db.heads.get(offer.offer_id);
+    expect(finalHead?.sequence_number).toBe('1');
   });
 
   it('RECONCILE-SUBSEQUENT-EVENT-002: Reconciles committed promotion even when head advanced to higher sequence', async () => {
