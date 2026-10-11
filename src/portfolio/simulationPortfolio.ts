@@ -60,6 +60,29 @@ export interface PortfolioSnapshot {
   journal: readonly PortfolioJournalEntry[];
 }
 
+export interface PortfolioCheckpoint {
+  currency: CurrencyCode;
+  scale: number;
+  initial_cash: CanonicalMoney;
+  available_cash_subunits: string;
+  cumulative_realized_pnl_subunits: string;
+  allow_short: boolean;
+  positions: Array<{
+    product_id: string;
+    net_quantity: number;
+    total_bought_quantity: number;
+    total_sold_quantity: number;
+    aggregate_cost_subunits: string;
+    cumulative_realized_pnl_subunits: string;
+    epoch_start_cost_subunits: string;
+    epoch_start_quantity: number;
+    epoch_cumulative_sold_quantity: number;
+  }>;
+  processed_fill_ids: string[];
+  processed_fill_fingerprints: Array<[string, string]>;
+  journal: PortfolioJournalEntry[];
+}
+
 export interface SimulationPortfolioOptions {
   initialCash: CanonicalMoney;
   allowShort?: boolean;
