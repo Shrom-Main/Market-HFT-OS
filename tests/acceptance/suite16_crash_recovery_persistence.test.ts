@@ -554,4 +554,229 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
     await adapter2.disconnect();
     await server.stop();
   });
+
+  // --------------------------------------------------------------------------------------
+  // 6. File-Backed WAL Flush, Fsync & Tamper Detection
+  // --------------------------------------------------------------------------------------
+  it('M3-FILE-BACKED-WAL-INTEGRITY-011: File-backed recovery journal flushes with fsync and detects tamper corruption fail-closed', () => {
+    const tmpDir = path.resolve(process.cwd(), 'tmp_test_wal');
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+    const walPath = path.join(tmpDir, `test_wal_${Date.now()}.log`);
+
+    try {
+      const journal = new FileBackedDurableRecoveryJournal(walPath);
+      journal.appendEvent('INTENT_RECORDED', { intent_id: 'i-001' }, '2026-10-12T10:00:00.000Z');
+      journal.appendEvent('ORDER_SUBMITTED', { order_id: 'o-001' }, '2026-10-12T10:00:01.000Z');
+      journal.close();
+
+      // Verify file exists on disk and is non-empty
+      expect(fs.existsSync(walPath)).toBe(true);
+      const content = fs.readFileSync(walPath, 'utf8');
+      const lines = content.split('\n').filter(l => l.trim().length > 0);
+      expect(lines.length).toBe(2);
+
+      // Re-open in fresh journal instance and verify integrity
+      const reloaded = new FileBackedDurableRecoveryJournal(walPath);
+      expect(reloaded.getEntryCount()).toBe(2);
+      expect(reloaded.verifyIntegrity().isValid).toBe(true);
+      reloaded.close();
+
+      // Tamper with the file: modify a character in the payload
+      const tamperedContent = content.replace('i-001', 'i-999');
+      fs.writeFileSync(walPath, tamperedContent, 'utf8');
+
+      // Re-opening tampered file must throw E-ERR-024: CORRUPT_JOURNAL
+      expect(() => new FileBackedDurableRecoveryJournal(walPath)).toThrow('E-ERR-024: CORRUPT_JOURNAL');
+    } finally {
+      if (fs.existsSync(walPath)) fs.unlinkSync(walPath);
+      if (fs.existsSync(tmpDir)) fs.rmdirSync(tmpDir, { recursive: true });
+    }
+  });
+
+  // --------------------------------------------------------------------------------------
+  // 7. Recovery Contract Failure Boundaries Reconciliation
+  // --------------------------------------------------------------------------------------
+  it('M3-RECOVERY-FAILURE-BOUNDARIES-012: CrashRecoveryEngine.recoverDurable handles all 5 specification failure boundaries', () => {
+    const order: SimulatedOrderRecord = {
+      order_id: 'ord-fb-1',
+      intent_id: 'intent-fb-1',
+      offer_id: 'off-fb-1',
+      product_id: 'DIN3017-W4-CLAMP-001',
+      venue_id: 'VENUE-A',
+      side: 'BUY',
+      order_price: initialCashEur,
+      total_quantity: 10,
+      filled_quantity: 10,
+      remaining_quantity: 0,
+      status: 'FILLED',
+      created_at_utc: '2026-10-12T10:00:00.000Z',
+      updated_at_utc: '2026-10-12T10:00:01.000Z',
+      fills: [],
+      events: [],
+      intent_sha256: 'a'.repeat(64)
+    };
+
+    const fillA: SimulatedFillEvent = {
+      fill_id: 'fill-fb-a',
+      order_id: order.order_id,
+      fill_price: createCanonicalMoney('100000', 'EUR', 4),
+      fill_quantity: 10,
+      cumulative_quantity: 10,
+      remaining_quantity: 0,
+      fill_timestamp_utc: '2026-10-12T10:00:01.000Z'
+    };
+
+    // Boundary 1: Fill recorded in journal, portfolio not updated => Replay fill exactly once
+    {
+      const journal = new DurableRecoveryJournal();
+      const portfolio = new SimulationPortfolio({ initialCash: initialCashEur });
+      journal.appendEvent('FILL_RECORDED', { fill: fillA, order }, '2026-10-12T10:00:01.000Z');
+
+      const result = CrashRecoveryEngine.recoverDurable(journal, portfolio, '2026-10-12T10:00:02.000Z');
+      expect(result.recovered_fills_count).toBe(1);
+      expect(portfolio.isFillProcessed('fill-fb-a')).toBe(true);
+      const markers = journal.getEntries().filter(e => e.event_type === 'PORTFOLIO_APPLIED');
+      expect(markers.length).toBe(1);
+    }
+
+    // Boundary 2: Portfolio updated, marker not recorded => Reconcile without double accounting
+    {
+      const journal = new DurableRecoveryJournal();
+      const portfolio = new SimulationPortfolio({ initialCash: initialCashEur });
+      journal.appendEvent('FILL_RECORDED', { fill: fillA, order }, '2026-10-12T10:00:01.000Z');
+      portfolio.processFill(fillA, order, '2026-10-12T10:00:01.000Z');
+
+      const snapBefore = portfolio.getSnapshot();
+      const result = CrashRecoveryEngine.recoverDurable(journal, portfolio, '2026-10-12T10:00:02.000Z');
+      expect(result.reconciled_unmarked_fills_count).toBe(1);
+      expect(result.recovered_fills_count).toBe(0);
+      expect(portfolio.getSnapshot().available_cash).toEqual(snapBefore.available_cash);
+      expect(portfolio.getSnapshot().positions).toEqual(snapBefore.positions);
+    }
+
+    // Boundary 3: Marker recorded, state restoration incomplete => Replay fill from journal
+    {
+      const journal = new DurableRecoveryJournal();
+      const portfolio = new SimulationPortfolio({ initialCash: initialCashEur });
+      journal.appendEvent('FILL_RECORDED', { fill: fillA, order }, '2026-10-12T10:00:01.000Z');
+      journal.appendEvent('PORTFOLIO_APPLIED', { fill_id: fillA.fill_id, order_id: order.order_id }, '2026-10-12T10:00:01.000Z');
+      expect(portfolio.isFillProcessed('fill-fb-a')).toBe(false);
+
+      const result = CrashRecoveryEngine.recoverDurable(journal, portfolio, '2026-10-12T10:00:02.000Z');
+      expect(result.recovered_fills_count).toBe(1);
+      expect(portfolio.isFillProcessed('fill-fb-a')).toBe(true);
+    }
+
+    // Boundary 4: Same fill ID, altered content => Reject with E-ERR-046
+    {
+      const journal = new DurableRecoveryJournal();
+      const portfolio = new SimulationPortfolio({ initialCash: initialCashEur });
+      portfolio.processFill(fillA, order, '2026-10-12T10:00:01.000Z');
+
+      const fillConflicting: SimulatedFillEvent = { ...fillA, fill_quantity: 20 };
+      journal.appendEvent('FILL_RECORDED', { fill: fillConflicting, order }, '2026-10-12T10:00:01.000Z');
+
+      expect(() => CrashRecoveryEngine.recoverDurable(journal, portfolio, '2026-10-12T10:00:02.000Z'))
+        .toThrow('E-ERR-046: FILL_IDEMPOTENCY_CONFLICT');
+    }
+
+    // Boundary 5: Journal integrity failure => Reject with E-ERR-024
+    {
+      const journal = new DurableRecoveryJournal();
+      const portfolio = new SimulationPortfolio({ initialCash: initialCashEur });
+      journal.appendEvent('FILL_RECORDED', { fill: fillA, order }, '2026-10-12T10:00:01.000Z');
+      (journal as any).entries[0].entry_sha256 = 'f'.repeat(64);
+
+      expect(() => CrashRecoveryEngine.recoverDurable(journal, portfolio, '2026-10-12T10:00:02.000Z'))
+        .toThrow('E-ERR-024: CORRUPT_JOURNAL_ON_RECOVERY');
+    }
+  });
+
+  // --------------------------------------------------------------------------------------
+  // 8. Genuine OS Process Crash & Fresh Restart Recovery Parity
+  // --------------------------------------------------------------------------------------
+  it('M3-GENUINE-PROCESS-RESTART-RECOVERY-013: Genuine OS child process crash terminates in-memory state; fresh restart recovers 100% benchmark parity', () => {
+    const tmpDir = path.resolve(process.cwd(), 'tmp_process_crash_test');
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+
+    const benchWal = path.join(tmpDir, 'bench.wal');
+    const benchCheckpoint = path.join(tmpDir, 'bench.json');
+    const benchOutput = path.join(tmpDir, 'bench_out.json');
+
+    const crashWal = path.join(tmpDir, 'crash.wal');
+    const crashCheckpoint = path.join(tmpDir, 'crash.json');
+    const crashOutput = path.join(tmpDir, 'crash_out.json');
+
+    const workerScript = path.resolve(process.cwd(), 'scripts', 'test_crash_worker.ts');
+    const tsxCli = path.resolve(process.cwd(), 'node_modules', '.bin', 'tsx.cmd');
+
+    try {
+      // 1. Run uninterrupted benchmark in separate child process
+      const benchProc = spawnSync(tsxCli, [
+        workerScript,
+        JSON.stringify({
+          mode: 'BENCHMARK',
+          journalPath: benchWal,
+          checkpointPath: benchCheckpoint,
+          outputPath: benchOutput,
+          currency: 'EUR',
+          scale: 4
+        })
+      ], { encoding: 'utf8' });
+      expect(benchProc.status).toBe(0);
+      const benchmarkData = JSON.parse(fs.readFileSync(benchOutput, 'utf8'));
+
+      // 2. Spawn Child Process 1: Runs Fill 1, checkpoints, logs Fill 2 to WAL, and hard crashes (process.exit(99))
+      const crashProc = spawnSync(tsxCli, [
+        workerScript,
+        JSON.stringify({
+          mode: 'CRASH_BEFORE_FILL2_APPLY',
+          journalPath: crashWal,
+          checkpointPath: crashCheckpoint,
+          currency: 'EUR',
+          scale: 4
+        })
+      ], { encoding: 'utf8' });
+
+      // Verify Child Process 1 crashed abnormally with exit code 99
+      expect(crashProc.status).toBe(99);
+
+      // Verify WAL and Checkpoint exist on disk
+      expect(fs.existsSync(crashWal)).toBe(true);
+      expect(fs.existsSync(crashCheckpoint)).toBe(true);
+
+      // 3. Spawn Child Process 2: Starts up completely fresh from disk and recovers state
+      const recoverProc = spawnSync(tsxCli, [
+        workerScript,
+        JSON.stringify({
+          mode: 'RECOVER',
+          journalPath: crashWal,
+          checkpointPath: crashCheckpoint,
+          outputPath: crashOutput,
+          currency: 'EUR',
+          scale: 4
+        })
+      ], { encoding: 'utf8' });
+      expect(recoverProc.status).toBe(0);
+
+      const recoveredData = JSON.parse(fs.readFileSync(crashOutput, 'utf8'));
+
+      // 4. Prove complete parity between recovered process and benchmark across all dimensions
+      expect(recoveredData.snapshot.available_cash).toEqual(benchmarkData.available_cash);
+      expect(recoveredData.snapshot.positions).toEqual(benchmarkData.positions);
+      expect(recoveredData.snapshot.cumulative_realized_pnl).toEqual(benchmarkData.cumulative_realized_pnl);
+      expect(recoveredData.snapshot.journal.length).toBe(benchmarkData.journal.length);
+      expect(recoveredData.recoveryResult.recovered_fills_count).toBe(1);
+      expect(recoveredData.recoveryResult.skipped_duplicate_fills_count).toBe(1);
+
+      // Verify reloaded WAL hash chain
+      const reloadedJournal = new FileBackedDurableRecoveryJournal(crashWal);
+      expect(reloadedJournal.verifyIntegrity().isValid).toBe(true);
+      reloadedJournal.close();
+    } finally {
+      if (fs.existsSync(tmpDir)) {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    }
+  });
 });
