@@ -18,3 +18,5 @@ export * from './execution/simulatedGateway.js';
 export * from './feeds/localWebSocketTransport.js';
 export * from './portfolio/simulationPortfolio.js';
 export * from './simulation/simulationPipeline.js';
+export * from './canonical/deterministic.js';
+export * from './persistence/durableRecoveryJournal.js';

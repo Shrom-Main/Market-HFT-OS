@@ -215,3 +215,372 @@ export class PostgresOfferPersistenceDatabaseSession implements OfferPersistence
     }
   }
 }
+
+export type AmbiguousCommitSimulationMode = 'NONE' | 'DISCONNECT_AFTER_COMMIT' | 'DISCONNECT_BEFORE_COMMIT';
+
+export interface PostgresTransactionalClient extends PostgresClientLike {
+  release(): void;
+  setAmbiguousCommitSimulation(mode: AmbiguousCommitSimulationMode): void;
+}
+
+export interface PostgresTransactionalPoolOptions {
+  maxConnections?: number;
+  lockTimeoutMs?: number;
+}
+
+/**
+ * High-Fidelity PostgreSQL Transactional Engine
+ * Emulates PostgreSQL MVCC, pessimistic SELECT ... FOR UPDATE row locks,
+ * lock wait queues, lock timeouts, transaction rollback, and ambiguous commits.
+ */
+export class PostgresTransactionalEngine {
+  public readonly streamHeads = new Map<string, { sequence_number: string; offer_status: string; updated_at_utc: string }>();
+  public readonly streamEvents = new Map<string, { stream_id: string; sequence_number: string; payload_kind: string; payload: any; event_sha256: string; created_at_utc: string }>();
+  public readonly nonces = new Map<string, { nonce: string; gateway_id: string; expires_at_utc: string; consumed_at_utc: string }>();
+  public readonly assessments = new Map<string, { assessment_sha256: string; canonical_bytes: Buffer; created_at_utc: string }>();
+
+  private rowLocks = new Map<string, string>(); // resourceKey -> clientId
+  private lockWaiters = new Map<string, Array<{ clientId: string; resolve: () => void; reject: (err: Error) => void; timer?: any }>>();
+
+  public getActiveLocksCount(): number {
+    return this.rowLocks.size;
+  }
+
+  public getLockOwner(resourceKey: string): string | undefined {
+    return this.rowLocks.get(resourceKey);
+  }
+
+  public async acquireRowLock(resourceKey: string, clientId: string, timeoutMs: number = 2000): Promise<void> {
+    const currentOwner = this.rowLocks.get(resourceKey);
+    if (!currentOwner || currentOwner === clientId) {
+      this.rowLocks.set(resourceKey, clientId);
+      return;
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      let timer: any;
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          const waiters = this.lockWaiters.get(resourceKey) || [];
+          this.lockWaiters.set(resourceKey, waiters.filter(w => w.clientId !== clientId));
+          reject(new Error(`E-ERR-038: PERSISTENCE_LOCK_TIMEOUT: Timed out waiting for row lock on '${resourceKey}' after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }
+
+      const waiters = this.lockWaiters.get(resourceKey) || [];
+      waiters.push({ clientId, resolve, reject, timer });
+      this.lockWaiters.set(resourceKey, waiters);
+    });
+  }
+
+  public releaseRowLocks(clientId: string): void {
+    for (const [key, owner] of Array.from(this.rowLocks.entries())) {
+      if (owner === clientId) {
+        this.rowLocks.delete(key);
+        const waiters = this.lockWaiters.get(key);
+        if (waiters && waiters.length > 0) {
+          const next = waiters.shift()!;
+          if (next.timer) clearTimeout(next.timer);
+          this.rowLocks.set(key, next.clientId);
+          next.resolve();
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Transactional PostgreSQL Pool implementing PostgresPoolLike
+ * Supports connection pool capacity queueing, lock timeouts, and fault injection.
+ */
+export class PostgresTransactionalPool implements PostgresPoolLike {
+  private engine: PostgresTransactionalEngine;
+  private maxConnections: number;
+  private lockTimeoutMs: number;
+  private activeClients = new Set<string>();
+  private connectionWaitQueue: Array<(client: PostgresTransactionalClient) => void> = [];
+  private clientCounter = 0;
+
+  constructor(options?: PostgresTransactionalPoolOptions, engine?: PostgresTransactionalEngine) {
+    this.maxConnections = options?.maxConnections ?? 5;
+    this.lockTimeoutMs = options?.lockTimeoutMs ?? 2000;
+    this.engine = engine ?? new PostgresTransactionalEngine();
+  }
+
+  public getEngine(): PostgresTransactionalEngine {
+    return this.engine;
+  }
+
+  public getActiveConnectionCount(): number {
+    return this.activeClients.size;
+  }
+
+  public getWaitQueueLength(): number {
+    return this.connectionWaitQueue.length;
+  }
+
+  public async connect(): Promise<PostgresTransactionalClient> {
+    if (this.activeClients.size >= this.maxConnections) {
+      return new Promise<PostgresTransactionalClient>((resolve) => {
+        this.connectionWaitQueue.push(resolve);
+      });
+    }
+
+    const clientId = `pg:client:${++this.clientCounter}`;
+    this.activeClients.add(clientId);
+    return this.createClient(clientId);
+  }
+
+  private releaseClient(clientId: string): void {
+    this.activeClients.delete(clientId);
+    if (this.connectionWaitQueue.length > 0) {
+      const nextResolve = this.connectionWaitQueue.shift()!;
+      const nextClientId = `pg:client:${++this.clientCounter}`;
+      this.activeClients.add(nextClientId);
+      nextResolve(this.createClient(nextClientId));
+    }
+  }
+
+  private createClient(clientId: string): PostgresTransactionalClient {
+    const engine = this.engine;
+    const lockTimeoutMs = this.lockTimeoutMs;
+    let ambiguousCommitMode: AmbiguousCommitSimulationMode = 'NONE';
+    let inTransaction = false;
+
+    // Transaction staging
+    let stagedStreamHeads = new Map<string, { sequence_number: string; offer_status: string; updated_at_utc: string }>();
+    let stagedStreamEvents = new Map<string, { stream_id: string; sequence_number: string; payload_kind: string; payload: any; event_sha256: string; created_at_utc: string }>();
+    let stagedNonces = new Map<string, { nonce: string; gateway_id: string; expires_at_utc: string; consumed_at_utc: string }>();
+    let stagedAssessments = new Map<string, { assessment_sha256: string; canonical_bytes: Buffer; created_at_utc: string }>();
+
+    const client: PostgresTransactionalClient = {
+      setAmbiguousCommitSimulation(mode: AmbiguousCommitSimulationMode) {
+        ambiguousCommitMode = mode;
+      },
+
+      release: () => {
+        if (inTransaction) {
+          // Uncommitted rollback on connection release
+          stagedStreamHeads.clear();
+          stagedStreamEvents.clear();
+          stagedNonces.clear();
+          stagedAssessments.clear();
+          engine.releaseRowLocks(clientId);
+          inTransaction = false;
+        }
+        this.releaseClient(clientId);
+      },
+
+      async query(sql: string, params?: unknown[]): Promise<{ rows: any[]; rowCount: number }> {
+        const trimmed = sql.trim();
+
+        if (trimmed.startsWith('BEGIN')) {
+          inTransaction = true;
+          stagedStreamHeads = new Map();
+          stagedStreamEvents = new Map();
+          stagedNonces = new Map();
+          stagedAssessments = new Map();
+          return { rows: [], rowCount: 0 };
+        }
+
+        if (trimmed.startsWith('COMMIT')) {
+          if (!inTransaction) {
+            return { rows: [], rowCount: 0 };
+          }
+
+          if (ambiguousCommitMode === 'DISCONNECT_BEFORE_COMMIT') {
+            // Drop staged changes and throw simulated network disconnect
+            stagedStreamHeads.clear();
+            stagedStreamEvents.clear();
+            stagedNonces.clear();
+            stagedAssessments.clear();
+            engine.releaseRowLocks(clientId);
+            inTransaction = false;
+            throw new Error('E-ERR-039: AMBIGUOUS_COMMIT_DROPPED: Simulated network reset before commit write');
+          }
+
+          // Atomically commit staged mutations to engine
+          for (const [k, v] of stagedStreamHeads.entries()) {
+            engine.streamHeads.set(k, { ...v });
+          }
+          for (const [k, v] of stagedStreamEvents.entries()) {
+            engine.streamEvents.set(k, { ...v });
+          }
+          for (const [k, v] of stagedNonces.entries()) {
+            engine.nonces.set(k, { ...v });
+          }
+          for (const [k, v] of stagedAssessments.entries()) {
+            engine.assessments.set(k, { ...v });
+          }
+
+          engine.releaseRowLocks(clientId);
+          inTransaction = false;
+
+          if (ambiguousCommitMode === 'DISCONNECT_AFTER_COMMIT') {
+            // Server committed data, but ACK lost over network
+            throw new Error('E-ERR-039: AMBIGUOUS_COMMIT_DROPPED: Simulated network reset after commit write (ACK dropped)');
+          }
+
+          return { rows: [], rowCount: 0 };
+        }
+
+        if (trimmed.startsWith('ROLLBACK')) {
+          stagedStreamHeads.clear();
+          stagedStreamEvents.clear();
+          stagedNonces.clear();
+          stagedAssessments.clear();
+          engine.releaseRowLocks(clientId);
+          inTransaction = false;
+          return { rows: [], rowCount: 0 };
+        }
+
+        // SELECT stream head FOR UPDATE
+        if (trimmed.includes('FROM offer_stream_heads WHERE offer_id = $1 FOR UPDATE')) {
+          const offer_id = params![0] as string;
+          await engine.acquireRowLock(offer_id, clientId, lockTimeoutMs);
+          const head = stagedStreamHeads.get(offer_id) ?? engine.streamHeads.get(offer_id);
+          if (!head) {
+            return { rows: [], rowCount: 0 };
+          }
+          return { rows: [{ sequence_number: head.sequence_number, offer_status: head.offer_status }], rowCount: 1 };
+        }
+
+        // INSERT INTO offer_stream_heads ON CONFLICT DO NOTHING
+        if (trimmed.includes('INSERT INTO offer_stream_heads')) {
+          const offer_id = params![0] as string;
+          const sequence_number = params![1] as string;
+          const offer_status = params![2] as string;
+          const nowStr = new Date().toISOString();
+
+          const existing = stagedStreamHeads.get(offer_id) ?? engine.streamHeads.get(offer_id);
+          if (existing) {
+            return { rows: [], rowCount: 0 };
+          }
+
+          const record = { sequence_number, offer_status, updated_at_utc: nowStr };
+          if (inTransaction) {
+            stagedStreamHeads.set(offer_id, record);
+          } else {
+            engine.streamHeads.set(offer_id, record);
+          }
+          return { rows: [], rowCount: 1 };
+        }
+
+        // UPDATE offer_stream_heads
+        if (trimmed.includes('UPDATE offer_stream_heads SET sequence_number = $2, offer_status = $3, updated_at_utc = $4 WHERE offer_id = $1')) {
+          const offer_id = params![0] as string;
+          const sequence_number = params![1] as string;
+          const offer_status = params![2] as string;
+          const updated_at_utc = params![3] as string;
+
+          const record = { sequence_number, offer_status, updated_at_utc };
+          if (inTransaction) {
+            stagedStreamHeads.set(offer_id, record);
+          } else {
+            engine.streamHeads.set(offer_id, record);
+          }
+          return { rows: [], rowCount: 1 };
+        }
+
+        // INSERT INTO offer_nonce_store ON CONFLICT DO NOTHING
+        if (trimmed.includes('INSERT INTO offer_nonce_store')) {
+          const nonce = params![0] as string;
+          const gateway_id = params![1] as string;
+          const expires_at_utc = params![2] as string;
+          const consumed_at_utc = params![3] as string;
+
+          const existing = stagedNonces.get(nonce) ?? engine.nonces.get(nonce);
+          if (existing) {
+            return { rows: [], rowCount: 0 };
+          }
+
+          const record = { nonce, gateway_id, expires_at_utc, consumed_at_utc };
+          if (inTransaction) {
+            stagedNonces.set(nonce, record);
+          } else {
+            engine.nonces.set(nonce, record);
+          }
+          return { rows: [], rowCount: 1 };
+        }
+
+        // INSERT INTO offer_assessment_store ON CONFLICT DO NOTHING
+        if (trimmed.includes('INSERT INTO offer_assessment_store')) {
+          const assessment_sha256 = params![0] as string;
+          const canonical_bytes = Buffer.isBuffer(params![1]) ? params![1] as Buffer : Buffer.from(params![1] as any);
+          const created_at_utc = params![2] as string;
+
+          const existing = stagedAssessments.get(assessment_sha256) ?? engine.assessments.get(assessment_sha256);
+          if (existing) {
+            return { rows: [], rowCount: 0 };
+          }
+
+          const record = { assessment_sha256, canonical_bytes, created_at_utc };
+          if (inTransaction) {
+            stagedAssessments.set(assessment_sha256, record);
+          } else {
+            engine.assessments.set(assessment_sha256, record);
+          }
+          return { rows: [], rowCount: 1 };
+        }
+
+        // SELECT canonical_bytes FROM offer_assessment_store
+        if (trimmed.includes('FROM offer_assessment_store WHERE assessment_sha256 = $1')) {
+          const assessment_sha256 = params![0] as string;
+          const item = stagedAssessments.get(assessment_sha256) ?? engine.assessments.get(assessment_sha256);
+          if (!item) {
+            return { rows: [], rowCount: 0 };
+          }
+          return { rows: [{ canonical_bytes: item.canonical_bytes }], rowCount: 1 };
+        }
+
+        // INSERT INTO offer_stream_events
+        if (trimmed.includes('INSERT INTO offer_stream_events')) {
+          const stream_id = params![0] as string;
+          const sequence_number = params![1] as string;
+          const payload_kind = params![2] as string;
+          const rawPayload = params![3] as string;
+          const event_sha256 = params![4] as string;
+          const nowStr = new Date().toISOString();
+
+          const key = `${stream_id}::${sequence_number}`;
+          const payload = typeof rawPayload === 'string' ? JSON.parse(rawPayload) : rawPayload;
+          const record = { stream_id, sequence_number, payload_kind, payload, event_sha256, created_at_utc: nowStr };
+
+          if (inTransaction) {
+            stagedStreamEvents.set(key, record);
+          } else {
+            engine.streamEvents.set(key, record);
+          }
+          return { rows: [], rowCount: 1 };
+        }
+
+        // SELECT FROM offer_stream_events
+        if (trimmed.includes('FROM offer_stream_events WHERE stream_id = $1 AND sequence_number = $2')) {
+          const stream_id = params![0] as string;
+          const sequence_number = params![1] as string;
+          const key = `${stream_id}::${sequence_number}`;
+
+          const item = stagedStreamEvents.get(key) ?? engine.streamEvents.get(key);
+          if (!item) {
+            return { rows: [], rowCount: 0 };
+          }
+          return {
+            rows: [{
+              stream_id: item.stream_id,
+              sequence_number: item.sequence_number,
+              payload_kind: item.payload_kind,
+              payload: item.payload,
+              event_sha256: item.event_sha256,
+              created_at_utc: item.created_at_utc
+            }],
+            rowCount: 1
+          };
+        }
+
+        return { rows: [], rowCount: 0 };
+      }
+    };
+
+    return client;
+  }
+}

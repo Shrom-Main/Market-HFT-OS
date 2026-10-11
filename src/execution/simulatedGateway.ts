@@ -2,6 +2,10 @@ import {
   CanonicalMoney,
   validateIso8601UtcTimestamp
 } from '../canonical/domain.js';
+import {
+  DeterministicClock,
+  DeterministicIdGenerator
+} from '../canonical/deterministic.js';
 import { deepFreeze } from '../verification/gate.js';
 import { ExecutionIntent } from './engine.js';
 
@@ -57,6 +61,11 @@ export interface SimulatedOrderRecord {
   intent_sha256: string;
 }
 
+export interface SimulatedExecutionGatewayOptions {
+  clock?: DeterministicClock;
+  idGenerator?: DeterministicIdGenerator;
+}
+
 /**
  * Simulated Execution Gateway & Order State Machine
  * Consumes DRY_RUN Execution Intents and manages order lifecycle transitions
@@ -65,6 +74,21 @@ export interface SimulatedOrderRecord {
 export class SimulatedExecutionGateway {
   private ordersByIntentId: Map<string, SimulatedOrderRecord> = new Map();
   private ordersById: Map<string, SimulatedOrderRecord> = new Map();
+  private clock?: DeterministicClock;
+  private idGenerator?: DeterministicIdGenerator;
+
+  constructor(options?: SimulatedExecutionGatewayOptions) {
+    this.clock = options?.clock;
+    this.idGenerator = options?.idGenerator;
+  }
+
+  public getClock(): DeterministicClock | undefined {
+    return this.clock;
+  }
+
+  public getIdGenerator(): DeterministicIdGenerator | undefined {
+    return this.idGenerator;
+  }
 
   private cloneAndFreezeOrder(order: SimulatedOrderRecord): SimulatedOrderRecord {
     return deepFreeze({
@@ -79,8 +103,9 @@ export class SimulatedExecutionGateway {
    * Idempotent: repeated submission of the identical canonical intent hash returns the existing order.
    * Conflicting submission under the same intent_id throws E-ERR-039: IDEMPOTENCY_CONFLICT.
    */
-  public submitExecutionIntent(intent: ExecutionIntent, current_time_utc: string): SimulatedOrderRecord {
-    validateIso8601UtcTimestamp(current_time_utc);
+  public submitExecutionIntent(intent: ExecutionIntent, current_time_utc?: string): SimulatedOrderRecord {
+    const timeUtc = current_time_utc ?? this.clock?.nowUtc() ?? new Date().toISOString();
+    validateIso8601UtcTimestamp(timeUtc);
 
     // 1. Dual-Ledger Safety Isolation: strictly DRY_RUN
     if (intent.payload.mode !== 'DRY_RUN') {
@@ -108,7 +133,7 @@ export class SimulatedExecutionGateway {
         order_id,
         intent_id: intent.payload.intent_id,
         sequence_number: 1,
-        timestamp_utc: current_time_utc,
+        timestamp_utc: timeUtc,
         previous_status: null,
         resulting_status: 'REJECTED',
         transition_reason: reason,
@@ -127,8 +152,8 @@ export class SimulatedExecutionGateway {
         filled_quantity: 0,
         remaining_quantity: intent.payload.order_quantity,
         status: 'REJECTED',
-        created_at_utc: current_time_utc,
-        updated_at_utc: current_time_utc,
+        created_at_utc: timeUtc,
+        updated_at_utc: timeUtc,
         fills: [],
         events: [initialEvent],
         rejection_reason: reason,
@@ -145,7 +170,7 @@ export class SimulatedExecutionGateway {
       order_id,
       intent_id: intent.payload.intent_id,
       sequence_number: 1,
-      timestamp_utc: current_time_utc,
+      timestamp_utc: timeUtc,
       previous_status: null,
       resulting_status: 'ACKNOWLEDGED',
       transition_reason: 'Order acknowledged by venue',
@@ -164,8 +189,8 @@ export class SimulatedExecutionGateway {
       filled_quantity: 0,
       remaining_quantity: intent.payload.order_quantity,
       status: 'ACKNOWLEDGED',
-      created_at_utc: current_time_utc,
-      updated_at_utc: current_time_utc,
+      created_at_utc: timeUtc,
+      updated_at_utc: timeUtc,
       fills: [],
       events: [initialEvent],
       intent_sha256: intent.canonical_intent_sha256
@@ -185,9 +210,11 @@ export class SimulatedExecutionGateway {
     order_id: string,
     fill_quantity: number,
     fill_price: CanonicalMoney,
-    current_time_utc: string
+    current_time_utc?: string,
+    custom_fill_id?: string
   ): SimulatedOrderRecord {
-    validateIso8601UtcTimestamp(current_time_utc);
+    const timeUtc = current_time_utc ?? this.clock?.nowUtc() ?? new Date().toISOString();
+    validateIso8601UtcTimestamp(timeUtc);
 
     const order = this.ordersById.get(order_id);
     if (!order) {
@@ -233,10 +260,11 @@ export class SimulatedExecutionGateway {
       reason = 'Partial fill executed';
     }
 
+    const fillId = custom_fill_id ?? (this.idGenerator ? this.idGenerator.nextId(`fill:${order_id}`) : `fill:${order_id}:${order.fills.length + 1}`);
     const fillEvent: SimulatedFillEvent = {
-      fill_id: `fill:${order_id}:${order.fills.length + 1}`,
+      fill_id: fillId,
       order_id,
-      fill_timestamp_utc: current_time_utc,
+      fill_timestamp_utc: timeUtc,
       fill_price,
       fill_quantity,
       cumulative_quantity: newFilled,
@@ -249,7 +277,7 @@ export class SimulatedExecutionGateway {
       order_id,
       intent_id: order.intent_id,
       sequence_number: nextSeq,
-      timestamp_utc: current_time_utc,
+      timestamp_utc: timeUtc,
       previous_status: order.status,
       resulting_status: newStatus,
       transition_reason: reason,
@@ -263,7 +291,7 @@ export class SimulatedExecutionGateway {
       filled_quantity: newFilled,
       remaining_quantity: newRemaining,
       status: newStatus,
-      updated_at_utc: current_time_utc,
+      updated_at_utc: timeUtc,
       fills: [...order.fills, fillEvent],
       events: [...order.events, transitionEvent]
     };
@@ -277,8 +305,9 @@ export class SimulatedExecutionGateway {
    * Requests cancellation of an outstanding open order.
    * Transitions order to CANCELLATION_REQUESTED. Does not report CANCELLED until confirmCancellation is called.
    */
-  public requestCancellation(order_id: string, current_time_utc: string, reason?: string): SimulatedOrderRecord {
-    validateIso8601UtcTimestamp(current_time_utc);
+  public requestCancellation(order_id: string, current_time_utc?: string, reason?: string): SimulatedOrderRecord {
+    const timeUtc = current_time_utc ?? this.clock?.nowUtc() ?? new Date().toISOString();
+    validateIso8601UtcTimestamp(timeUtc);
 
     const order = this.ordersById.get(order_id);
     if (!order) {
@@ -299,7 +328,7 @@ export class SimulatedExecutionGateway {
       order_id,
       intent_id: order.intent_id,
       sequence_number: nextSeq,
-      timestamp_utc: current_time_utc,
+      timestamp_utc: timeUtc,
       previous_status: order.status,
       resulting_status: 'CANCELLATION_REQUESTED',
       transition_reason: reason ?? 'Cancellation requested by client',
@@ -309,7 +338,7 @@ export class SimulatedExecutionGateway {
     const updatedOrder: SimulatedOrderRecord = {
       ...order,
       status: 'CANCELLATION_REQUESTED',
-      updated_at_utc: current_time_utc,
+      updated_at_utc: timeUtc,
       events: [...order.events, transitionEvent]
     };
 
@@ -322,8 +351,9 @@ export class SimulatedExecutionGateway {
    * Confirms cancellation outcome from venue matching engine.
    * Transitions order from CANCELLATION_REQUESTED to CANCELLED.
    */
-  public confirmCancellation(order_id: string, current_time_utc: string, reason?: string): SimulatedOrderRecord {
-    validateIso8601UtcTimestamp(current_time_utc);
+  public confirmCancellation(order_id: string, current_time_utc?: string, reason?: string): SimulatedOrderRecord {
+    const timeUtc = current_time_utc ?? this.clock?.nowUtc() ?? new Date().toISOString();
+    validateIso8601UtcTimestamp(timeUtc);
 
     const order = this.ordersById.get(order_id);
     if (!order) {
@@ -348,7 +378,7 @@ export class SimulatedExecutionGateway {
       order_id,
       intent_id: order.intent_id,
       sequence_number: nextSeq,
-      timestamp_utc: current_time_utc,
+      timestamp_utc: timeUtc,
       previous_status: 'CANCELLATION_REQUESTED',
       resulting_status: 'CANCELLED',
       transition_reason: reason ?? 'Cancellation confirmed by venue',
@@ -358,7 +388,7 @@ export class SimulatedExecutionGateway {
     const cancelledOrder: SimulatedOrderRecord = {
       ...order,
       status: 'CANCELLED',
-      updated_at_utc: current_time_utc,
+      updated_at_utc: timeUtc,
       events: [...order.events, transitionEvent]
     };
 
@@ -375,5 +405,9 @@ export class SimulatedExecutionGateway {
   public getOrderByIntentId(intent_id: string): SimulatedOrderRecord | null {
     const order = this.ordersByIntentId.get(intent_id);
     return order ? this.cloneAndFreezeOrder(order) : null;
+  }
+
+  public getAllOrders(): readonly SimulatedOrderRecord[] {
+    return deepFreeze(Array.from(this.ordersById.values()).map(o => this.cloneAndFreezeOrder(o)));
   }
 }

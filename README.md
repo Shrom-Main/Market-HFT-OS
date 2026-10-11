@@ -5,7 +5,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4.5-blue.svg)](https://www.typescriptlang.org/)
 [![Vitest](https://img.shields.io/badge/Vitest-1.6.0-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
-[![Status](https://img.shields.io/badge/Gate_M2-Passing_(106_Tests)-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Gate_M3_Preflight-Passing_(116_Tests)-brightgreen.svg)]()
 
 ---
 
@@ -14,7 +14,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 - **Frozen Specification Baseline**: [`POC-001_Gate_M1_Design_Readiness_Specification.md`](https://github.com/Shrom-Main/ADRs/blob/77eff71c3807c8852b49355f50e814bd75eb90ad/POC-001_Gate_M1_Design_Readiness_Specification.md) (v1.13 Final, pinned to commit `77eff71c3807c8852b49355f50e814bd75eb90ad`, blob `ac8899da3a6dcccb2c612247302e6f57fc566472`).
 - **Quarantine Isolation**: All legacy code (`_salvage/AIStudio/`, `_salvage/external/`) is strictly quarantined and git-ignored. Zero imports or execution of legacy salvage code exist in `src/` or `tests/`.
 - **Three-State Conformance Model**: All requirements are strictly tracked as `Specified — Pending Verification`, `Design Reviewed`, or `Verified — Test Evidence Recorded`.
-- **Epistemic & Operational Boundary**: Gate M2 is an experimental simulation integration milestone. Market feeds utilize local loopback WebSocket networking (`ws://127.0.0.1`) with fail-closed provenance (`is_authenticated_source_feed: false`). Order execution is purely simulated via `SimulatedExecutionGateway`. Dual-ledger protection (`ActualsGuard`) strictly isolates simulations from production actuals. Zero live exchange access, real order routing, or actual money movement is permitted or enabled.
+- **Epistemic & Operational Boundary**: Gate M3 Pre-flight integrates durable persistence, crash recovery, and multi-stream integration. Market feeds utilize local loopback WebSocket networking (`ws://127.0.0.1`) with fail-closed provenance (`is_authenticated_source_feed: false`). Order execution is simulated via `SimulatedExecutionGateway`. Dual-ledger protection (`ActualsGuard`) strictly isolates simulations from production actuals. Zero live exchange access, real order routing, or actual money movement is permitted or enabled.
 
 ---
 
@@ -52,13 +52,13 @@ npm run typecheck
 ```bash
 npm test
 ```
-*Expected output: 15 test files passed, 106 tests passed (Exit code 0).*
+*Expected output: 16 test files passed, 116 tests passed (Exit code 0).*
 
 ### Step 4: Generate Machine-Readable Audit Report
 ```bash
 npm run test:json
 ```
-*Generates `test-results.json` recording 15 passed suites and 106 passed tests.*
+*Generates `test-results.json` recording 16 passed suites and 116 passed tests.*
 
 ---
 
@@ -79,3 +79,14 @@ npm run test:json
 - **`suite13_market_feed_execution.test.ts` (21 tests)**: Market feed normalization, exact decimal price parsing to integer subunits (`parseDecimalPriceToSubunits` without precision truncation), monotonic sequence enforcement, duplicate rejection, sequence gap buffering & replay, commercial spread dry-run execution, MOQ/expiration gating, and dual-ledger quarantine guard.
 - **`suite14_websocket_portfolio.test.ts` (19 tests)**: Local loopback WebSocket streaming transport, exponential backoff, sequence gap recovery, immutable order lifecycle journal (`SimulatedOrderTransitionEvent`), two-step cancellation with fill-cancel race invariance ($Q_{\text{filled}} + Q_{\text{remaining}} \equiv Q_{\text{total}}$), intent idempotency conflict prevention (`E-ERR-039`), and simulation portfolio ledger.
 - **`suite15_e2e_simulation_pipeline.test.ts` (13 tests)**: End-to-end simulation coordinator (`SimulationPipeline`), exact aggregate cost basis, anchored cumulative COGS allocation ($A(s) = \operatorname{divideHalfEven}(C_0 \cdot s, Q_0)$) proving strict fill-partition invariance across arbitrary order splits (including reviewer's $C_0=5, Q_0=3$ case and multi-partition randomizations), interleaved purchase epoch transitions, unsupported short-position prohibition (`E-ERR-044`), cumulative quantity overflow guards against `Number.MAX_SAFE_INTEGER` (`E-ERR-045`), byte-accurate WebSocket payload limits (`Buffer.byteLength`) guarding against multibyte UTF-8 expansion, transport native `maxPayload`, connection stabilization window preventing endless reconnect retry loops under peer bombardment (`M2-WS-LIFECYCLE-OVERSIZED-BOMB-012`), reproducible event replay producing bit-identical state digests (Condition A), continuous capital and quantity invariant verification (Condition B), fault injection recovery (Condition C), and dual-ledger safety isolation (Condition D).
+- **`suite16_crash_recovery_persistence.test.ts` (10 tests)**: Gate M3 crash recovery and persistence:
+  - Conflicting fill ID reuse detection (`E-ERR-046: FILL_IDEMPOTENCY_CONFLICT`) with snapshot atomic invariance (`M3-IDEMPOTENCY-CONFLICT-001`).
+  - Idempotent identical fill replay with zero balance mutation or duplicate journal entries (`M3-IDEMPOTENCY-EXACT-REPLAY-002`).
+  - Bit-identical deterministic virtual clock & counter ID generator replay producing exact state digests (`M3-DETERMINISTIC-CLOCK-REPLAY-003`).
+  - High-fidelity PostgreSQL concurrent `SELECT ... FOR UPDATE` row lock wait queue serialization (`M3-POSTGRES-CONCURRENCY-ROWLOCK-004`).
+  - Fail-closed row lock timeout (`E-ERR-038: PERSISTENCE_LOCK_TIMEOUT`) under severe contention (`M3-POSTGRES-LOCK-TIMEOUT-FAILCLOSED-005`).
+  - Clean rollback isolation leaving zero dirty events or nonces (`M3-POSTGRES-ROLLBACK-DIRTY-ISOLATION-006`).
+  - Ambiguous commit network disconnect reconciliation resolving verified committed promotion stream heads (`M3-POSTGRES-AMBIGUOUS-COMMIT-007`).
+  - Connection pool capacity wait queue serialization (`M3-POSTGRES-CONNECTION-POOL-QUEUE-008`).
+  - Durable write-ahead recovery journal (`DurableRecoveryJournal` & `CrashRecoveryEngine`) reconciling orphaned gateway fills after simulated process termination with exact-once accounting parity (`M3-CRASH-FAULT-INJECTION-JOURNAL-RECOVERY-009`).
+  - Concurrent multi-symbol WebSocket streaming feeds across separate handlers without cross-talk or sequence gaps (`M3-MULTI-STREAM-CONCURRENCY-010`).

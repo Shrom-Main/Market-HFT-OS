@@ -3,6 +3,8 @@ import {
   CurrencyCode,
   validateIso8601UtcTimestamp
 } from '../canonical/domain.js';
+import { canonicalizeJCS } from '../canonical/jcs.js';
+import { sha256 } from '../canonical/crypto.js';
 import { deepFreeze } from '../verification/gate.js';
 import {
   SimulatedFillEvent,
@@ -114,6 +116,31 @@ export function assertSafeQuantity(qtyBig: bigint, label: string): number {
 }
 
 /**
+ * Computes deterministic RFC 8785 JCS SHA-256 fingerprint for a simulated fill and order.
+ * Canonicalized attributes guarantee bit-exact comparison across restarts and replay events.
+ */
+export function computeFillFingerprint(
+  fill: Pick<SimulatedFillEvent, 'fill_id' | 'order_id' | 'fill_price' | 'fill_quantity' | 'cumulative_quantity' | 'remaining_quantity'>,
+  order: Pick<SimulatedOrderRecord, 'product_id' | 'side'>
+): string {
+  const canonicalFill = {
+    cumulative_quantity: fill.cumulative_quantity,
+    fill_id: fill.fill_id,
+    fill_price: {
+      amount_subunits: fill.fill_price.amount_subunits,
+      currency: fill.fill_price.currency,
+      scale: fill.fill_price.scale
+    },
+    fill_quantity: fill.fill_quantity,
+    order_id: fill.order_id,
+    product_id: order.product_id,
+    remaining_quantity: fill.remaining_quantity,
+    side: order.side
+  };
+  return sha256(canonicalizeJCS(canonicalFill));
+}
+
+/**
  * Deterministic Simulation-Only Portfolio & Position Tracker
  * 
  * Strict Dual-Ledger Isolation & Exact Rational Accounting:
@@ -125,7 +152,7 @@ export function assertSafeQuantity(qtyBig: bigint, label: string): number {
  * - Flushes residual fractions completely on final liquidation.
  * - Enforces atomic updates: invalid currency, impossible quantities, or insufficient cash/inventory
  *   fail closed without partial mutation.
- * - Prevents double counting via fill ID idempotency checks.
+ * - Prevents double counting via fill ID idempotency checks and detects conflicting fill ID reuse (E-ERR-046).
  * - Order cancellations do not alter or reverse prior fills.
  * - Disallows unsupported short-selling fail-closed (E-ERR-044).
  * - Enforces cumulative quantity overflow guards against Number.MAX_SAFE_INTEGER (E-ERR-045).
@@ -140,6 +167,7 @@ export class SimulationPortfolio {
 
   private positions: Map<string, InternalPosition> = new Map();
   private processedFillIds: Set<string> = new Set();
+  private processedFillFingerprints: Map<string, string> = new Map();
   private journal: PortfolioJournalEntry[] = [];
 
   constructor(options: SimulationPortfolioOptions) {
@@ -178,6 +206,14 @@ export class SimulationPortfolio {
 
   public isFillProcessed(fill_id: string): boolean {
     return this.processedFillIds.has(fill_id);
+  }
+
+  public getFillFingerprint(fill_id: string): string | undefined {
+    return this.processedFillFingerprints.get(fill_id);
+  }
+
+  public getProcessedFillsCount(): number {
+    return this.processedFillIds.size;
   }
 
   private getOrCreateInternalPosition(product_id: string): InternalPosition {
@@ -269,8 +305,15 @@ export class SimulationPortfolio {
   ): PortfolioSnapshot {
     validateIso8601UtcTimestamp(timestamp_utc);
 
-    // 1. Idempotency Check: prevent duplicate fill counting
+    // 1. Idempotency Check: prevent duplicate fill counting & guard against conflicting fill ID reuse
+    const fillFingerprint = computeFillFingerprint(fill, order);
     if (this.processedFillIds.has(fill.fill_id)) {
+      const existingFingerprint = this.processedFillFingerprints.get(fill.fill_id);
+      if (existingFingerprint !== fillFingerprint) {
+        throw new Error(
+          `E-ERR-046: FILL_IDEMPOTENCY_CONFLICT: Fill ID '${fill.fill_id}' was previously processed with conflicting attributes (recorded ${existingFingerprint}, received ${fillFingerprint})`
+        );
+      }
       return this.getSnapshot();
     }
 
@@ -436,6 +479,7 @@ export class SimulationPortfolio {
 
     // 6. Record journal entry and mark fill as processed
     this.processedFillIds.add(fill.fill_id);
+    this.processedFillFingerprints.set(fill.fill_id, fillFingerprint);
 
     const seq = this.journal.length + 1;
     const journalEntry: PortfolioJournalEntry = {

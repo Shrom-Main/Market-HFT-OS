@@ -24,6 +24,7 @@ import {
   SimulationPortfolio,
   PortfolioSnapshot
 } from '../portfolio/simulationPortfolio.js';
+import { DeterministicClock } from '../canonical/deterministic.js';
 
 export interface PipelineStepReport {
   offer_id: string;
@@ -43,6 +44,7 @@ export interface SimulationPipelineOptions {
   initialCash: CanonicalMoney;
   allowShort?: boolean;
   autoFundInventoryFromOffer?: boolean;
+  clock?: DeterministicClock;
 }
 
 /**
@@ -64,6 +66,7 @@ export class SimulationPipeline {
   private executionGateway: SimulatedExecutionGateway;
   private portfolio: SimulationPortfolio;
   private autoFundInventoryFromOffer: boolean;
+  private clock?: DeterministicClock;
   private verifiedOffers: Map<string, CanonicalOffer> = new Map();
   private processedEventsHistory: NormalizedMarketFeedEvent[] = [];
   private stepReports: PipelineStepReport[] = [];
@@ -71,12 +74,19 @@ export class SimulationPipeline {
   constructor(options: SimulationPipelineOptions) {
     this.feedHandler = options.feedHandler ?? new MarketFeedHandler();
     this.executionEngine = options.executionEngine ?? new DryRunExecutionEngine();
-    this.executionGateway = options.executionGateway ?? new SimulatedExecutionGateway();
+    this.clock = options.clock;
+    this.executionGateway = options.executionGateway ?? new SimulatedExecutionGateway({
+      clock: options.clock
+    });
     this.autoFundInventoryFromOffer = options.autoFundInventoryFromOffer ?? true;
     this.portfolio = new SimulationPortfolio({
       initialCash: options.initialCash,
       allowShort: options.allowShort ?? false
     });
+  }
+
+  public getClock(): DeterministicClock | undefined {
+    return this.clock;
   }
 
   public getFeedHandler(): MarketFeedHandler {
@@ -112,8 +122,9 @@ export class SimulationPipeline {
    * Atomically coordinates intent evaluation, order lifecycle submission, venue fill execution,
    * and portfolio position update. Verifies continuous accounting invariants at every step.
    */
-  public processMarketEvent(event: NormalizedMarketFeedEvent, nowUtc: string): PipelineStepReport[] {
-    validateIso8601UtcTimestamp(nowUtc);
+  public processMarketEvent(event: NormalizedMarketFeedEvent, nowUtc?: string): PipelineStepReport[] {
+    const currentTime = nowUtc ?? this.clock?.nowUtc() ?? new Date().toISOString();
+    validateIso8601UtcTimestamp(currentTime);
 
     // Provenance Check: reject any attempt to pass live capital claims
     if (event.provenance.is_authenticated_source_feed) {
@@ -128,7 +139,7 @@ export class SimulationPipeline {
       if (offer.product_id !== event.product_id) continue;
 
       // 1. Evaluate Execution Intent
-      const intent = this.executionEngine.evaluateExecutionIntent(offer, event, nowUtc);
+      const intent = this.executionEngine.evaluateExecutionIntent(offer, event, currentTime);
 
       // Verify mode is strictly DRY_RUN
       if (intent.payload.mode !== 'DRY_RUN') {
@@ -168,20 +179,20 @@ export class SimulationPipeline {
           },
           canonical_intent_sha256: sha256(Buffer.from(`sup:${intent.canonical_intent_sha256}`))
         };
-        const buyOrder = this.executionGateway.submitExecutionIntent(supplierIntent, nowUtc);
-        const buyFilled = this.executionGateway.simulateFill(buyOrder.order_id, fillQty, offer.unit_price, nowUtc);
-        this.portfolio.processFill(buyFilled.fills[0], buyFilled, nowUtc);
+        const buyOrder = this.executionGateway.submitExecutionIntent(supplierIntent, currentTime);
+        const buyFilled = this.executionGateway.simulateFill(buyOrder.order_id, fillQty, offer.unit_price, currentTime);
+        this.portfolio.processFill(buyFilled.fills[0], buyFilled, currentTime);
       }
 
       // 2. Submit Intent to Execution Gateway (Market Venue Leg)
-      const order = this.executionGateway.submitExecutionIntent(intent, nowUtc);
+      const order = this.executionGateway.submitExecutionIntent(intent, currentTime);
 
       // 3. Simulate Venue Fill
-      const filledOrder = this.executionGateway.simulateFill(order.order_id, fillQty, fillPrice, nowUtc);
+      const filledOrder = this.executionGateway.simulateFill(order.order_id, fillQty, fillPrice, currentTime);
       const latestFill = filledOrder.fills[filledOrder.fills.length - 1];
 
       // 4. Update Simulation Portfolio
-      const portfolioSnap = this.portfolio.processFill(latestFill, filledOrder, nowUtc);
+      const portfolioSnap = this.portfolio.processFill(latestFill, filledOrder, currentTime);
 
       // 5. Verify Continuous Accounting Invariants
       const invariantsSatisfied = this.verifyAccountingInvariants(filledOrder, portfolioSnap);
