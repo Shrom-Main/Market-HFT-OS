@@ -94,9 +94,14 @@ export class MockLocalWebSocketFeedServer {
   private port: number = 0;
   private maxPayload: number;
   private messageHistory: Map<string, RawMarketDataMessage> = new Map(); // key = `${venue_id}:${raw_symbol}:${seq}`
+  private onConnectionHook: ((socket: WebSocket) => void) | null = null;
 
   constructor(options?: { maxPayload?: number }) {
     this.maxPayload = options?.maxPayload ?? MAX_WS_FRAME_BYTES;
+  }
+
+  public setOnConnectionHook(hook: ((socket: WebSocket) => void) | null): void {
+    this.onConnectionHook = hook;
   }
 
   public async start(): Promise<string> {
@@ -114,6 +119,14 @@ export class MockLocalWebSocketFeedServer {
 
         this.wss.on('connection', (socket: WebSocket) => {
           this.clients.add(socket);
+
+          if (this.onConnectionHook) {
+            try {
+              this.onConnectionHook(socket);
+            } catch {
+              // hook error ignored fail-safe
+            }
+          }
 
           socket.on('message', (rawBytes: Buffer | ArrayBuffer | Buffer[]) => {
             this.handleClientMessage(socket, rawBytes);
@@ -276,6 +289,7 @@ export interface WebSocketStreamingAdapterOptions {
   maxReconnectAttempts?: number;
   reconnectBaseBackoffMs?: number;
   maxPayloadBytes?: number;
+  stabilizationWindowMs?: number;
 }
 
 /**
@@ -306,6 +320,8 @@ export class WebSocketStreamingFeedAdapter {
   private maxPayloadBytes: number;
   private autoReconnect: boolean = true;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private stabilizationWindowMs: number;
+  private stabilizationTimer: NodeJS.Timeout | null = null;
   private pendingReplayRequest: ReplayRequestFrame | null = null;
 
   private messageListeners: Array<(res: FeedIngestionResult) => void> = [];
@@ -319,6 +335,7 @@ export class WebSocketStreamingFeedAdapter {
     this.maxReconnectAttempts = options.maxReconnectAttempts ?? 5;
     this.reconnectBaseBackoffMs = options.reconnectBaseBackoffMs ?? 25;
     this.maxPayloadBytes = options.maxPayloadBytes ?? MAX_WS_FRAME_BYTES;
+    this.stabilizationWindowMs = options.stabilizationWindowMs ?? 25;
   }
 
   public isSimulated(): boolean {
@@ -398,12 +415,21 @@ export class WebSocketStreamingFeedAdapter {
             return;
           }
 
-          this.reconnectAttempts = 0;
           this.setState('CONNECTED');
           if (!resolved) {
             resolved = true;
             resolve();
           }
+
+          // Reset reconnectAttempts only after connection stabilizes
+          if (this.stabilizationTimer) {
+            clearTimeout(this.stabilizationTimer);
+          }
+          this.stabilizationTimer = setTimeout(() => {
+            if (this.ws === socket && this.state === 'CONNECTED') {
+              this.reconnectAttempts = 0;
+            }
+          }, this.stabilizationWindowMs);
         });
 
         socket.on('message', (rawBytes: Buffer | ArrayBuffer | Buffer[]) => {
@@ -442,6 +468,11 @@ export class WebSocketStreamingFeedAdapter {
   private handleSocketClose(socket: WebSocket): void {
     if (this.ws === socket) {
       this.ws = null;
+    }
+
+    if (this.stabilizationTimer) {
+      clearTimeout(this.stabilizationTimer);
+      this.stabilizationTimer = null;
     }
 
     // Reset pending replay on disconnect so replacement connection can re-request cleanly
@@ -586,6 +617,11 @@ export class WebSocketStreamingFeedAdapter {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+
+    if (this.stabilizationTimer) {
+      clearTimeout(this.stabilizationTimer);
+      this.stabilizationTimer = null;
     }
 
     if (this.ws) {

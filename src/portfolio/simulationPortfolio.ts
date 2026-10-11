@@ -23,6 +23,9 @@ export interface PositionSnapshot {
   cost_basis_rational: CostBasisRational;
   weighted_cost_basis_subunits: string;
   cumulative_realized_pnl_subunits: string;
+  epoch_start_cost_subunits?: string;
+  epoch_start_quantity?: number;
+  epoch_cumulative_sold_quantity?: number;
 }
 
 export interface PortfolioJournalEntry {
@@ -67,6 +70,9 @@ interface InternalPosition {
   total_sold_quantity: number;
   aggregate_cost_subunits: string;
   cumulative_realized_pnl_subunits: string;
+  epoch_start_cost_subunits: string;
+  epoch_start_quantity: number;
+  epoch_cumulative_sold_quantity: number;
 }
 
 /**
@@ -162,7 +168,10 @@ export class SimulationPortfolio {
         total_bought_quantity: 0,
         total_sold_quantity: 0,
         aggregate_cost_subunits: '0',
-        cumulative_realized_pnl_subunits: '0'
+        cumulative_realized_pnl_subunits: '0',
+        epoch_start_cost_subunits: '0',
+        epoch_start_quantity: 0,
+        epoch_cumulative_sold_quantity: 0
       };
       this.positions.set(product_id, pos);
     }
@@ -185,7 +194,10 @@ export class SimulationPortfolio {
         denominator_quantity: netQty
       },
       weighted_cost_basis_subunits: wacbSubunits,
-      cumulative_realized_pnl_subunits: pos.cumulative_realized_pnl_subunits
+      cumulative_realized_pnl_subunits: pos.cumulative_realized_pnl_subunits,
+      epoch_start_cost_subunits: pos.epoch_start_cost_subunits,
+      epoch_start_quantity: pos.epoch_start_quantity,
+      epoch_cumulative_sold_quantity: pos.epoch_cumulative_sold_quantity
     };
   }
 
@@ -315,6 +327,11 @@ export class SimulationPortfolio {
       const newAggregateCost = prevAggregateCost + notionalSubunitsBig;
       currentPos.aggregate_cost_subunits = newAggregateCost.toString();
       currentPos.net_quantity = newNetQty;
+
+      // Re-anchor cost-pool epoch to the new acquisition baseline
+      currentPos.epoch_start_cost_subunits = newAggregateCost.toString();
+      currentPos.epoch_start_quantity = newNetQty;
+      currentPos.epoch_cumulative_sold_quantity = 0;
     } else {
       // SELL
       const availableInventory = existingPos ? existingPos.net_quantity : 0;
@@ -329,31 +346,45 @@ export class SimulationPortfolio {
 
       currentPos = this.getOrCreateInternalPosition(order.product_id);
       const prevNetQty = currentPos.net_quantity;
-      const prevAggregateCost = BigInt(currentPos.aggregate_cost_subunits);
 
-      let cogsSubunitsBig: bigint;
-      if (fill.fill_quantity === prevNetQty) {
-        // Complete liquidation of long inventory:
-        // COGS absorbs ALL remaining aggregate acquisition cost.
-        // Guarantees zero residual orphan fraction and perfect round-trip P&L conservation.
-        cogsSubunitsBig = prevAggregateCost;
+      // Anchored Cumulative Allocation:
+      // A(s) = divideHalfEven(C_0 * s, Q_0)
+      // COGS_i = A(s_i) - A(s_{i-1})
+      // Ensures fill-partition invariance: total COGS for cumulative quantity sold
+      // is strictly independent of how that quantity was split across fills.
+      const C0 = BigInt(currentPos.epoch_start_cost_subunits);
+      const Q0 = BigInt(currentPos.epoch_start_quantity);
+      const sPrev = BigInt(currentPos.epoch_cumulative_sold_quantity);
+      const sNew = sPrev + BigInt(fill.fill_quantity);
+
+      const computeCumulativeCogs = (s: bigint): bigint => {
+        if (s <= 0n) return 0n;
+        if (Q0 <= 0n) return 0n;
+        if (s >= Q0) return C0; // Complete liquidation flushes entire epoch cost
+        return divideHalfEven(C0 * s, Q0);
+      };
+
+      const cumulativeCogsPrev = computeCumulativeCogs(sPrev);
+      const cumulativeCogsNew = computeCumulativeCogs(sNew);
+      const cogsSubunitsBig = cumulativeCogsNew - cumulativeCogsPrev;
+
+      const newAggregateCost = C0 - cumulativeCogsNew;
+      currentPos.aggregate_cost_subunits = newAggregateCost.toString();
+      currentPos.net_quantity = prevNetQty - fill.fill_quantity;
+      currentPos.total_sold_quantity += fill.fill_quantity;
+      currentPos.epoch_cumulative_sold_quantity = Number(sNew);
+
+      if (currentPos.net_quantity === 0) {
+        // Complete liquidation: reset epoch baseline completely to zero
         currentPos.aggregate_cost_subunits = '0';
-      } else {
-        // Partial sale of long inventory:
-        // Proportional cost share rounded using HALF_EVEN to nearest subunit.
-        const unroundedNumerator = prevAggregateCost * BigInt(fill.fill_quantity);
-        cogsSubunitsBig = divideHalfEven(unroundedNumerator, BigInt(prevNetQty));
-
-        // Conservation of Basis Invariant:
-        // Remaining aggregate cost is strictly prevAggregateCost - cogsSubunitsBig.
-        currentPos.aggregate_cost_subunits = (prevAggregateCost - cogsSubunitsBig).toString();
+        currentPos.epoch_start_cost_subunits = '0';
+        currentPos.epoch_start_quantity = 0;
+        currentPos.epoch_cumulative_sold_quantity = 0;
       }
 
       const proceedsSubunitsBig = notionalSubunitsBig;
       pnlDeltaBig = proceedsSubunitsBig - cogsSubunitsBig;
 
-      currentPos.net_quantity -= fill.fill_quantity;
-      currentPos.total_sold_quantity += fill.fill_quantity;
       currentPos.cumulative_realized_pnl_subunits = (
         BigInt(currentPos.cumulative_realized_pnl_subunits) + pnlDeltaBig
       ).toString();

@@ -609,4 +609,462 @@ describe('SUITE-15: Gate M2 Increment 4 — End-to-End Simulation Pipeline & Int
     await testAdapter.disconnect();
     await testServer.stop();
   });
+
+  // =========================================================================
+  // SECTION 4: CONFORMANCE PATCH VERIFICATION (CUMULATIVE COGS & WS STRESS)
+  // =========================================================================
+
+  it('M2-PORTFOLIO-PARTITION-INVARIANCE-011: Anchored cumulative COGS allocation guarantees fill-partition invariance across arbitrary order splits', () => {
+    // -------------------------------------------------------------------------
+    // 1. Exact reviewer specification: C_0 = 5, Q_0 = 3
+    // Acquired via 2 purchases:
+    // Buy 1 @ 1 subunit = 1 subunit cost
+    // Buy 2 @ 2 subunits = 4 subunits cost
+    // Total aggregate acquisition cost = 5 subunits, Net quantity = 3 units
+    // -------------------------------------------------------------------------
+    const createExactBaselinePortfolio = () => {
+      const p = new SimulationPortfolio({
+        initialCash: createCanonicalMoney('10000000', 'INR', 4)
+      });
+      const buyOrder: SimulatedOrderRecord = {
+        order_id: 'ord-acq-base',
+        intent_id: 'intent-base',
+        offer_id: offerId,
+        product_id: canonicalProductId,
+        venue_id: venueId,
+        side: 'BUY',
+        order_price: createCanonicalMoney('2', 'INR', 4),
+        total_quantity: 3,
+        filled_quantity: 3,
+        remaining_quantity: 0,
+        status: 'FILLED',
+        created_at_utc: '2026-10-11T12:00:00Z',
+        updated_at_utc: '2026-10-11T12:00:01Z',
+        fills: [],
+        events: [],
+        intent_sha256: '0'.repeat(64)
+      };
+
+      // Fill 1: Buy 1 unit @ 1 subunit
+      p.processFill({
+        fill_id: 'fill-buy-1',
+        order_id: buyOrder.order_id,
+        fill_timestamp_utc: '2026-10-11T12:00:01Z',
+        fill_price: createCanonicalMoney('1', 'INR', 4),
+        fill_quantity: 1,
+        cumulative_quantity: 1,
+        remaining_quantity: 2
+      }, buyOrder, '2026-10-11T12:00:01Z');
+
+      // Fill 2: Buy 2 units @ 2 subunits
+      p.processFill({
+        fill_id: 'fill-buy-2',
+        order_id: buyOrder.order_id,
+        fill_timestamp_utc: '2026-10-11T12:00:02Z',
+        fill_price: createCanonicalMoney('2', 'INR', 4),
+        fill_quantity: 2,
+        cumulative_quantity: 3,
+        remaining_quantity: 0
+      }, buyOrder, '2026-10-11T12:00:02Z');
+
+      const pos = p.getPosition(canonicalProductId)!;
+      expect(pos.net_quantity).toBe(3);
+      expect(pos.aggregate_cost_subunits).toBe('5');
+      return p;
+    };
+
+    const sellOrder: SimulatedOrderRecord = {
+      order_id: 'ord-sell-exact',
+      intent_id: 'intent-sell-base',
+      offer_id: offerId,
+      product_id: canonicalProductId,
+      venue_id: venueId,
+      side: 'SELL',
+      order_price: createCanonicalMoney('10', 'INR', 4),
+      total_quantity: 3,
+      filled_quantity: 0,
+      remaining_quantity: 3,
+      status: 'ACKNOWLEDGED',
+      created_at_utc: '2026-10-11T12:00:10Z',
+      updated_at_utc: '2026-10-11T12:00:10Z',
+      fills: [],
+      events: [],
+      intent_sha256: '1'.repeat(64)
+    };
+
+    // --- Path A: Sell 1 unit, then sell 1 unit ---
+    const portfolioA = createExactBaselinePortfolio();
+
+    // Fill A1: Sell 1 unit @ 10 subunits
+    // s_1 = 1 -> A(1) = divideHalfEven(5*1, 3) = divideHalfEven(5, 3) = 2.
+    // COGS_1 = 2 - 0 = 2. Remaining cost: 5 - 2 = 3.
+    portfolioA.processFill({
+      fill_id: 'fill-sell-a1',
+      order_id: sellOrder.order_id,
+      fill_timestamp_utc: '2026-10-11T12:00:11Z',
+      fill_price: createCanonicalMoney('10', 'INR', 4),
+      fill_quantity: 1,
+      cumulative_quantity: 1,
+      remaining_quantity: 2
+    }, sellOrder, '2026-10-11T12:00:11Z');
+
+    const posA1 = portfolioA.getPosition(canonicalProductId)!;
+    expect(posA1.net_quantity).toBe(2);
+    expect(posA1.aggregate_cost_subunits).toBe('3');
+
+    // Fill A2: Sell 1 unit @ 10 subunits
+    // s_2 = 2 -> A(2) = divideHalfEven(5*2, 3) = divideHalfEven(10, 3) = 3.
+    // COGS_2 = A(2) - A(1) = 3 - 2 = 1.
+    // Cumulative COGS for s=2 is 2 + 1 = 3.
+    // Remaining cost: 5 - 3 = 2.
+    portfolioA.processFill({
+      fill_id: 'fill-sell-a2',
+      order_id: sellOrder.order_id,
+      fill_timestamp_utc: '2026-10-11T12:00:12Z',
+      fill_price: createCanonicalMoney('10', 'INR', 4),
+      fill_quantity: 1,
+      cumulative_quantity: 2,
+      remaining_quantity: 1
+    }, sellOrder, '2026-10-11T12:00:12Z');
+
+    const posA2 = portfolioA.getPosition(canonicalProductId)!;
+    expect(posA2.net_quantity).toBe(1);
+    expect(posA2.aggregate_cost_subunits).toBe('2');
+
+    // --- Path B: Sell 2 units in a single fill ---
+    const portfolioB = createExactBaselinePortfolio();
+
+    // Fill B1: Sell 2 units @ 10 subunits
+    // s_1 = 2 -> A(2) = divideHalfEven(5*2, 3) = 3.
+    // COGS = 3. Remaining cost: 5 - 3 = 2.
+    portfolioB.processFill({
+      fill_id: 'fill-sell-b1',
+      order_id: sellOrder.order_id,
+      fill_timestamp_utc: '2026-10-11T12:00:11Z',
+      fill_price: createCanonicalMoney('10', 'INR', 4),
+      fill_quantity: 2,
+      cumulative_quantity: 2,
+      remaining_quantity: 1
+    }, sellOrder, '2026-10-11T12:00:11Z');
+
+    const posB1 = portfolioB.getPosition(canonicalProductId)!;
+    expect(posB1.net_quantity).toBe(1);
+    expect(posB1.aggregate_cost_subunits).toBe('2');
+
+    // Verify bit-for-bit equivalence after selling 2 units across both paths
+    expect(posA2.aggregate_cost_subunits).toBe(posB1.aggregate_cost_subunits);
+    expect(posA2.cumulative_realized_pnl_subunits).toBe(posB1.cumulative_realized_pnl_subunits);
+    expect(portfolioA.getSnapshot().available_cash.amount_subunits).toBe(portfolioB.getSnapshot().available_cash.amount_subunits);
+
+    // --- Complete liquidation of last unit on both paths ---
+    // s_3 = 3 -> complete liquidation flushes exact remaining cost (2 subunits)
+    portfolioA.processFill({
+      fill_id: 'fill-sell-a3',
+      order_id: sellOrder.order_id,
+      fill_timestamp_utc: '2026-10-11T12:00:13Z',
+      fill_price: createCanonicalMoney('10', 'INR', 4),
+      fill_quantity: 1,
+      cumulative_quantity: 3,
+      remaining_quantity: 0
+    }, sellOrder, '2026-10-11T12:00:13Z');
+
+    portfolioB.processFill({
+      fill_id: 'fill-sell-b2',
+      order_id: sellOrder.order_id,
+      fill_timestamp_utc: '2026-10-11T12:00:13Z',
+      fill_price: createCanonicalMoney('10', 'INR', 4),
+      fill_quantity: 1,
+      cumulative_quantity: 3,
+      remaining_quantity: 0
+    }, sellOrder, '2026-10-11T12:00:13Z');
+
+    const finalPosA = portfolioA.getPosition(canonicalProductId)!;
+    const finalPosB = portfolioB.getPosition(canonicalProductId)!;
+    expect(finalPosA.net_quantity).toBe(0);
+    expect(finalPosB.net_quantity).toBe(0);
+    expect(finalPosA.aggregate_cost_subunits).toBe('0');
+    expect(finalPosB.aggregate_cost_subunits).toBe('0');
+    expect(finalPosA.cumulative_realized_pnl_subunits).toBe('25'); // 30 proceeds - 5 cost = 25
+    expect(finalPosB.cumulative_realized_pnl_subunits).toBe('25');
+    expect(portfolioA.getSnapshot().available_cash.amount_subunits).toBe(portfolioB.getSnapshot().available_cash.amount_subunits);
+
+    // -------------------------------------------------------------------------
+    // 2. Multi-partition test: C_0 = 37, Q_0 = 10, total sold s = 7
+    // A(7) = divideHalfEven(37 * 7, 10) = divideHalfEven(259, 10) = 26
+    // Expected remaining cost: 37 - 26 = 11
+    // Partitions tested: [1,1,1,1,1,1,1], [3,4], [2,5], [7], [2,2,3]
+    // -------------------------------------------------------------------------
+    const partitions = [
+      [1, 1, 1, 1, 1, 1, 1],
+      [3, 4],
+      [2, 5],
+      [7],
+      [2, 2, 3]
+    ];
+
+    const results = partitions.map((part, pIdx) => {
+      const p = new SimulationPortfolio({
+        initialCash: createCanonicalMoney('10000000', 'INR', 4)
+      });
+      const buyOrd: SimulatedOrderRecord = {
+        order_id: `ord-part-buy-${pIdx}`,
+        intent_id: `intent-part-buy-${pIdx}`,
+        offer_id: offerId,
+        product_id: canonicalProductId,
+        venue_id: venueId,
+        side: 'BUY',
+        order_price: createCanonicalMoney('4', 'INR', 4),
+        total_quantity: 10,
+        filled_quantity: 10,
+        remaining_quantity: 0,
+        status: 'FILLED',
+        created_at_utc: '2026-10-11T12:00:00Z',
+        updated_at_utc: '2026-10-11T12:00:01Z',
+        fills: [],
+        events: [],
+        intent_sha256: '2'.repeat(64)
+      };
+
+      // Acquire 7 units @ 4 subunits = 28
+      p.processFill({
+        fill_id: `fill-buy-p1-${pIdx}`,
+        order_id: buyOrd.order_id,
+        fill_timestamp_utc: '2026-10-11T12:00:01Z',
+        fill_price: createCanonicalMoney('4', 'INR', 4),
+        fill_quantity: 7,
+        cumulative_quantity: 7,
+        remaining_quantity: 3
+      }, buyOrd, '2026-10-11T12:00:01Z');
+
+      // Acquire 3 units @ 3 subunits = 9 -> Total cost = 37, Total qty = 10
+      p.processFill({
+        fill_id: `fill-buy-p2-${pIdx}`,
+        order_id: buyOrd.order_id,
+        fill_timestamp_utc: '2026-10-11T12:00:02Z',
+        fill_price: createCanonicalMoney('3', 'INR', 4),
+        fill_quantity: 3,
+        cumulative_quantity: 10,
+        remaining_quantity: 0
+      }, buyOrd, '2026-10-11T12:00:02Z');
+
+      const sellOrd: SimulatedOrderRecord = {
+        order_id: `ord-part-sell-${pIdx}`,
+        intent_id: `intent-part-sell-${pIdx}`,
+        offer_id: offerId,
+        product_id: canonicalProductId,
+        venue_id: venueId,
+        side: 'SELL',
+        order_price: createCanonicalMoney('10', 'INR', 4),
+        total_quantity: 7,
+        filled_quantity: 0,
+        remaining_quantity: 7,
+        status: 'ACKNOWLEDGED',
+        created_at_utc: '2026-10-11T12:00:10Z',
+        updated_at_utc: '2026-10-11T12:00:10Z',
+        fills: [],
+        events: [],
+        intent_sha256: '3'.repeat(64)
+      };
+
+      let cumSold = 0;
+      let totalCogsBig = 0n;
+      for (let i = 0; i < part.length; i++) {
+        const qty = part[i];
+        cumSold += qty;
+        const snap = p.processFill({
+          fill_id: `fill-part-s-${pIdx}-${i}`,
+          order_id: sellOrd.order_id,
+          fill_timestamp_utc: `2026-10-11T12:00:${20 + i}Z`,
+          fill_price: createCanonicalMoney('10', 'INR', 4),
+          fill_quantity: qty,
+          cumulative_quantity: cumSold,
+          remaining_quantity: 7 - cumSold
+        }, sellOrd, `2026-10-11T12:00:${20 + i}Z`);
+
+        const lastJournal = snap.journal[snap.journal.length - 1];
+        const stepCogs = BigInt(lastJournal.position_before.aggregate_cost_subunits) -
+                         BigInt(lastJournal.position_after.aggregate_cost_subunits);
+        totalCogsBig += stepCogs;
+      }
+
+      const finalPos = p.getPosition(canonicalProductId)!;
+      return {
+        totalCogs: totalCogsBig.toString(),
+        remainingCost: finalPos.aggregate_cost_subunits,
+        netQuantity: finalPos.net_quantity,
+        realizedPnl: finalPos.cumulative_realized_pnl_subunits,
+        availableCash: p.getSnapshot().available_cash.amount_subunits,
+        portfolio: p
+      };
+    });
+
+    // Check all partitions produce bit-for-bit identical outcomes
+    for (const r of results) {
+      expect(r.totalCogs).toBe('26');
+      expect(r.remainingCost).toBe('11');
+      expect(r.netQuantity).toBe(3);
+      expect(r.realizedPnl).toBe('44'); // 7 * 10 = 70 proceeds - 26 cogs = 44
+      expect(r.availableCash).toBe(results[0].availableCash);
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. Interleaved purchase epoch transition:
+    // Existing inventory: Q = 3, remainingCost = 11.
+    // Buy 5 units @ 8 subunits each: cost added = 40.
+    // New pool epoch baseline: C_0 = 11 + 40 = 51, Q_0 = 3 + 5 = 8, s = 0.
+    // Sell 4 units in partition [2, 2] vs [4]:
+    // A(4) = divideHalfEven(51 * 4, 8) = divideHalfEven(204, 8) = 26 (25.5 rounded half-to-even)
+    // Remaining cost: 51 - 26 = 25.
+    // -------------------------------------------------------------------------
+    const epochTestPartitions = [[2, 2], [4]];
+    const epochResults = epochTestPartitions.map((part, eIdx) => {
+      const p = results[eIdx].portfolio;
+      const buyOrd2: SimulatedOrderRecord = {
+        order_id: `ord-epoch-buy-${eIdx}`,
+        intent_id: `intent-epoch-buy-${eIdx}`,
+        offer_id: offerId,
+        product_id: canonicalProductId,
+        venue_id: venueId,
+        side: 'BUY',
+        order_price: createCanonicalMoney('8', 'INR', 4),
+        total_quantity: 5,
+        filled_quantity: 5,
+        remaining_quantity: 0,
+        status: 'FILLED',
+        created_at_utc: '2026-10-11T12:01:00Z',
+        updated_at_utc: '2026-10-11T12:01:01Z',
+        fills: [],
+        events: [],
+        intent_sha256: '4'.repeat(64)
+      };
+
+      p.processFill({
+        fill_id: `fill-epoch-buy-${eIdx}`,
+        order_id: buyOrd2.order_id,
+        fill_timestamp_utc: '2026-10-11T12:01:01Z',
+        fill_price: createCanonicalMoney('8', 'INR', 4),
+        fill_quantity: 5,
+        cumulative_quantity: 5,
+        remaining_quantity: 0
+      }, buyOrd2, '2026-10-11T12:01:01Z');
+
+      const posAfterBuy = p.getPosition(canonicalProductId)!;
+      expect(posAfterBuy.net_quantity).toBe(8);
+      expect(posAfterBuy.aggregate_cost_subunits).toBe('51');
+
+      const sellOrd2: SimulatedOrderRecord = {
+        order_id: `ord-epoch-sell-${eIdx}`,
+        intent_id: `intent-epoch-sell-${eIdx}`,
+        offer_id: offerId,
+        product_id: canonicalProductId,
+        venue_id: venueId,
+        side: 'SELL',
+        order_price: createCanonicalMoney('15', 'INR', 4),
+        total_quantity: 4,
+        filled_quantity: 0,
+        remaining_quantity: 4,
+        status: 'ACKNOWLEDGED',
+        created_at_utc: '2026-10-11T12:01:10Z',
+        updated_at_utc: '2026-10-11T12:01:10Z',
+        fills: [],
+        events: [],
+        intent_sha256: '5'.repeat(64)
+      };
+
+      let cogsBig = 0n;
+      let cumSold = 0;
+      for (let i = 0; i < part.length; i++) {
+        cumSold += part[i];
+        const snap = p.processFill({
+          fill_id: `fill-epoch-s-${eIdx}-${i}`,
+          order_id: sellOrd2.order_id,
+          fill_timestamp_utc: `2026-10-11T12:01:${20 + i}Z`,
+          fill_price: createCanonicalMoney('15', 'INR', 4),
+          fill_quantity: part[i],
+          cumulative_quantity: cumSold,
+          remaining_quantity: 4 - cumSold
+        }, sellOrd2, `2026-10-11T12:01:${20 + i}Z`);
+        const lastEntry = snap.journal[snap.journal.length - 1];
+        const stepCogs = BigInt(lastEntry.position_before.aggregate_cost_subunits) -
+                         BigInt(lastEntry.position_after.aggregate_cost_subunits);
+        cogsBig += stepCogs;
+      }
+
+      const finalPos = p.getPosition(canonicalProductId)!;
+      return {
+        cogs: cogsBig.toString(),
+        remainingCost: finalPos.aggregate_cost_subunits,
+        netQty: finalPos.net_quantity
+      };
+    });
+
+    expect(epochResults[0].cogs).toBe('26');
+    expect(epochResults[1].cogs).toBe('26');
+    expect(epochResults[0].remainingCost).toBe('25');
+    expect(epochResults[1].remainingCost).toBe('25');
+    expect(epochResults[0].netQty).toBe(4);
+    expect(epochResults[1].netQty).toBe(4);
+  });
+
+  it('M2-WS-LIFECYCLE-OVERSIZED-BOMB-012: Native maxPayload failure handles oversized peer bombardment and transitions cleanly to terminal CLOSED state', async () => {
+    const bombLimit = 100;
+    const oversizedBomb = Buffer.alloc(250, 0x41); // 250 bytes > 100 byte limit
+
+    // Server allows up to 1024 bytes, but client enforces maxPayloadBytes: 100
+    const bombServer = new MockLocalWebSocketFeedServer({ maxPayload: 1024 });
+    const srvUrl = await bombServer.start();
+
+    // Configure connection hook: whenever a client connects, bomb it immediately with 250 bytes
+    let connectionAttempts = 0;
+    bombServer.setOnConnectionHook((socket) => {
+      connectionAttempts++;
+      if (socket.readyState === 1) { // OPEN
+        socket.send(oversizedBomb);
+      }
+    });
+
+    const handler = new MarketFeedHandler();
+    handler.registerSymbolMapping(venueId, rawSymbol, canonicalProductId);
+
+    const statesRecorded: string[] = [];
+    const bombAdapter = new WebSocketStreamingFeedAdapter(handler, {
+      wsUrl: srvUrl,
+      venue_id: venueId,
+      maxPayloadBytes: bombLimit,
+      maxReconnectAttempts: 2,
+      reconnectBaseBackoffMs: 15,
+      stabilizationWindowMs: 250
+    });
+
+    bombAdapter.onStateChange((st) => {
+      statesRecorded.push(st);
+    });
+
+    // Start connection. Because the bombing occurs asynchronously after open,
+    // connect() resolves on initial open, then native ws emits error & close.
+    await bombAdapter.connect();
+
+    // Await full reconnect retry cycle and exhaustion (attempt 0 -> bomb -> attempt 1 -> bomb -> attempt 2 -> bomb -> CLOSED)
+    await new Promise<void>((resolve) => {
+      const start = Date.now();
+      const interval = setInterval(() => {
+        if (bombAdapter.getConnectionState() === 'CLOSED' || Date.now() - start > 2000) {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 20);
+    });
+
+    // Verify adapter state machine and retry exhaustion
+    expect(bombAdapter.getConnectionState()).toBe('CLOSED');
+    expect(bombAdapter.getReconnectAttempts()).toBe(2);
+    expect(connectionAttempts).toBeGreaterThanOrEqual(2);
+    expect(statesRecorded).toContain('RECONNECTING');
+    expect(statesRecorded[statesRecorded.length - 1]).toBe('CLOSED');
+
+    // Teardown
+    await bombAdapter.disconnect();
+    await bombServer.stop();
+  });
 });
+
