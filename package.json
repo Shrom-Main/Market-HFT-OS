@@ -1,0 +1,20 @@
+{
+  "name": "market-hft-os",
+  "version": "0.1.0",
+  "description": "POC-001 Market HFT Operating System Core Implementation",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "test": "vitest run",
+    "test:json": "vitest run --reporter=json --outputFile=test-results.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "json-canonicalize": "3.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "20.12.7",
+    "typescript": "5.4.5",
+    "vitest": "1.6.0"
+  }
+}
