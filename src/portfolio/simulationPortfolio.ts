@@ -9,11 +9,18 @@ import {
   SimulatedOrderRecord
 } from '../execution/simulatedGateway.js';
 
+export interface CostBasisRational {
+  numerator_subunits: string;
+  denominator_quantity: number;
+}
+
 export interface PositionSnapshot {
   product_id: string;
   net_quantity: number;
   total_bought_quantity: number;
   total_sold_quantity: number;
+  aggregate_cost_subunits: string;
+  cost_basis_rational: CostBasisRational;
   weighted_cost_basis_subunits: string;
   cumulative_realized_pnl_subunits: string;
 }
@@ -58,16 +65,45 @@ interface InternalPosition {
   net_quantity: number;
   total_bought_quantity: number;
   total_sold_quantity: number;
-  weighted_cost_basis_subunits: string;
+  aggregate_cost_subunits: string;
   cumulative_realized_pnl_subunits: string;
+}
+
+/**
+ * Deterministic HALF_EVEN rounding (banker's rounding) on positive integer division.
+ * Computes round(numerator / denominator) where numerator >= 0 and denominator > 0.
+ * - If 2 * remainder > denominator => rounds up
+ * - If 2 * remainder < denominator => rounds down
+ * - If 2 * remainder == denominator => rounds to nearest even integer
+ */
+export function divideHalfEven(numerator: bigint, denominator: bigint): bigint {
+  if (denominator === 0n) {
+    throw new Error('E-ERR-024: DIVISION_BY_ZERO: Denominator cannot be zero in divideHalfEven');
+  }
+  const quotient = numerator / denominator;
+  const remainder = numerator % denominator;
+  const twiceRemainder = remainder * 2n;
+
+  if (twiceRemainder > denominator) {
+    return quotient + 1n;
+  } else if (twiceRemainder < denominator) {
+    return quotient;
+  } else {
+    // Exact halfway boundary: round to nearest even integer
+    return quotient % 2n !== 0n ? quotient + 1n : quotient;
+  }
 }
 
 /**
  * Deterministic Simulation-Only Portfolio & Position Tracker
  * 
- * Strict Dual-Ledger Isolation & Accounting Constraints:
+ * Strict Dual-Ledger Isolation & Exact Rational Accounting:
  * - Operates strictly in simulation mode; zero coupling or mutation to actuals ledger.
  * - Single-currency rational arithmetic strictly in BigInt subunits. Floating-point arithmetic is forbidden.
+ * - Tracks exact aggregate acquisition cost basis (`aggregate_cost_subunits`) without integer division loss.
+ * - Enforces deterministic HALF_EVEN rounding for partial sales.
+ * - Preserves Conservation of Basis: COGS + remaining_cost === previous_cost.
+ * - Flushes residual fractions completely on final liquidation.
  * - Enforces atomic updates: invalid currency, impossible quantities, or insufficient cash/inventory
  *   fail closed without partial mutation.
  * - Prevents double counting via fill ID idempotency checks.
@@ -125,7 +161,7 @@ export class SimulationPortfolio {
         net_quantity: 0,
         total_bought_quantity: 0,
         total_sold_quantity: 0,
-        weighted_cost_basis_subunits: '0',
+        aggregate_cost_subunits: '0',
         cumulative_realized_pnl_subunits: '0'
       };
       this.positions.set(product_id, pos);
@@ -134,12 +170,21 @@ export class SimulationPortfolio {
   }
 
   private clonePositionSnapshot(pos: InternalPosition): PositionSnapshot {
+    const netQty = pos.net_quantity;
+    const aggCostBig = BigInt(pos.aggregate_cost_subunits);
+    const wacbSubunits = netQty > 0 ? (aggCostBig / BigInt(netQty)).toString() : '0';
+
     return {
       product_id: pos.product_id,
-      net_quantity: pos.net_quantity,
+      net_quantity: netQty,
       total_bought_quantity: pos.total_bought_quantity,
       total_sold_quantity: pos.total_sold_quantity,
-      weighted_cost_basis_subunits: pos.weighted_cost_basis_subunits,
+      aggregate_cost_subunits: pos.aggregate_cost_subunits,
+      cost_basis_rational: {
+        numerator_subunits: pos.aggregate_cost_subunits,
+        denominator_quantity: netQty
+      },
+      weighted_cost_basis_subunits: wacbSubunits,
       cumulative_realized_pnl_subunits: pos.cumulative_realized_pnl_subunits
     };
   }
@@ -232,6 +277,11 @@ export class SimulationPortfolio {
           net_quantity: 0,
           total_bought_quantity: 0,
           total_sold_quantity: 0,
+          aggregate_cost_subunits: '0',
+          cost_basis_rational: {
+            numerator_subunits: '0',
+            denominator_quantity: 0
+          },
           weighted_cost_basis_subunits: '0',
           cumulative_realized_pnl_subunits: '0'
         };
@@ -260,14 +310,10 @@ export class SimulationPortfolio {
       const newNetQty = prevNetQty + fill.fill_quantity;
       currentPos.total_bought_quantity += fill.fill_quantity;
 
-      // Update weighted average cost basis (WACB)
-      if (prevNetQty === 0) {
-        currentPos.weighted_cost_basis_subunits = fill.fill_price.amount_subunits;
-      } else {
-        const prevTotalCostBig = BigInt(prevNetQty) * BigInt(currentPos.weighted_cost_basis_subunits);
-        const newTotalCostBig = prevTotalCostBig + notionalSubunitsBig;
-        currentPos.weighted_cost_basis_subunits = (newTotalCostBig / BigInt(newNetQty)).toString();
-      }
+      // Exact aggregate acquisition cost accumulation (zero integer division loss)
+      const prevAggregateCost = BigInt(currentPos.aggregate_cost_subunits);
+      const newAggregateCost = prevAggregateCost + notionalSubunitsBig;
+      currentPos.aggregate_cost_subunits = newAggregateCost.toString();
       currentPos.net_quantity = newNetQty;
     } else {
       // SELL
@@ -282,7 +328,27 @@ export class SimulationPortfolio {
       this.availableCashSubunits = (availableCashBig + notionalSubunitsBig).toString();
 
       currentPos = this.getOrCreateInternalPosition(order.product_id);
-      const cogsSubunitsBig = BigInt(fill.fill_quantity) * BigInt(currentPos.weighted_cost_basis_subunits);
+      const prevNetQty = currentPos.net_quantity;
+      const prevAggregateCost = BigInt(currentPos.aggregate_cost_subunits);
+
+      let cogsSubunitsBig: bigint;
+      if (fill.fill_quantity === prevNetQty) {
+        // Complete liquidation of long inventory:
+        // COGS absorbs ALL remaining aggregate acquisition cost.
+        // Guarantees zero residual orphan fraction and perfect round-trip P&L conservation.
+        cogsSubunitsBig = prevAggregateCost;
+        currentPos.aggregate_cost_subunits = '0';
+      } else {
+        // Partial sale of long inventory:
+        // Proportional cost share rounded using HALF_EVEN to nearest subunit.
+        const unroundedNumerator = prevAggregateCost * BigInt(fill.fill_quantity);
+        cogsSubunitsBig = divideHalfEven(unroundedNumerator, BigInt(prevNetQty));
+
+        // Conservation of Basis Invariant:
+        // Remaining aggregate cost is strictly prevAggregateCost - cogsSubunitsBig.
+        currentPos.aggregate_cost_subunits = (prevAggregateCost - cogsSubunitsBig).toString();
+      }
+
       const proceedsSubunitsBig = notionalSubunitsBig;
       pnlDeltaBig = proceedsSubunitsBig - cogsSubunitsBig;
 
@@ -295,11 +361,6 @@ export class SimulationPortfolio {
       this.cumulativeRealizedPnlSubunits = (
         BigInt(this.cumulativeRealizedPnlSubunits) + pnlDeltaBig
       ).toString();
-
-      // If flat after sell, reset unit cost basis
-      if (currentPos.net_quantity === 0) {
-        currentPos.weighted_cost_basis_subunits = '0';
-      }
     }
 
     const posAfterSnapshot = this.clonePositionSnapshot(currentPos);

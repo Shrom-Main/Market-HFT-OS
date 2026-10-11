@@ -17,3 +17,4 @@ export * from './execution/engine.js';
 export * from './execution/simulatedGateway.js';
 export * from './feeds/localWebSocketTransport.js';
 export * from './portfolio/simulationPortfolio.js';
+export * from './simulation/simulationPipeline.js';

@@ -59,6 +59,9 @@ export type WebSocketWireFrame =
   | ReplayResponseFrame
   | ReplayErrorFrame;
 
+/** Maximum permitted WebSocket payload frame size (1 Megabyte) */
+export const MAX_WS_FRAME_BYTES = 1024 * 1024;
+
 /**
  * Mock Local WebSocket Feed Server
  * Operates purely on 127.0.0.1 on a dynamic loopback port.
@@ -142,6 +145,17 @@ export class MockLocalWebSocketFeedServer {
   }
 
   /**
+   * Sends raw string directly to clients (e.g. for testing malformed JSON or oversized frames)
+   */
+  public sendRawFrame(payload: string): void {
+    for (const client of this.clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(payload);
+      }
+    }
+  }
+
+  /**
    * Forcibly drops all active WebSocket connections to test client reconnect & backoff
    */
   public simulateDropConnection(): void {
@@ -152,6 +166,10 @@ export class MockLocalWebSocketFeedServer {
   }
 
   private handleClientMessage(socket: WebSocket, dataStr: string): void {
+    if (dataStr.length > MAX_WS_FRAME_BYTES) {
+      return; // Oversized frame drop fail-closed
+    }
+
     try {
       const parsed = JSON.parse(dataStr) as WebSocketWireFrame;
       if (parsed.type === 'REPLAY_REQUEST') {
@@ -232,8 +250,11 @@ export interface WebSocketStreamingAdapterOptions {
  * - Operates in SIMULATED_TEST transport mode.
  * - Always forces is_authenticated_source_feed: false fail-closed.
  * - Employs bounded exponential backoff on connection drops.
+ * - Enforces connection instance isolation: frames from superseded socket instances are dropped.
+ * - Drops oversized and malformed JSON frames fail-closed without crashing.
  * - Detects sequence gaps, requests server replay, and raises explicit UNRECOVERABLE_SEQUENCE_GAP
  *   when server replay fails.
+ * - Avoids orphaned sockets or runaway retry loops when max reconnects are exhausted.
  */
 export class WebSocketStreamingFeedAdapter {
   private wsUrl: string;
@@ -241,11 +262,13 @@ export class WebSocketStreamingFeedAdapter {
   private feedHandler: MarketFeedHandler;
   private state: WebSocketTransportState = 'DISCONNECTED';
   private ws: WebSocket | null = null;
+  private currentConnectionInstanceId: number = 0;
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number;
   private reconnectBaseBackoffMs: number;
   private autoReconnect: boolean = true;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private pendingReplayRequest: ReplayRequestFrame | null = null;
 
   private messageListeners: Array<(res: FeedIngestionResult) => void> = [];
   private stateListeners: Array<(state: WebSocketTransportState) => void> = [];
@@ -314,6 +337,8 @@ export class WebSocketStreamingFeedAdapter {
     this.autoReconnect = true;
     this.setState('CONNECTING');
 
+    const instanceId = ++this.currentConnectionInstanceId;
+
     return new Promise((resolve, reject) => {
       let resolved = false;
 
@@ -322,6 +347,12 @@ export class WebSocketStreamingFeedAdapter {
         this.ws = socket;
 
         socket.on('open', () => {
+          if (this.currentConnectionInstanceId !== instanceId) {
+            // Superseded socket instance
+            socket.terminate();
+            return;
+          }
+
           this.reconnectAttempts = 0;
           this.setState('CONNECTED');
           if (!resolved) {
@@ -331,14 +362,24 @@ export class WebSocketStreamingFeedAdapter {
         });
 
         socket.on('message', (rawBytes: Buffer | string) => {
+          // Late message guard: ignore message if socket instance is superseded
+          if (this.currentConnectionInstanceId !== instanceId || this.ws !== socket) {
+            return;
+          }
           this.handleWireMessage(rawBytes.toString());
         });
 
         socket.on('close', () => {
-          this.handleSocketClose();
+          if (this.currentConnectionInstanceId !== instanceId) {
+            return;
+          }
+          this.handleSocketClose(socket);
         });
 
         socket.on('error', (err) => {
+          if (this.currentConnectionInstanceId !== instanceId) {
+            return;
+          }
           if (!resolved) {
             resolved = true;
             reject(err);
@@ -353,13 +394,22 @@ export class WebSocketStreamingFeedAdapter {
     });
   }
 
-  private handleSocketClose(): void {
+  private handleSocketClose(socket: WebSocket): void {
+    if (this.ws === socket) {
+      this.ws = null;
+    }
+
+    // Reset pending replay on disconnect so replacement connection can re-request cleanly
+    this.pendingReplayRequest = null;
+
     if (this.state === 'CLOSED' || !this.autoReconnect) {
       this.setState('DISCONNECTED');
       return;
     }
 
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      // Reconnect exhausted: enter terminal CLOSED state and clear retries
+      this.autoReconnect = false;
       this.setState('CLOSED');
       return;
     }
@@ -374,7 +424,7 @@ export class WebSocketStreamingFeedAdapter {
     );
 
     this.reconnectTimer = setTimeout(() => {
-      if (this.state === 'RECONNECTING') {
+      if (this.state === 'RECONNECTING' && this.autoReconnect) {
         this.connect().catch(() => {
           // Reconnect loop continues on close
         });
@@ -383,6 +433,11 @@ export class WebSocketStreamingFeedAdapter {
   }
 
   private handleWireMessage(dataStr: string): void {
+    // 1. Oversized frame guard
+    if (dataStr.length > MAX_WS_FRAME_BYTES) {
+      return; // Dropped fail-closed
+    }
+
     try {
       const parsed = JSON.parse(dataStr);
 
@@ -407,6 +462,7 @@ export class WebSocketStreamingFeedAdapter {
             from_sequence: result.expected_sequence,
             to_sequence: result.received_sequence
           };
+          this.pendingReplayRequest = replayReq;
           if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify(replayReq));
           }
@@ -421,7 +477,9 @@ export class WebSocketStreamingFeedAdapter {
           }
         }
       } else if (parsed.type === 'REPLAY_RESPONSE' && Array.isArray(parsed.messages)) {
+        this.pendingReplayRequest = null;
         const nowUtc = new Date().toISOString();
+
         // Force unauthenticated provenance on replay messages as well
         const sanitizedReplay = parsed.messages.map((m: RawMarketDataMessage) => ({
           ...m,
@@ -439,6 +497,7 @@ export class WebSocketStreamingFeedAdapter {
           }
         }
       } else if (parsed.type === 'REPLAY_ERROR') {
+        this.pendingReplayRequest = null;
         // Gap recovery failed -> unrecoverable sequence gap
         const errorFrame = parsed as ReplayErrorFrame;
         const fromSeq = BigInt(errorFrame.from_sequence);
@@ -468,20 +527,25 @@ export class WebSocketStreamingFeedAdapter {
 
   public async disconnect(): Promise<void> {
     this.autoReconnect = false;
+    this.currentConnectionInstanceId++; // invalidate pending socket events
+
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
 
     if (this.ws) {
+      const socket = this.ws;
+      this.ws = null;
       return new Promise((resolve) => {
-        if (this.ws?.readyState === WebSocket.OPEN) {
-          this.ws.on('close', () => {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.on('close', () => {
             this.setState('DISCONNECTED');
             resolve();
           });
-          this.ws.close();
+          socket.terminate();
         } else {
+          socket.terminate();
           this.setState('DISCONNECTED');
           resolve();
         }
