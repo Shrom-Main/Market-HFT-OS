@@ -76,7 +76,7 @@ describe('SUITE-17: Gate M3 — Real PostgreSQL Persistence & Concurrency Integr
       // Hold lock until tx2 attempts acquisition
       await tx1WaitPromise;
 
-      await tx1.updateOfferStreamHead(testOfferId, parseCanonicalStreamSequence('1'), 'FIRM_QUOTE', new Date().toISOString());
+      await tx1.updateOfferStreamHead(testOfferId, parseCanonicalStreamSequence('1'), 'VERIFIED_EXECUTABLE_OFFER', new Date().toISOString());
     });
 
     // Launch Client 2 transaction on separate TCP connection
@@ -109,7 +109,7 @@ describe('SUITE-17: Gate M3 — Real PostgreSQL Persistence & Concurrency Integr
     try {
       await session.executeTransaction(async (tx) => {
         await tx.getOfferStreamHeadForUpdate(testOfferId);
-        await tx.updateOfferStreamHead(testOfferId, parseCanonicalStreamSequence('1'), 'FIRM_QUOTE', new Date().toISOString());
+        await tx.updateOfferStreamHead(testOfferId, parseCanonicalStreamSequence('1'), 'VERIFIED_EXECUTABLE_OFFER', new Date().toISOString());
         throw new Error('SIMULATED_ABORT');
       });
     } catch (e: any) {
