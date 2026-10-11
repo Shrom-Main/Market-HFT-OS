@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { describe, it, expect } from 'vitest';
 import {
   CanonicalMoney,
@@ -10,7 +13,8 @@ import { canonicalizeJCS } from '../../src/canonical/jcs.js';
 import {
   SimulationPortfolio,
   computeFillFingerprint,
-  PortfolioSnapshot
+  PortfolioSnapshot,
+  PortfolioCheckpoint
 } from '../../src/portfolio/simulationPortfolio.js';
 import {
   SimulatedExecutionGateway,
@@ -37,6 +41,8 @@ import {
 } from '../../src/persistence/atomicPromotion.js';
 import {
   DurableRecoveryJournal,
+  FileBackedDurableRecoveryJournal,
+  DurablePortfolioCheckpointStore,
   CrashRecoveryEngine
 } from '../../src/persistence/durableRecoveryJournal.js';
 import {
