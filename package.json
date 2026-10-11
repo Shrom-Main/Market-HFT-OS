@@ -12,7 +12,9 @@
     "sync:watch": "python scripts/sync_repos.py --daemon"
   },
   "dependencies": {
+    "@types/pg": "^8.23.1",
     "json-canonicalize": "3.0.1",
+    "pg": "^8.23.1",
     "ws": "8.19.0"
   },
   "devDependencies": {
