@@ -101,6 +101,19 @@ export function divideHalfEven(numerator: bigint, denominator: bigint): bigint {
 }
 
 /**
+ * Validates that an accumulated quantity fits within JavaScript safe integer range [0, Number.MAX_SAFE_INTEGER].
+ * Throws E-ERR-045 fail-closed if bounds are exceeded.
+ */
+export function assertSafeQuantity(qtyBig: bigint, label: string): number {
+  if (qtyBig < 0n || qtyBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(
+      `E-ERR-045: QUANTITY_OVERFLOW: ${label} ${qtyBig.toString()} exceeds Number.MAX_SAFE_INTEGER (${Number.MAX_SAFE_INTEGER})`
+    );
+  }
+  return Number(qtyBig);
+}
+
+/**
  * Deterministic Simulation-Only Portfolio & Position Tracker
  * 
  * Strict Dual-Ledger Isolation & Exact Rational Accounting:
@@ -114,6 +127,8 @@ export function divideHalfEven(numerator: bigint, denominator: bigint): bigint {
  *   fail closed without partial mutation.
  * - Prevents double counting via fill ID idempotency checks.
  * - Order cancellations do not alter or reverse prior fills.
+ * - Disallows unsupported short-selling fail-closed (E-ERR-044).
+ * - Enforces cumulative quantity overflow guards against Number.MAX_SAFE_INTEGER (E-ERR-045).
  */
 export class SimulationPortfolio {
   private readonly currency: CurrencyCode;
@@ -136,11 +151,17 @@ export class SimulationPortfolio {
       throw new Error(`E-ERR-024: NEGATIVE_INITIAL_CASH: Initial cash cannot be negative, got ${options.initialCash.amount_subunits}`);
     }
 
+    if (options.allowShort === true) {
+      throw new Error(
+        'E-ERR-044: SHORT_POSITIONS_NOT_SUPPORTED: Short-position accounting is not supported in Gate M2 simulation portfolio. Set allowShort: false or omit.'
+      );
+    }
+
     this.currency = options.initialCash.currency;
     this.scale = options.initialCash.scale;
     this.initialCash = { ...options.initialCash };
     this.availableCashSubunits = options.initialCash.amount_subunits;
-    this.allowShort = options.allowShort ?? false;
+    this.allowShort = false;
   }
 
   public getCurrency(): CurrencyCode {
@@ -314,32 +335,46 @@ export class SimulationPortfolio {
         );
       }
 
+      const prevNetQty = existingPos ? existingPos.net_quantity : 0;
+      const newNetQtyBig = BigInt(prevNetQty) + BigInt(fill.fill_quantity);
+      const safeNewNetQty = assertSafeQuantity(newNetQtyBig, 'Resulting net quantity');
+
+      const prevTotalBought = existingPos ? existingPos.total_bought_quantity : 0;
+      const newTotalBoughtBig = BigInt(prevTotalBought) + BigInt(fill.fill_quantity);
+      const safeNewTotalBought = assertSafeQuantity(newTotalBoughtBig, 'Resulting total bought quantity');
+
       // Execute BUY mutations
       this.availableCashSubunits = (availableCashBig - notionalSubunitsBig).toString();
 
       currentPos = this.getOrCreateInternalPosition(order.product_id);
-      const prevNetQty = currentPos.net_quantity;
-      const newNetQty = prevNetQty + fill.fill_quantity;
-      currentPos.total_bought_quantity += fill.fill_quantity;
+      currentPos.total_bought_quantity = safeNewTotalBought;
 
       // Exact aggregate acquisition cost accumulation (zero integer division loss)
       const prevAggregateCost = BigInt(currentPos.aggregate_cost_subunits);
       const newAggregateCost = prevAggregateCost + notionalSubunitsBig;
       currentPos.aggregate_cost_subunits = newAggregateCost.toString();
-      currentPos.net_quantity = newNetQty;
+      currentPos.net_quantity = safeNewNetQty;
 
       // Re-anchor cost-pool epoch to the new acquisition baseline
       currentPos.epoch_start_cost_subunits = newAggregateCost.toString();
-      currentPos.epoch_start_quantity = newNetQty;
+      currentPos.epoch_start_quantity = safeNewNetQty;
       currentPos.epoch_cumulative_sold_quantity = 0;
     } else {
       // SELL
       const availableInventory = existingPos ? existingPos.net_quantity : 0;
-      if (!this.allowShort && fill.fill_quantity > availableInventory) {
+      if (fill.fill_quantity > availableInventory) {
         throw new Error(
           `E-ERR-042: INSUFFICIENT_INVENTORY: Cannot sell ${fill.fill_quantity} units of '${order.product_id}'; available inventory is ${availableInventory} (short-selling disabled)`
         );
       }
+
+      const sPrev = BigInt(existingPos?.epoch_cumulative_sold_quantity ?? 0);
+      const sNewBig = sPrev + BigInt(fill.fill_quantity);
+      const safeSNew = assertSafeQuantity(sNewBig, 'Cumulative sold quantity in epoch');
+
+      const prevTotalSold = existingPos ? existingPos.total_sold_quantity : 0;
+      const newTotalSoldBig = BigInt(prevTotalSold) + BigInt(fill.fill_quantity);
+      const safeNewTotalSold = assertSafeQuantity(newTotalSoldBig, 'Resulting total sold quantity');
 
       // Execute SELL mutations
       this.availableCashSubunits = (availableCashBig + notionalSubunitsBig).toString();
@@ -354,8 +389,6 @@ export class SimulationPortfolio {
       // is strictly independent of how that quantity was split across fills.
       const C0 = BigInt(currentPos.epoch_start_cost_subunits);
       const Q0 = BigInt(currentPos.epoch_start_quantity);
-      const sPrev = BigInt(currentPos.epoch_cumulative_sold_quantity);
-      const sNew = sPrev + BigInt(fill.fill_quantity);
 
       const computeCumulativeCogs = (s: bigint): bigint => {
         if (s <= 0n) return 0n;
@@ -365,14 +398,14 @@ export class SimulationPortfolio {
       };
 
       const cumulativeCogsPrev = computeCumulativeCogs(sPrev);
-      const cumulativeCogsNew = computeCumulativeCogs(sNew);
+      const cumulativeCogsNew = computeCumulativeCogs(sNewBig);
       const cogsSubunitsBig = cumulativeCogsNew - cumulativeCogsPrev;
 
       const newAggregateCost = C0 - cumulativeCogsNew;
       currentPos.aggregate_cost_subunits = newAggregateCost.toString();
       currentPos.net_quantity = prevNetQty - fill.fill_quantity;
-      currentPos.total_sold_quantity += fill.fill_quantity;
-      currentPos.epoch_cumulative_sold_quantity = Number(sNew);
+      currentPos.total_sold_quantity = safeNewTotalSold;
+      currentPos.epoch_cumulative_sold_quantity = safeSNew;
 
       if (currentPos.net_quantity === 0) {
         // Complete liquidation: reset epoch baseline completely to zero

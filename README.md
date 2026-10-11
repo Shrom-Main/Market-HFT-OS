@@ -5,7 +5,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4.5-blue.svg)](https://www.typescriptlang.org/)
 [![Vitest](https://img.shields.io/badge/Vitest-1.6.0-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
-[![Status](https://img.shields.io/badge/Gate_M2-Passing_(105_Tests)-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Gate_M2-Passing_(106_Tests)-brightgreen.svg)]()
 
 ---
 
@@ -52,13 +52,13 @@ npm run typecheck
 ```bash
 npm test
 ```
-*Expected output: 15 test files passed, 105 tests passed (Exit code 0).*
+*Expected output: 15 test files passed, 106 tests passed (Exit code 0).*
 
 ### Step 4: Generate Machine-Readable Audit Report
 ```bash
 npm run test:json
 ```
-*Generates `test-results.json` recording 15 passed suites and 105 passed tests.*
+*Generates `test-results.json` recording 15 passed suites and 106 passed tests.*
 
 ---
 
@@ -78,4 +78,4 @@ npm run test:json
 - **`suite12_durable_persistence.test.ts` (10 tests)**: PostgreSQL DDL schema validation, exclusive row-locking on first-time stream head initialization (`SELECT ... FOR UPDATE` re-read after `INSERT ON CONFLICT DO NOTHING`), serialized concurrency CAS conflict handling (`E-ERR-037`), and 6-path ambiguous commit reconciliation.
 - **`suite13_market_feed_execution.test.ts` (21 tests)**: Market feed normalization, exact decimal price parsing to integer subunits (`parseDecimalPriceToSubunits` without precision truncation), monotonic sequence enforcement, duplicate rejection, sequence gap buffering & replay, commercial spread dry-run execution, MOQ/expiration gating, and dual-ledger quarantine guard.
 - **`suite14_websocket_portfolio.test.ts` (19 tests)**: Local loopback WebSocket streaming transport, exponential backoff, sequence gap recovery, immutable order lifecycle journal (`SimulatedOrderTransitionEvent`), two-step cancellation with fill-cancel race invariance ($Q_{\text{filled}} + Q_{\text{remaining}} \equiv Q_{\text{total}}$), intent idempotency conflict prevention (`E-ERR-039`), and simulation portfolio ledger.
-- **`suite15_e2e_simulation_pipeline.test.ts` (12 tests)**: End-to-end simulation coordinator (`SimulationPipeline`), exact aggregate cost basis, anchored cumulative COGS allocation ($A(s) = \operatorname{divideHalfEven}(C_0 \cdot s, Q_0)$) proving strict fill-partition invariance across arbitrary order splits (including reviewer's $C_0=5, Q_0=3$ case and multi-partition randomizations), interleaved purchase epoch transitions, byte-accurate WebSocket payload limits (`Buffer.byteLength`) guarding against multibyte UTF-8 expansion, transport native `maxPayload`, connection stabilization window preventing endless reconnect retry loops under peer bombardment (`M2-WS-LIFECYCLE-OVERSIZED-BOMB-012`), reproducible event replay producing bit-identical state digests (Condition A), continuous capital and quantity invariant verification (Condition B), fault injection recovery (Condition C), and dual-ledger safety isolation (Condition D).
+- **`suite15_e2e_simulation_pipeline.test.ts` (13 tests)**: End-to-end simulation coordinator (`SimulationPipeline`), exact aggregate cost basis, anchored cumulative COGS allocation ($A(s) = \operatorname{divideHalfEven}(C_0 \cdot s, Q_0)$) proving strict fill-partition invariance across arbitrary order splits (including reviewer's $C_0=5, Q_0=3$ case and multi-partition randomizations), interleaved purchase epoch transitions, unsupported short-position prohibition (`E-ERR-044`), cumulative quantity overflow guards against `Number.MAX_SAFE_INTEGER` (`E-ERR-045`), byte-accurate WebSocket payload limits (`Buffer.byteLength`) guarding against multibyte UTF-8 expansion, transport native `maxPayload`, connection stabilization window preventing endless reconnect retry loops under peer bombardment (`M2-WS-LIFECYCLE-OVERSIZED-BOMB-012`), reproducible event replay producing bit-identical state digests (Condition A), continuous capital and quantity invariant verification (Condition B), fault injection recovery (Condition C), and dual-ledger safety isolation (Condition D).

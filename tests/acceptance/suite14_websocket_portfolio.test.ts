@@ -671,6 +671,12 @@ describe('SUITE-14: Gate M2 Increment 3 — WebSocket Transport, Order Lifecycle
   });
 
   it('M2-PORTFOLIO-SHORT-POLICY-015: Disallows short-selling by default, rejecting excess sell fills without partial mutation', () => {
+    // Unsupported short-position configuration throws E-ERR-044 fail-closed
+    expect(() => new SimulationPortfolio({
+      initialCash: createCanonicalMoney('10000000', 'INR', 4),
+      allowShort: true
+    })).toThrow(/E-ERR-044: SHORT_POSITIONS_NOT_SUPPORTED/);
+
     const portfolio = new SimulationPortfolio({
       initialCash: createCanonicalMoney('10000000', 'INR', 4),
       allowShort: false

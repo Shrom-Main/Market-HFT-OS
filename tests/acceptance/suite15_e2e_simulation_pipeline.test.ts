@@ -17,7 +17,8 @@ import {
 } from '../../src/feeds/localWebSocketTransport.js';
 import {
   SimulationPortfolio,
-  divideHalfEven
+  divideHalfEven,
+  assertSafeQuantity
 } from '../../src/portfolio/simulationPortfolio.js';
 import {
   SimulatedExecutionGateway,
@@ -1065,6 +1066,97 @@ describe('SUITE-15: Gate M2 Increment 4 — End-to-End Simulation Pipeline & Int
     // Teardown
     await bombAdapter.disconnect();
     await bombServer.stop();
+  });
+
+  it('M2-PORTFOLIO-OVERFLOW-SHORT-GUARD-013: Guards against Number.MAX_SAFE_INTEGER quantity overflow and enforces unsupported short prohibition', () => {
+    // 1. Direct unit verification of assertSafeQuantity
+    expect(assertSafeQuantity(0n, 'test_zero')).toBe(0);
+    expect(assertSafeQuantity(BigInt(Number.MAX_SAFE_INTEGER), 'test_max')).toBe(Number.MAX_SAFE_INTEGER);
+
+    // Negative quantity throws E-ERR-045 fail-closed
+    expect(() => assertSafeQuantity(-1n, 'test_negative'))
+      .toThrow(/E-ERR-045: QUANTITY_OVERFLOW/);
+
+    // Overflowing quantity (> Number.MAX_SAFE_INTEGER) throws E-ERR-045 fail-closed
+    const overflowBig = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
+    expect(() => assertSafeQuantity(overflowBig, 'test_overflow'))
+      .toThrow(/E-ERR-045: QUANTITY_OVERFLOW/);
+
+    // 2. Portfolio constructor rejects allowShort: true fail-closed
+    expect(() => new SimulationPortfolio({
+      initialCash: createCanonicalMoney('10000000', 'INR', 4),
+      allowShort: true
+    })).toThrow(/E-ERR-044: SHORT_POSITIONS_NOT_SUPPORTED/);
+
+    // 3. Portfolio processFill rejects cumulative quantity overflow fail-closed
+    const portfolio = new SimulationPortfolio({
+      initialCash: createCanonicalMoney('100000000000000000', 'INR', 4) // Sufficient cash
+    });
+
+    const buyOrder1: SimulatedOrderRecord = {
+      order_id: 'ord-of-1',
+      intent_id: 'intent-of-1',
+      offer_id: offerId,
+      product_id: canonicalProductId,
+      venue_id: venueId,
+      side: 'BUY',
+      order_price: createCanonicalMoney('1', 'INR', 4),
+      total_quantity: Number.MAX_SAFE_INTEGER,
+      filled_quantity: Number.MAX_SAFE_INTEGER,
+      remaining_quantity: 0,
+      status: 'FILLED',
+      created_at_utc: '2026-10-11T12:00:00Z',
+      updated_at_utc: '2026-10-11T12:00:01Z',
+      fills: [],
+      events: [],
+      intent_sha256: 'a'.repeat(64)
+    };
+
+    // First fill sets net_quantity = Number.MAX_SAFE_INTEGER
+    portfolio.processFill({
+      fill_id: 'fill-of-1',
+      order_id: buyOrder1.order_id,
+      fill_timestamp_utc: '2026-10-11T12:00:01Z',
+      fill_price: createCanonicalMoney('1', 'INR', 4),
+      fill_quantity: Number.MAX_SAFE_INTEGER,
+      cumulative_quantity: Number.MAX_SAFE_INTEGER,
+      remaining_quantity: 0
+    }, buyOrder1, '2026-10-11T12:00:01Z');
+
+    expect(portfolio.getPosition(canonicalProductId)?.net_quantity).toBe(Number.MAX_SAFE_INTEGER);
+
+    // Second fill of 1 unit causes resulting net_quantity to exceed Number.MAX_SAFE_INTEGER
+    const buyOrder2: SimulatedOrderRecord = {
+      order_id: 'ord-of-2',
+      intent_id: 'intent-of-2',
+      offer_id: offerId,
+      product_id: canonicalProductId,
+      venue_id: venueId,
+      side: 'BUY',
+      order_price: createCanonicalMoney('1', 'INR', 4),
+      total_quantity: 1,
+      filled_quantity: 1,
+      remaining_quantity: 0,
+      status: 'FILLED',
+      created_at_utc: '2026-10-11T12:00:02Z',
+      updated_at_utc: '2026-10-11T12:00:02Z',
+      fills: [],
+      events: [],
+      intent_sha256: 'b'.repeat(64)
+    };
+
+    expect(() => portfolio.processFill({
+      fill_id: 'fill-of-2',
+      order_id: buyOrder2.order_id,
+      fill_timestamp_utc: '2026-10-11T12:00:02Z',
+      fill_price: createCanonicalMoney('1', 'INR', 4),
+      fill_quantity: 1,
+      cumulative_quantity: 1,
+      remaining_quantity: 0
+    }, buyOrder2, '2026-10-11T12:00:02Z')).toThrow(/E-ERR-045: QUANTITY_OVERFLOW/);
+
+    // Verify position remains untouched at MAX_SAFE_INTEGER without corruption
+    expect(portfolio.getPosition(canonicalProductId)?.net_quantity).toBe(Number.MAX_SAFE_INTEGER);
   });
 });
 
