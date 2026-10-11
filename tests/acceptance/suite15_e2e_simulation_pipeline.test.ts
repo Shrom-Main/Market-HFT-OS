@@ -1145,6 +1145,9 @@ describe('SUITE-15: Gate M2 Increment 4 — End-to-End Simulation Pipeline & Int
       intent_sha256: 'b'.repeat(64)
     };
 
+    // 4. Capture complete snapshot before overflowing fill attempt to prove atomic fail-closed rejection
+    const snapshotBefore = portfolio.getSnapshot();
+
     expect(() => portfolio.processFill({
       fill_id: 'fill-of-2',
       order_id: buyOrder2.order_id,
@@ -1155,8 +1158,14 @@ describe('SUITE-15: Gate M2 Increment 4 — End-to-End Simulation Pipeline & Int
       remaining_quantity: 0
     }, buyOrder2, '2026-10-11T12:00:02Z')).toThrow(/E-ERR-045: QUANTITY_OVERFLOW/);
 
-    // Verify position remains untouched at MAX_SAFE_INTEGER without corruption
-    expect(portfolio.getPosition(canonicalProductId)?.net_quantity).toBe(Number.MAX_SAFE_INTEGER);
+    // Capture snapshot after the rejected transaction and verify complete atomic invariance
+    const snapshotAfter = portfolio.getSnapshot();
+    expect(snapshotAfter).toEqual(snapshotBefore);
+    expect(snapshotAfter.available_cash.amount_subunits).toBe(snapshotBefore.available_cash.amount_subunits);
+    expect(snapshotAfter.cumulative_realized_pnl.amount_subunits).toBe(snapshotBefore.cumulative_realized_pnl.amount_subunits);
+    expect(snapshotAfter.positions).toEqual(snapshotBefore.positions);
+    expect(snapshotAfter.journal.length).toBe(1);
+    expect(portfolio.isFillProcessed('fill-of-2')).toBe(false);
   });
 });
 
