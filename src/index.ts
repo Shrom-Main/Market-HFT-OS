@@ -11,3 +11,5 @@ export * from './persistence/postgresAdapter.js';
 export * from './financial/cashFlowEngine.js';
 export * from './ledger/actualsGuard.js';
 export * from './checkpoint/trustAnchor.js';
+export * from './feeds/feedHandler.js';
+export * from './execution/engine.js';

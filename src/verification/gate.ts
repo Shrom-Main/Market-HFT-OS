@@ -152,7 +152,7 @@ export const EVALUATOR_REGISTRY: Record<string, { evaluator_version: string; eng
   'POC-001/EVALUATOR/v1': { evaluator_version: 'POC-001/EVALUATOR/v1', engine_release: 'GATE-M1-EVAL-v1.13', service_key_id: 'op:sec:evaluator-service-01' }
 };
 
-function deepFreeze<T>(obj: T): Readonly<T> {
+export function deepFreeze<T>(obj: T): Readonly<T> {
   if (obj && typeof obj === 'object' && !ArrayBuffer.isView(obj) && !Object.isFrozen(obj)) {
     Object.freeze(obj);
     for (const key of Object.getOwnPropertyNames(obj)) {
