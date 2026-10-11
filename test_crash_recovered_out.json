@@ -1,0 +1,644 @@
+{
+  "snapshot": {
+    "currency": "EUR",
+    "scale": 4,
+    "initial_cash": {
+      "amount_subunits": "1000000000",
+      "currency": "EUR",
+      "scale": 4
+    },
+    "available_cash": {
+      "currency": "EUR",
+      "amount_subunits": "984500000",
+      "scale": 4
+    },
+    "positions": [
+      {
+        "product_id": "DIN3017-W4-CLAMP-001",
+        "net_quantity": 150,
+        "total_bought_quantity": 150,
+        "total_sold_quantity": 0,
+        "aggregate_cost_subunits": "15500000",
+        "cost_basis_rational": {
+          "numerator_subunits": "15500000",
+          "denominator_quantity": 150
+        },
+        "weighted_cost_basis_subunits": "103333",
+        "cumulative_realized_pnl_subunits": "0",
+        "epoch_start_cost_subunits": "15500000",
+        "epoch_start_quantity": 150,
+        "epoch_cumulative_sold_quantity": 0
+      }
+    ],
+    "cumulative_realized_pnl": {
+      "currency": "EUR",
+      "amount_subunits": "0",
+      "scale": 4
+    },
+    "journal": [
+      {
+        "cash_balance_after": {
+          "amount_subunits": "990000000",
+          "currency": "EUR",
+          "scale": 4
+        },
+        "cash_balance_before": {
+          "amount_subunits": "1000000000",
+          "currency": "EUR",
+          "scale": 4
+        },
+        "cumulative_realized_pnl_subunits": "0",
+        "entry_id": "pf:ent:1",
+        "fill_id": "fill:worker:001",
+        "fill_price": {
+          "amount_subunits": "100000",
+          "currency": "EUR",
+          "scale": 4
+        },
+        "fill_quantity": 100,
+        "intent_id": "intent:001",
+        "order_id": "ord:001",
+        "position_after": {
+          "aggregate_cost_subunits": "10000000",
+          "cost_basis_rational": {
+            "denominator_quantity": 100,
+            "numerator_subunits": "10000000"
+          },
+          "cumulative_realized_pnl_subunits": "0",
+          "epoch_cumulative_sold_quantity": 0,
+          "epoch_start_cost_subunits": "10000000",
+          "epoch_start_quantity": 100,
+          "net_quantity": 100,
+          "product_id": "DIN3017-W4-CLAMP-001",
+          "total_bought_quantity": 100,
+          "total_sold_quantity": 0,
+          "weighted_cost_basis_subunits": "100000"
+        },
+        "position_before": {
+          "aggregate_cost_subunits": "0",
+          "cost_basis_rational": {
+            "denominator_quantity": 0,
+            "numerator_subunits": "0"
+          },
+          "cumulative_realized_pnl_subunits": "0",
+          "net_quantity": 0,
+          "product_id": "DIN3017-W4-CLAMP-001",
+          "total_bought_quantity": 0,
+          "total_sold_quantity": 0,
+          "weighted_cost_basis_subunits": "0"
+        },
+        "product_id": "DIN3017-W4-CLAMP-001",
+        "realized_pnl_delta_subunits": "0",
+        "sequence_number": 1,
+        "side": "BUY",
+        "timestamp_utc": "2026-10-12T10:00:01.000Z",
+        "total_notional_subunits": "10000000"
+      },
+      {
+        "entry_id": "pf:ent:2",
+        "sequence_number": 2,
+        "timestamp_utc": "2026-10-12T10:00:05.000Z",
+        "order_id": "ord:002",
+        "intent_id": "intent:002",
+        "fill_id": "fill:worker:002",
+        "product_id": "DIN3017-W4-CLAMP-001",
+        "side": "BUY",
+        "fill_quantity": 50,
+        "fill_price": {
+          "amount_subunits": "110000",
+          "currency": "EUR",
+          "scale": 4
+        },
+        "total_notional_subunits": "5500000",
+        "cash_balance_before": {
+          "currency": "EUR",
+          "amount_subunits": "990000000",
+          "scale": 4
+        },
+        "cash_balance_after": {
+          "currency": "EUR",
+          "amount_subunits": "984500000",
+          "scale": 4
+        },
+        "position_before": {
+          "product_id": "DIN3017-W4-CLAMP-001",
+          "net_quantity": 100,
+          "total_bought_quantity": 100,
+          "total_sold_quantity": 0,
+          "aggregate_cost_subunits": "10000000",
+          "cost_basis_rational": {
+            "numerator_subunits": "10000000",
+            "denominator_quantity": 100
+          },
+          "weighted_cost_basis_subunits": "100000",
+          "cumulative_realized_pnl_subunits": "0",
+          "epoch_start_cost_subunits": "10000000",
+          "epoch_start_quantity": 100,
+          "epoch_cumulative_sold_quantity": 0
+        },
+        "position_after": {
+          "product_id": "DIN3017-W4-CLAMP-001",
+          "net_quantity": 150,
+          "total_bought_quantity": 150,
+          "total_sold_quantity": 0,
+          "aggregate_cost_subunits": "15500000",
+          "cost_basis_rational": {
+            "numerator_subunits": "15500000",
+            "denominator_quantity": 150
+          },
+          "weighted_cost_basis_subunits": "103333",
+          "cumulative_realized_pnl_subunits": "0",
+          "epoch_start_cost_subunits": "15500000",
+          "epoch_start_quantity": 150,
+          "epoch_cumulative_sold_quantity": 0
+        },
+        "realized_pnl_delta_subunits": "0",
+        "cumulative_realized_pnl_subunits": "0"
+      }
+    ]
+  },
+  "recoveryResult": {
+    "recovered_fills_count": 1,
+    "reconciled_unmarked_fills_count": 0,
+    "skipped_duplicate_fills_count": 1,
+    "replayed_entries_count": 3,
+    "final_portfolio_snapshot": {
+      "currency": "EUR",
+      "scale": 4,
+      "initial_cash": {
+        "amount_subunits": "1000000000",
+        "currency": "EUR",
+        "scale": 4
+      },
+      "available_cash": {
+        "currency": "EUR",
+        "amount_subunits": "984500000",
+        "scale": 4
+      },
+      "positions": [
+        {
+          "product_id": "DIN3017-W4-CLAMP-001",
+          "net_quantity": 150,
+          "total_bought_quantity": 150,
+          "total_sold_quantity": 0,
+          "aggregate_cost_subunits": "15500000",
+          "cost_basis_rational": {
+            "numerator_subunits": "15500000",
+            "denominator_quantity": 150
+          },
+          "weighted_cost_basis_subunits": "103333",
+          "cumulative_realized_pnl_subunits": "0",
+          "epoch_start_cost_subunits": "15500000",
+          "epoch_start_quantity": 150,
+          "epoch_cumulative_sold_quantity": 0
+        }
+      ],
+      "cumulative_realized_pnl": {
+        "currency": "EUR",
+        "amount_subunits": "0",
+        "scale": 4
+      },
+      "journal": [
+        {
+          "cash_balance_after": {
+            "amount_subunits": "990000000",
+            "currency": "EUR",
+            "scale": 4
+          },
+          "cash_balance_before": {
+            "amount_subunits": "1000000000",
+            "currency": "EUR",
+            "scale": 4
+          },
+          "cumulative_realized_pnl_subunits": "0",
+          "entry_id": "pf:ent:1",
+          "fill_id": "fill:worker:001",
+          "fill_price": {
+            "amount_subunits": "100000",
+            "currency": "EUR",
+            "scale": 4
+          },
+          "fill_quantity": 100,
+          "intent_id": "intent:001",
+          "order_id": "ord:001",
+          "position_after": {
+            "aggregate_cost_subunits": "10000000",
+            "cost_basis_rational": {
+              "denominator_quantity": 100,
+              "numerator_subunits": "10000000"
+            },
+            "cumulative_realized_pnl_subunits": "0",
+            "epoch_cumulative_sold_quantity": 0,
+            "epoch_start_cost_subunits": "10000000",
+            "epoch_start_quantity": 100,
+            "net_quantity": 100,
+            "product_id": "DIN3017-W4-CLAMP-001",
+            "total_bought_quantity": 100,
+            "total_sold_quantity": 0,
+            "weighted_cost_basis_subunits": "100000"
+          },
+          "position_before": {
+            "aggregate_cost_subunits": "0",
+            "cost_basis_rational": {
+              "denominator_quantity": 0,
+              "numerator_subunits": "0"
+            },
+            "cumulative_realized_pnl_subunits": "0",
+            "net_quantity": 0,
+            "product_id": "DIN3017-W4-CLAMP-001",
+            "total_bought_quantity": 0,
+            "total_sold_quantity": 0,
+            "weighted_cost_basis_subunits": "0"
+          },
+          "product_id": "DIN3017-W4-CLAMP-001",
+          "realized_pnl_delta_subunits": "0",
+          "sequence_number": 1,
+          "side": "BUY",
+          "timestamp_utc": "2026-10-12T10:00:01.000Z",
+          "total_notional_subunits": "10000000"
+        },
+        {
+          "entry_id": "pf:ent:2",
+          "sequence_number": 2,
+          "timestamp_utc": "2026-10-12T10:00:05.000Z",
+          "order_id": "ord:002",
+          "intent_id": "intent:002",
+          "fill_id": "fill:worker:002",
+          "product_id": "DIN3017-W4-CLAMP-001",
+          "side": "BUY",
+          "fill_quantity": 50,
+          "fill_price": {
+            "amount_subunits": "110000",
+            "currency": "EUR",
+            "scale": 4
+          },
+          "total_notional_subunits": "5500000",
+          "cash_balance_before": {
+            "currency": "EUR",
+            "amount_subunits": "990000000",
+            "scale": 4
+          },
+          "cash_balance_after": {
+            "currency": "EUR",
+            "amount_subunits": "984500000",
+            "scale": 4
+          },
+          "position_before": {
+            "product_id": "DIN3017-W4-CLAMP-001",
+            "net_quantity": 100,
+            "total_bought_quantity": 100,
+            "total_sold_quantity": 0,
+            "aggregate_cost_subunits": "10000000",
+            "cost_basis_rational": {
+              "numerator_subunits": "10000000",
+              "denominator_quantity": 100
+            },
+            "weighted_cost_basis_subunits": "100000",
+            "cumulative_realized_pnl_subunits": "0",
+            "epoch_start_cost_subunits": "10000000",
+            "epoch_start_quantity": 100,
+            "epoch_cumulative_sold_quantity": 0
+          },
+          "position_after": {
+            "product_id": "DIN3017-W4-CLAMP-001",
+            "net_quantity": 150,
+            "total_bought_quantity": 150,
+            "total_sold_quantity": 0,
+            "aggregate_cost_subunits": "15500000",
+            "cost_basis_rational": {
+              "numerator_subunits": "15500000",
+              "denominator_quantity": 150
+            },
+            "weighted_cost_basis_subunits": "103333",
+            "cumulative_realized_pnl_subunits": "0",
+            "epoch_start_cost_subunits": "15500000",
+            "epoch_start_quantity": 150,
+            "epoch_cumulative_sold_quantity": 0
+          },
+          "realized_pnl_delta_subunits": "0",
+          "cumulative_realized_pnl_subunits": "0"
+        }
+      ]
+    },
+    "recovery_completed_utc": "2026-10-12T10:00:05.000Z"
+  },
+  "checkpoint": {
+    "currency": "EUR",
+    "scale": 4,
+    "initial_cash": {
+      "amount_subunits": "1000000000",
+      "currency": "EUR",
+      "scale": 4
+    },
+    "available_cash_subunits": "984500000",
+    "cumulative_realized_pnl_subunits": "0",
+    "allow_short": false,
+    "positions": [
+      {
+        "product_id": "DIN3017-W4-CLAMP-001",
+        "net_quantity": 150,
+        "total_bought_quantity": 150,
+        "total_sold_quantity": 0,
+        "aggregate_cost_subunits": "15500000",
+        "cumulative_realized_pnl_subunits": "0",
+        "epoch_start_cost_subunits": "15500000",
+        "epoch_start_quantity": 150,
+        "epoch_cumulative_sold_quantity": 0
+      }
+    ],
+    "processed_fill_ids": [
+      "fill:worker:001",
+      "fill:worker:002"
+    ],
+    "processed_fill_fingerprints": [
+      [
+        "fill:worker:001",
+        "f8fec419f079032173436f180c277772a872bf0281b240297c5982b9e2a520d5"
+      ],
+      [
+        "fill:worker:002",
+        "508874903050c0481efc94c011f3c1de3b551846a73f04abd1e5e40ab39b3ebd"
+      ]
+    ],
+    "journal": [
+      {
+        "cash_balance_after": {
+          "amount_subunits": "990000000",
+          "currency": "EUR",
+          "scale": 4
+        },
+        "cash_balance_before": {
+          "amount_subunits": "1000000000",
+          "currency": "EUR",
+          "scale": 4
+        },
+        "cumulative_realized_pnl_subunits": "0",
+        "entry_id": "pf:ent:1",
+        "fill_id": "fill:worker:001",
+        "fill_price": {
+          "amount_subunits": "100000",
+          "currency": "EUR",
+          "scale": 4
+        },
+        "fill_quantity": 100,
+        "intent_id": "intent:001",
+        "order_id": "ord:001",
+        "position_after": {
+          "aggregate_cost_subunits": "10000000",
+          "cost_basis_rational": {
+            "denominator_quantity": 100,
+            "numerator_subunits": "10000000"
+          },
+          "cumulative_realized_pnl_subunits": "0",
+          "epoch_cumulative_sold_quantity": 0,
+          "epoch_start_cost_subunits": "10000000",
+          "epoch_start_quantity": 100,
+          "net_quantity": 100,
+          "product_id": "DIN3017-W4-CLAMP-001",
+          "total_bought_quantity": 100,
+          "total_sold_quantity": 0,
+          "weighted_cost_basis_subunits": "100000"
+        },
+        "position_before": {
+          "aggregate_cost_subunits": "0",
+          "cost_basis_rational": {
+            "denominator_quantity": 0,
+            "numerator_subunits": "0"
+          },
+          "cumulative_realized_pnl_subunits": "0",
+          "net_quantity": 0,
+          "product_id": "DIN3017-W4-CLAMP-001",
+          "total_bought_quantity": 0,
+          "total_sold_quantity": 0,
+          "weighted_cost_basis_subunits": "0"
+        },
+        "product_id": "DIN3017-W4-CLAMP-001",
+        "realized_pnl_delta_subunits": "0",
+        "sequence_number": 1,
+        "side": "BUY",
+        "timestamp_utc": "2026-10-12T10:00:01.000Z",
+        "total_notional_subunits": "10000000"
+      },
+      {
+        "entry_id": "pf:ent:2",
+        "sequence_number": 2,
+        "timestamp_utc": "2026-10-12T10:00:05.000Z",
+        "order_id": "ord:002",
+        "intent_id": "intent:002",
+        "fill_id": "fill:worker:002",
+        "product_id": "DIN3017-W4-CLAMP-001",
+        "side": "BUY",
+        "fill_quantity": 50,
+        "fill_price": {
+          "amount_subunits": "110000",
+          "currency": "EUR",
+          "scale": 4
+        },
+        "total_notional_subunits": "5500000",
+        "cash_balance_before": {
+          "currency": "EUR",
+          "amount_subunits": "990000000",
+          "scale": 4
+        },
+        "cash_balance_after": {
+          "currency": "EUR",
+          "amount_subunits": "984500000",
+          "scale": 4
+        },
+        "position_before": {
+          "product_id": "DIN3017-W4-CLAMP-001",
+          "net_quantity": 100,
+          "total_bought_quantity": 100,
+          "total_sold_quantity": 0,
+          "aggregate_cost_subunits": "10000000",
+          "cost_basis_rational": {
+            "numerator_subunits": "10000000",
+            "denominator_quantity": 100
+          },
+          "weighted_cost_basis_subunits": "100000",
+          "cumulative_realized_pnl_subunits": "0",
+          "epoch_start_cost_subunits": "10000000",
+          "epoch_start_quantity": 100,
+          "epoch_cumulative_sold_quantity": 0
+        },
+        "position_after": {
+          "product_id": "DIN3017-W4-CLAMP-001",
+          "net_quantity": 150,
+          "total_bought_quantity": 150,
+          "total_sold_quantity": 0,
+          "aggregate_cost_subunits": "15500000",
+          "cost_basis_rational": {
+            "numerator_subunits": "15500000",
+            "denominator_quantity": 150
+          },
+          "weighted_cost_basis_subunits": "103333",
+          "cumulative_realized_pnl_subunits": "0",
+          "epoch_start_cost_subunits": "15500000",
+          "epoch_start_quantity": 150,
+          "epoch_cumulative_sold_quantity": 0
+        },
+        "realized_pnl_delta_subunits": "0",
+        "cumulative_realized_pnl_subunits": "0"
+      }
+    ]
+  },
+  "journalEntries": [
+    {
+      "entry_id": "rec:ent:1",
+      "sequence_number": 1,
+      "timestamp_utc": "2026-10-12T10:00:01.000Z",
+      "event_type": "FILL_RECORDED",
+      "payload": {
+        "fill": {
+          "cumulative_quantity": 100,
+          "event_type": "FILL",
+          "fill_id": "fill:worker:001",
+          "fill_price": {
+            "amount_subunits": "100000",
+            "currency": "EUR",
+            "scale": 4
+          },
+          "fill_quantity": 100,
+          "intent_id": "intent:001",
+          "order_id": "ord:001",
+          "remaining_quantity": 0,
+          "timestamp_utc": "2026-10-12T10:00:01.000Z",
+          "venue_event_id": "ve-fill-001",
+          "venue_id": "SIMULATED-LOCAL"
+        },
+        "order": {
+          "average_fill_price_subunits": "100000",
+          "created_at_utc": "2026-10-12T10:00:00.000Z",
+          "cumulative_filled_quantity": 100,
+          "fills": [
+            {
+              "cumulative_quantity": 100,
+              "event_type": "FILL",
+              "fill_id": "fill:worker:001",
+              "fill_price": {
+                "amount_subunits": "100000",
+                "currency": "EUR",
+                "scale": 4
+              },
+              "fill_quantity": 100,
+              "intent_id": "intent:001",
+              "order_id": "ord:001",
+              "remaining_quantity": 0,
+              "timestamp_utc": "2026-10-12T10:00:01.000Z",
+              "venue_event_id": "ve-fill-001",
+              "venue_id": "SIMULATED-LOCAL"
+            }
+          ],
+          "intent_id": "intent:001",
+          "limit_price": {
+            "amount_subunits": "100000",
+            "currency": "EUR",
+            "scale": 4
+          },
+          "order_id": "ord:001",
+          "product_id": "DIN3017-W4-CLAMP-001",
+          "remaining_quantity": 0,
+          "requested_quantity": 100,
+          "side": "BUY",
+          "status": "FILLED",
+          "updated_at_utc": "2026-10-12T10:00:01.000Z"
+        }
+      },
+      "payload_sha256": "2efd3f37c0d91e84f0465c5bae42472976d4ee9292a286d28478ead5407116aa",
+      "prev_entry_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "entry_sha256": "86e29f3f7b98224d5cddc22a9b0aad554564acc2a0ae1546ca6964d4aa70d426"
+    },
+    {
+      "entry_id": "rec:ent:2",
+      "sequence_number": 2,
+      "timestamp_utc": "2026-10-12T10:00:01.000Z",
+      "event_type": "PORTFOLIO_APPLIED",
+      "payload": {
+        "fill_id": "fill:worker:001",
+        "order_id": "ord:001"
+      },
+      "payload_sha256": "8b0e9a9fb3ceeea26d769ce3c1729bf23b29ed4c88f6db4c55fea6791420e1d6",
+      "prev_entry_sha256": "86e29f3f7b98224d5cddc22a9b0aad554564acc2a0ae1546ca6964d4aa70d426",
+      "entry_sha256": "dac258427fac7b94e6487dc691f16c1827f3048b0b6842eab64b189becad172c"
+    },
+    {
+      "entry_id": "rec:ent:3",
+      "sequence_number": 3,
+      "timestamp_utc": "2026-10-12T10:00:02.000Z",
+      "event_type": "FILL_RECORDED",
+      "payload": {
+        "fill": {
+          "cumulative_quantity": 50,
+          "event_type": "FILL",
+          "fill_id": "fill:worker:002",
+          "fill_price": {
+            "amount_subunits": "110000",
+            "currency": "EUR",
+            "scale": 4
+          },
+          "fill_quantity": 50,
+          "intent_id": "intent:002",
+          "order_id": "ord:002",
+          "remaining_quantity": 0,
+          "timestamp_utc": "2026-10-12T10:00:02.000Z",
+          "venue_event_id": "ve-fill-002",
+          "venue_id": "SIMULATED-LOCAL"
+        },
+        "order": {
+          "average_fill_price_subunits": "110000",
+          "created_at_utc": "2026-10-12T10:00:01.500Z",
+          "cumulative_filled_quantity": 50,
+          "fills": [
+            {
+              "cumulative_quantity": 50,
+              "event_type": "FILL",
+              "fill_id": "fill:worker:002",
+              "fill_price": {
+                "amount_subunits": "110000",
+                "currency": "EUR",
+                "scale": 4
+              },
+              "fill_quantity": 50,
+              "intent_id": "intent:002",
+              "order_id": "ord:002",
+              "remaining_quantity": 0,
+              "timestamp_utc": "2026-10-12T10:00:02.000Z",
+              "venue_event_id": "ve-fill-002",
+              "venue_id": "SIMULATED-LOCAL"
+            }
+          ],
+          "intent_id": "intent:002",
+          "limit_price": {
+            "amount_subunits": "110000",
+            "currency": "EUR",
+            "scale": 4
+          },
+          "order_id": "ord:002",
+          "product_id": "DIN3017-W4-CLAMP-001",
+          "remaining_quantity": 0,
+          "requested_quantity": 50,
+          "side": "BUY",
+          "status": "FILLED",
+          "updated_at_utc": "2026-10-12T10:00:02.000Z"
+        }
+      },
+      "payload_sha256": "bb70a9ddb4923bb3d76707c09a4524111b81640e8c4fac2b09f814a6e2c363c0",
+      "prev_entry_sha256": "dac258427fac7b94e6487dc691f16c1827f3048b0b6842eab64b189becad172c",
+      "entry_sha256": "85dd3fc15192ee0e64c247ad874827b0ac3bde1e5b8d6ff5e3dd1f4a704f56ef"
+    },
+    {
+      "entry_id": "rec:ent:4",
+      "sequence_number": 4,
+      "timestamp_utc": "2026-10-12T10:00:05.000Z",
+      "event_type": "PORTFOLIO_APPLIED",
+      "payload": {
+        "fill_id": "fill:worker:002",
+        "order_id": "ord:002",
+        "recovered": true
+      },
+      "payload_sha256": "3bf3b243120b7fbfc8939a4d7dd60c563563dbacc3c4d84489eea185c756c48d",
+      "prev_entry_sha256": "85dd3fc15192ee0e64c247ad874827b0ac3bde1e5b8d6ff5e3dd1f4a704f56ef",
+      "entry_sha256": "f0f4494ccdd74143b9cea60bc09029aa59c43fbd91fa1fcfa5bd98ada8f92cfe"
+    }
+  ]
+}
