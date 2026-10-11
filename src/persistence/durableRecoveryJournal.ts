@@ -164,6 +164,100 @@ export class DurableRecoveryJournal {
 }
 
 /**
+ * File-Backed Durable Recovery Journal
+ * Appends entries to an NDJSON WAL file on disk with explicit fsync flush semantics.
+ * Survives hard process termination and verifies tamper integrity across restart.
+ */
+export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
+  private readonly filePath: string;
+  private fileDescriptor: number | null = null;
+
+  constructor(filePath: string) {
+    let initialEntries: RecoveryJournalEntry[] = [];
+    if (fs.existsSync(filePath)) {
+      const content = fs.readFileSync(filePath, 'utf8');
+      const lines = content.split('\n').filter(l => l.trim().length > 0);
+      for (const line of lines) {
+        initialEntries.push(JSON.parse(line));
+      }
+    } else {
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+    }
+
+    super(initialEntries);
+    this.filePath = filePath;
+    this.fileDescriptor = fs.openSync(this.filePath, 'a+');
+  }
+
+  public override appendEvent(
+    eventType: RecoveryEventType,
+    payload: unknown,
+    timestamp_utc: string
+  ): RecoveryJournalEntry {
+    const entry = super.appendEvent(eventType, payload, timestamp_utc);
+    const line = JSON.stringify(entry) + '\n';
+    if (this.fileDescriptor !== null) {
+      fs.writeSync(this.fileDescriptor, line);
+      fs.fsyncSync(this.fileDescriptor);
+    }
+    return entry;
+  }
+
+  public close(): void {
+    if (this.fileDescriptor !== null) {
+      fs.closeSync(this.fileDescriptor);
+      this.fileDescriptor = null;
+    }
+  }
+
+  public getFilePath(): string {
+    return this.filePath;
+  }
+}
+
+/**
+ * Durable Portfolio Checkpoint Store
+ * Persists and restores SimulationPortfolio state to/from disk atomically.
+ */
+export class DurablePortfolioCheckpointStore {
+  public static saveCheckpoint(checkpointPath: string, portfolio: SimulationPortfolio): void {
+    const dir = path.dirname(checkpointPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const checkpoint = portfolio.exportCheckpoint();
+    const jsonStr = canonicalizeJCS(checkpoint);
+    const tmpPath = `${checkpointPath}.tmp.${Date.now()}`;
+    const fd = fs.openSync(tmpPath, 'w');
+    fs.writeSync(fd, jsonStr);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fs.renameSync(tmpPath, checkpointPath);
+  }
+
+  public static loadCheckpoint(checkpointPath: string): SimulationPortfolio {
+    if (!fs.existsSync(checkpointPath)) {
+      throw new Error(`E-ERR-024: CHECKPOINT_NOT_FOUND: Checkpoint file not found at ${checkpointPath}`);
+    }
+    const content = fs.readFileSync(checkpointPath, 'utf8');
+    const checkpoint = JSON.parse(content) as PortfolioCheckpoint;
+    return SimulationPortfolio.restoreFromCheckpoint(checkpoint);
+  }
+}
+
+export interface DurableCrashRecoveryResult {
+  recovered_fills_count: number;
+  reconciled_unmarked_fills_count: number;
+  skipped_duplicate_fills_count: number;
+  replayed_entries_count: number;
+  final_portfolio_snapshot: PortfolioSnapshot;
+  recovery_completed_utc: string;
+}
+
+/**
  * Crash Recovery Engine
  * Reads durable recovery journal, reconciles orphaned fills against portfolio,
  * and recovers exactly-once state without missing or duplicate accounting.
@@ -222,6 +316,118 @@ export class CrashRecoveryEngine {
 
     return {
       recovered_fills_count: recoveredCount,
+      skipped_duplicate_fills_count: skippedDuplicateCount,
+      replayed_entries_count: entries.length,
+      final_portfolio_snapshot: portfolio.getSnapshot(),
+      recovery_completed_utc: currentTimeUtc
+    };
+  }
+
+  /**
+   * Reconciles durable journal and durable portfolio state across process restart.
+   * Adheres strictly to the Gate M3 failure boundary contract:
+   * 1. Fill recorded, portfolio not updated => Replay fill exactly once, append PORTFOLIO_APPLIED marker
+   * 2. Portfolio updated, marker not recorded => Reconcile without applying economic effect twice, append PORTFOLIO_APPLIED marker
+   * 3. Marker recorded, state restoration incomplete => Replay fill if payload present; if missing, fail closed with E-ERR-047
+   * 4. Same fill ID, altered content => Reject with E-ERR-046: FILL_IDEMPOTENCY_CONFLICT
+   * 5. Journal integrity failure => Reject fail closed with E-ERR-024: CORRUPT_JOURNAL_ON_RECOVERY
+   */
+  public static recoverDurable(
+    journal: DurableRecoveryJournal,
+    portfolio: SimulationPortfolio,
+    currentTimeUtc: string
+  ): DurableCrashRecoveryResult {
+    validateIso8601UtcTimestamp(currentTimeUtc);
+
+    // 5. Journal integrity check
+    const integrity = journal.verifyIntegrity();
+    if (!integrity.isValid) {
+      throw new Error(`E-ERR-024: CORRUPT_JOURNAL_ON_RECOVERY: Integrity check failed at sequence ${integrity.brokenSequence}`);
+    }
+
+    const entries = journal.getEntries();
+    const recordedFills = new Map<string, { fill: SimulatedFillEvent; order: SimulatedOrderRecord; fingerprint: string }>();
+    const appliedFillIds = new Set<string>();
+
+    for (const entry of entries) {
+      if (entry.event_type === 'FILL_RECORDED') {
+        const { fill, order } = entry.payload as { fill: SimulatedFillEvent; order: SimulatedOrderRecord };
+        const fp = computeFillFingerprint(fill, order);
+        const existing = recordedFills.get(fill.fill_id);
+        if (existing && existing.fingerprint !== fp) {
+          // 4. Same fill ID, altered content in journal entries
+          throw new Error(
+            `E-ERR-046: FILL_IDEMPOTENCY_CONFLICT: Conflicting journal entries recorded for fill ID '${fill.fill_id}'`
+          );
+        }
+        recordedFills.set(fill.fill_id, { fill, order, fingerprint: fp });
+      } else if (entry.event_type === 'PORTFOLIO_APPLIED') {
+        const { fill_id } = entry.payload as { fill_id: string };
+        appliedFillIds.add(fill_id);
+      }
+    }
+
+    let recoveredCount = 0;
+    let reconciledUnmarkedCount = 0;
+    let skippedDuplicateCount = 0;
+
+    // Check boundary 3: Marker recorded, state restoration incomplete
+    for (const appliedFillId of appliedFillIds) {
+      if (!portfolio.isFillProcessed(appliedFillId)) {
+        const rec = recordedFills.get(appliedFillId);
+        if (!rec) {
+          throw new Error(
+            `E-ERR-047: RECOVERY_STATE_INCONSISTENCY: PORTFOLIO_APPLIED marker recorded for '${appliedFillId}' but fill payload is missing from journal`
+          );
+        }
+        // Incomplete state restoration: replay the recorded fill to bring portfolio up to state
+        portfolio.processFill(rec.fill, rec.order, currentTimeUtc);
+        recoveredCount++;
+      }
+    }
+
+    // Process all recorded fills
+    for (const [fillId, { fill, order, fingerprint }] of recordedFills.entries()) {
+      const isAppliedInJournal = appliedFillIds.has(fillId);
+      const isProcessedInPortfolio = portfolio.isFillProcessed(fillId);
+
+      if (isProcessedInPortfolio) {
+        // Verify fingerprint matches
+        const existingFp = portfolio.getFillFingerprint(fillId);
+        if (existingFp && existingFp !== fingerprint) {
+          // 4. Same fill ID, altered content
+          throw new Error(
+            `E-ERR-046: FILL_IDEMPOTENCY_CONFLICT: Fill '${fillId}' in journal conflicts with portfolio fingerprint`
+          );
+        }
+
+        if (!isAppliedInJournal) {
+          // 2. Portfolio updated, marker not recorded => Reconcile without applying economic effect twice
+          journal.appendEvent('PORTFOLIO_APPLIED', {
+            fill_id: fill.fill_id,
+            order_id: fill.order_id,
+            reconciled_unmarked: true
+          }, currentTimeUtc);
+          reconciledUnmarkedCount++;
+        } else {
+          skippedDuplicateCount++;
+        }
+      } else {
+        // 1. Fill recorded, portfolio not updated => Replay fill exactly once
+        portfolio.processFill(fill, order, currentTimeUtc);
+        recoveredCount++;
+
+        journal.appendEvent('PORTFOLIO_APPLIED', {
+          fill_id: fill.fill_id,
+          order_id: fill.order_id,
+          recovered: true
+        }, currentTimeUtc);
+      }
+    }
+
+    return {
+      recovered_fills_count: recoveredCount,
+      reconciled_unmarked_fills_count: reconciledUnmarkedCount,
       skipped_duplicate_fills_count: skippedDuplicateCount,
       replayed_entries_count: entries.length,
       final_portfolio_snapshot: portfolio.getSnapshot(),
