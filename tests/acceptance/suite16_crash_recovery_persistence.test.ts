@@ -708,11 +708,12 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
     const crashOutput = path.join(tmpDir, 'crash_out.json');
 
     const workerScript = path.resolve(process.cwd(), 'scripts', 'test_crash_worker.ts');
-    const tsxCli = path.resolve(process.cwd(), 'node_modules', '.bin', 'tsx.cmd');
+    const tsxCli = path.resolve(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.mjs');
 
     try {
       // 1. Run uninterrupted benchmark in separate child process
-      const benchProc = spawnSync(tsxCli, [
+      const benchProc = spawnSync(process.execPath, [
+        tsxCli,
         workerScript,
         JSON.stringify({
           mode: 'BENCHMARK',
@@ -727,7 +728,8 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
       const benchmarkData = JSON.parse(fs.readFileSync(benchOutput, 'utf8'));
 
       // 2. Spawn Child Process 1: Runs Fill 1, checkpoints, logs Fill 2 to WAL, and hard crashes (process.exit(99))
-      const crashProc = spawnSync(tsxCli, [
+      const crashProc = spawnSync(process.execPath, [
+        tsxCli,
         workerScript,
         JSON.stringify({
           mode: 'CRASH_BEFORE_FILL2_APPLY',
@@ -746,7 +748,8 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
       expect(fs.existsSync(crashCheckpoint)).toBe(true);
 
       // 3. Spawn Child Process 2: Starts up completely fresh from disk and recovers state
-      const recoverProc = spawnSync(tsxCli, [
+      const recoverProc = spawnSync(process.execPath, [
+        tsxCli,
         workerScript,
         JSON.stringify({
           mode: 'RECOVER',
