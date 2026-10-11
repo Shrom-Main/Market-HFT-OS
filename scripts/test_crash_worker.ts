@@ -105,7 +105,11 @@ if (args.mode === 'BENCHMARK') {
   journal.close();
 
   if (args.outputPath) {
-    fs.writeFileSync(args.outputPath, JSON.stringify(portfolio.getSnapshot(), null, 2), 'utf8');
+    fs.writeFileSync(args.outputPath, JSON.stringify({
+      snapshot: portfolio.getSnapshot(),
+      checkpoint: portfolio.exportCheckpoint(),
+      journalEntries: journal.getEntries()
+    }, null, 2), 'utf8');
   }
   process.exit(0);
 

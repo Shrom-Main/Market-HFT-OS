@@ -589,7 +589,7 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
       expect(() => new FileBackedDurableRecoveryJournal(walPath)).toThrow('E-ERR-024: CORRUPT_JOURNAL');
     } finally {
       if (fs.existsSync(walPath)) fs.unlinkSync(walPath);
-      if (fs.existsSync(tmpDir)) fs.rmdirSync(tmpDir, { recursive: true });
+      if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
@@ -764,15 +764,26 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
 
       const recoveredData = JSON.parse(fs.readFileSync(crashOutput, 'utf8'));
 
-      // 4. Prove complete parity between recovered process and benchmark across all dimensions
-      expect(recoveredData.snapshot.available_cash).toEqual(benchmarkData.available_cash);
-      expect(recoveredData.snapshot.positions).toEqual(benchmarkData.positions);
-      expect(recoveredData.snapshot.cumulative_realized_pnl).toEqual(benchmarkData.cumulative_realized_pnl);
-      expect(recoveredData.snapshot.journal.length).toBe(benchmarkData.journal.length);
+      // 4. Prove complete bit-for-bit parity between recovered process and benchmark across all dimensions
+      // A. Complete snapshot parity (cash, positions, P&L, journal)
+      expect(recoveredData.snapshot).toEqual(benchmarkData.snapshot);
+      expect(canonicalizeJCS(recoveredData.snapshot)).toBe(canonicalizeJCS(benchmarkData.snapshot));
+
+      // B. Complete checkpoint parity (including processed fill IDs and fingerprints)
+      expect(recoveredData.checkpoint).toEqual(benchmarkData.checkpoint);
+      expect(canonicalizeJCS(recoveredData.checkpoint)).toBe(canonicalizeJCS(benchmarkData.checkpoint));
+
+      // C. Processed fill fingerprints parity
+      expect(recoveredData.checkpoint.processed_fill_fingerprints).toEqual(benchmarkData.checkpoint.processed_fill_fingerprints);
+
+      // D. Full journal entries history parity
+      expect(recoveredData.snapshot.journal).toEqual(benchmarkData.snapshot.journal);
+
+      // E. Recovery result verification
       expect(recoveredData.recoveryResult.recovered_fills_count).toBe(1);
       expect(recoveredData.recoveryResult.skipped_duplicate_fills_count).toBe(1);
 
-      // Verify reloaded WAL hash chain
+      // F. Verify reloaded WAL hash chain
       const reloadedJournal = new FileBackedDurableRecoveryJournal(crashWal);
       expect(reloadedJournal.verifyIntegrity().isValid).toBe(true);
       reloadedJournal.close();
@@ -780,6 +791,96 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
       if (fs.existsSync(tmpDir)) {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
+    }
+  });
+
+  // --------------------------------------------------------------------------------------
+  // 9. WAL Flush Failure Fault Injection & Live State Poisoning
+  // --------------------------------------------------------------------------------------
+  it('M3-WAL-FLUSH-FAIL-POISONING-014: Disk flush failure poisons live journal without in-memory state divergence', () => {
+    const tmpDir = path.resolve(process.cwd(), 'tmp_test_wal_poison');
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+    const walPath = path.join(tmpDir, `poison_test_${Date.now()}.log`);
+
+    try {
+      const journal = new FileBackedDurableRecoveryJournal(walPath);
+      // Sequence 1 succeeds
+      journal.appendEvent('INTENT_RECORDED', { intent: 'i-001' }, '2026-10-12T10:00:00.000Z');
+      expect(journal.getEntryCount()).toBe(1);
+
+      // Fault Injection: mock writeSync to simulate physical I/O write failure
+      const origWriteSync = fs.writeSync;
+      (fs as any).writeSync = () => {
+        throw new Error('EIO: simulated physical I/O write failure');
+      };
+
+      try {
+        // Attempting to append sequence 2 must fail on disk write/flush
+        expect(() => journal.appendEvent('ORDER_SUBMITTED', { order: 'o-001' }, '2026-10-12T10:00:01.000Z'))
+          .toThrow('E-ERR-024: WAL_FSYNC_FAILED');
+      } finally {
+        fs.writeSync = origWriteSync;
+      }
+
+      // Verify in-memory state did NOT advance (strictly stayed at sequence 1)
+      expect(journal.getEntryCount()).toBe(1);
+      expect(journal.getIsPoisoned()).toBe(true);
+
+      // Verify live journal is permanently poisoned and rejects further writes
+      expect(() => journal.appendEvent('ORDER_SUBMITTED', { order: 'o-002' }, '2026-10-12T10:00:02.000Z'))
+        .toThrow('E-ERR-024: JOURNAL_POISONED');
+    } finally {
+      if (fs.existsSync(walPath)) fs.unlinkSync(walPath);
+      if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // --------------------------------------------------------------------------------------
+  // 10. Torn-Tail WAL Append Recovery & Mid-Log Tamper Fail-Closed
+  // --------------------------------------------------------------------------------------
+  it('M3-WAL-TORN-TAIL-RECOVERY-015: Torn-tail recovery safely truncates unacknowledged trailing partial writes while failing closed on mid-log corruption', () => {
+    const tmpDir = path.resolve(process.cwd(), 'tmp_test_wal_torn');
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+    const walPath = path.join(tmpDir, `torn_test_${Date.now()}.log`);
+
+    try {
+      // 1. Write 2 valid acknowledged entries to WAL
+      const initialJournal = new FileBackedDurableRecoveryJournal(walPath);
+      initialJournal.appendEvent('INTENT_RECORDED', { intent_id: 'i-100' }, '2026-10-12T10:00:00.000Z');
+      initialJournal.appendEvent('ORDER_SUBMITTED', { order_id: 'o-100' }, '2026-10-12T10:00:01.000Z');
+      initialJournal.close();
+
+      // 2. Fault Injection: simulate an abrupt process kill mid-write by appending an incomplete, truncated torn line
+      fs.appendFileSync(walPath, '{"entry_id":"rec:ent:3","event_type":"FILL_RECORDED","payload":{"par', 'utf8');
+
+      // 3. Restart process with default TRUNCATE_TORN_TAIL policy
+      const recoveredJournal = new FileBackedDurableRecoveryJournal({
+        filePath: walPath,
+        tornTailPolicy: 'TRUNCATE_TORN_TAIL'
+      });
+
+      // Verify torn tail was truncated and journal recovered valid entries 1 and 2
+      expect(recoveredJournal.getEntryCount()).toBe(2);
+      expect(recoveredJournal.verifyIntegrity().isValid).toBe(true);
+
+      // 4. Verify recovered journal can cleanly accept sequence 3 with valid hash chaining
+      const entry3 = recoveredJournal.appendEvent('PORTFOLIO_APPLIED', { fill_id: 'f-100' }, '2026-10-12T10:00:02.000Z');
+      expect(entry3.sequence_number).toBe(3);
+      expect(recoveredJournal.verifyIntegrity().isValid).toBe(true);
+      recoveredJournal.close();
+
+      // 5. Fault Injection: Mid-log corruption (line 1 of 3 corrupted) must FAIL CLOSED even under TRUNCATE_TORN_TAIL
+      const allContent = fs.readFileSync(walPath, 'utf8');
+      const corruptedMidLog = allContent.replace('i-100', 'i-CORRUPTED');
+      fs.writeFileSync(walPath, corruptedMidLog, 'utf8');
+
+      expect(() => new FileBackedDurableRecoveryJournal({
+        filePath: walPath,
+        tornTailPolicy: 'TRUNCATE_TORN_TAIL'
+      })).toThrow('E-ERR-024: CORRUPT_JOURNAL');
+    } finally {
+      if (fs.existsSync(walPath)) fs.unlinkSync(walPath);
+      if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 });

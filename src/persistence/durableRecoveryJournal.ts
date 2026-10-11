@@ -51,8 +51,8 @@ export interface CrashRecoveryResult {
  * and restart verification with zero external database dependencies.
  */
 export class DurableRecoveryJournal {
-  private entries: RecoveryJournalEntry[] = [];
-  private lastEntrySha256: string = '0'.repeat(64); // Genesis hash anchor
+  protected entries: RecoveryJournalEntry[] = [];
+  protected lastEntrySha256: string = '0'.repeat(64); // Genesis hash anchor
 
   constructor(initialEntries?: readonly RecoveryJournalEntry[]) {
     if (initialEntries && initialEntries.length > 0) {
@@ -163,22 +163,78 @@ export class DurableRecoveryJournal {
   }
 }
 
+export type TornTailPolicy = 'TRUNCATE_TORN_TAIL' | 'FAIL_CLOSED';
+
+export interface FileBackedJournalOptions {
+  filePath: string;
+  tornTailPolicy?: TornTailPolicy;
+}
+
 /**
- * File-Backed Durable Recovery Journal
- * Appends entries to an NDJSON WAL file on disk with explicit fsync flush semantics.
- * Survives hard process termination and verifies tamper integrity across restart.
+ * Hardened File-Backed Durable Recovery Journal
+ * - Appends entries to an NDJSON WAL file on disk with synchronous fsync flush semantics.
+ * - Prevents live state divergence: in-memory state only advances AFTER disk write & fsync succeed.
+ * - Live State Poisoning: any write or fsync failure immediately poisons the live journal fail-closed.
+ * - Torn-Tail Recovery Policy: recovers unacknowledged trailing partial writes upon startup while
+ *   strictly rejecting any mid-log corruption/tampering fail-closed.
  */
 export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
   private readonly filePath: string;
+  private readonly tornTailPolicy: TornTailPolicy;
   private fileDescriptor: number | null = null;
+  private isPoisoned: boolean = false;
+  private poisonError: string | null = null;
 
-  constructor(filePath: string) {
+  constructor(optionsOrPath: string | FileBackedJournalOptions) {
+    const options: FileBackedJournalOptions =
+      typeof optionsOrPath === 'string'
+        ? { filePath: optionsOrPath, tornTailPolicy: 'TRUNCATE_TORN_TAIL' }
+        : { tornTailPolicy: 'TRUNCATE_TORN_TAIL', ...optionsOrPath };
+
+    const filePath = options.filePath;
+    const tornTailPolicy = options.tornTailPolicy ?? 'TRUNCATE_TORN_TAIL';
+
     let initialEntries: RecoveryJournalEntry[] = [];
     if (fs.existsSync(filePath)) {
       const content = fs.readFileSync(filePath, 'utf8');
-      const lines = content.split('\n').filter(l => l.trim().length > 0);
-      for (const line of lines) {
-        initialEntries.push(JSON.parse(line));
+      const lines = content.split('\n');
+      let validBytesLength = 0;
+      let encounteredTornTail = false;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (i === lines.length - 1 && line.trim().length === 0) {
+          continue; // Normal trailing blank line after final newline
+        }
+        if (line.trim().length === 0) continue;
+
+        try {
+          const parsed = JSON.parse(line) as RecoveryJournalEntry;
+          initialEntries.push(parsed);
+          validBytesLength += Buffer.byteLength(line, 'utf8') + 1; // line + \n
+        } catch (err: any) {
+          const isLastNonEmptyLine =
+            i === lines.length - 1 ||
+            (i === lines.length - 2 && lines[lines.length - 1].trim().length === 0);
+
+          if (isLastNonEmptyLine && tornTailPolicy === 'TRUNCATE_TORN_TAIL') {
+            encounteredTornTail = true;
+            break;
+          } else {
+            throw new Error(`E-ERR-024: CORRUPT_JOURNAL: Malformed line at index ${i + 1}: ${err.message}`);
+          }
+        }
+      }
+
+      if (encounteredTornTail) {
+        // Truncate file on disk to valid acknowledged bytes
+        const fd = fs.openSync(filePath, 'r+');
+        try {
+          fs.ftruncateSync(fd, validBytesLength);
+          fs.fsyncSync(fd);
+        } finally {
+          fs.closeSync(fd);
+        }
       }
     } else {
       const dir = path.dirname(filePath);
@@ -189,6 +245,7 @@ export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
 
     super(initialEntries);
     this.filePath = filePath;
+    this.tornTailPolicy = tornTailPolicy;
     this.fileDescriptor = fs.openSync(this.filePath, 'a+');
   }
 
@@ -197,18 +254,74 @@ export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
     payload: unknown,
     timestamp_utc: string
   ): RecoveryJournalEntry {
-    const entry = super.appendEvent(eventType, payload, timestamp_utc);
+    if (this.isPoisoned) {
+      throw new Error(
+        `E-ERR-024: JOURNAL_POISONED: Live journal is poisoned following previous disk flush/write failure: ${this.poisonError}`
+      );
+    }
+
+    validateIso8601UtcTimestamp(timestamp_utc);
+
+    const seq = this.entries.length + 1;
+    const entryId = `rec:ent:${seq}`;
+    const payloadJson = canonicalizeJCS(payload);
+    const payloadSha256 = sha256(Buffer.from(payloadJson, 'utf8'));
+
+    const rawHeader = {
+      entry_id: entryId,
+      event_type: eventType,
+      payload_sha256: payloadSha256,
+      prev_entry_sha256: this.lastEntrySha256,
+      sequence_number: seq,
+      timestamp_utc
+    };
+
+    const headerJson = canonicalizeJCS(rawHeader);
+    const entrySha256 = sha256(Buffer.from(headerJson, 'utf8'));
+
+    const entry: RecoveryJournalEntry = {
+      entry_id: entryId,
+      sequence_number: seq,
+      timestamp_utc,
+      event_type: eventType,
+      payload: JSON.parse(payloadJson),
+      payload_sha256: payloadSha256,
+      prev_entry_sha256: this.lastEntrySha256,
+      entry_sha256: entrySha256
+    };
+
     const line = JSON.stringify(entry) + '\n';
-    if (this.fileDescriptor !== null) {
+
+    // 1. Attempt physical disk write and fsync FIRST
+    try {
+      if (this.fileDescriptor === null) {
+        throw new Error('File descriptor is closed');
+      }
       fs.writeSync(this.fileDescriptor, line);
       fs.fsyncSync(this.fileDescriptor);
+    } catch (err: any) {
+      // Disk flush failure: poison live journal immediately, in-memory state NEVER advances!
+      this.isPoisoned = true;
+      this.poisonError = err.message || String(err);
+      this.close();
+      throw new Error(`E-ERR-024: WAL_FSYNC_FAILED: Disk flush failed for sequence ${seq}: ${this.poisonError}`);
     }
-    return entry;
+
+    // 2. Commit to in-memory state ONLY AFTER disk write and fsync succeed
+    this.entries.push(entry);
+    this.lastEntrySha256 = entrySha256;
+    return deepFreeze({ ...entry });
+  }
+
+  public getIsPoisoned(): boolean {
+    return this.isPoisoned;
   }
 
   public close(): void {
     if (this.fileDescriptor !== null) {
-      fs.closeSync(this.fileDescriptor);
+      try {
+        fs.closeSync(this.fileDescriptor);
+      } catch {}
       this.fileDescriptor = null;
     }
   }
@@ -221,6 +334,7 @@ export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
 /**
  * Durable Portfolio Checkpoint Store
  * Persists and restores SimulationPortfolio state to/from disk atomically.
+ * Flushes temporary file, renames atomically, and attempts directory barrier flush where platform-supported.
  */
 export class DurablePortfolioCheckpointStore {
   public static saveCheckpoint(checkpointPath: string, portfolio: SimulationPortfolio): void {
@@ -230,12 +344,24 @@ export class DurablePortfolioCheckpointStore {
     }
     const checkpoint = portfolio.exportCheckpoint();
     const jsonStr = canonicalizeJCS(checkpoint);
-    const tmpPath = `${checkpointPath}.tmp.${Date.now()}`;
+    const tmpPath = `${checkpointPath}.tmp.${Date.now()}.${process.pid}`;
     const fd = fs.openSync(tmpPath, 'w');
-    fs.writeSync(fd, jsonStr);
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
+    try {
+      fs.writeSync(fd, jsonStr);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.renameSync(tmpPath, checkpointPath);
+
+    // Attempt parent directory fsync where supported
+    try {
+      const dirFd = fs.openSync(dir, 'r');
+      fs.fsyncSync(dirFd);
+      fs.closeSync(dirFd);
+    } catch {
+      // Ignored where directory file descriptors are restricted (e.g. Win32 non-backup semantics)
+    }
   }
 
   public static loadCheckpoint(checkpointPath: string): SimulationPortfolio {
@@ -381,7 +507,8 @@ export class CrashRecoveryEngine {
           );
         }
         // Incomplete state restoration: replay the recorded fill to bring portfolio up to state
-        portfolio.processFill(rec.fill, rec.order, currentTimeUtc);
+        const fillTime = (rec.fill as any).fill_timestamp_utc || (rec.fill as any).timestamp_utc || currentTimeUtc;
+        portfolio.processFill(rec.fill, rec.order, fillTime);
         recoveredCount++;
       }
     }
@@ -414,7 +541,8 @@ export class CrashRecoveryEngine {
         }
       } else {
         // 1. Fill recorded, portfolio not updated => Replay fill exactly once
-        portfolio.processFill(fill, order, currentTimeUtc);
+        const fillTime = (fill as any).fill_timestamp_utc || (fill as any).timestamp_utc || currentTimeUtc;
+        portfolio.processFill(fill, order, fillTime);
         recoveredCount++;
 
         journal.appendEvent('PORTFOLIO_APPLIED', {
