@@ -70,7 +70,7 @@ export class DryRunExecutionEngine {
       throw new Error(`E-ERR-028: PRODUCT_MISMATCH: Offer product '${offer.product_id}' does not match market feed product '${feed.product_id}'`);
     }
 
-    const intentId = `intent:dryrun:${offer.offer_id}:${feed.stream_sequence}:${Date.parse(evaluated_at_utc)}`;
+    const intentId = `intent:dryrun:${feed.venue_id}:${offer.offer_id}:${feed.stream_sequence}:${Date.parse(evaluated_at_utc)}`;
     const maxAge = options?.maxStaleFeedAgeMs ?? this.defaultMaxStaleFeedAgeMs;
     const minSpread = options?.minimumSpreadSubunits ?? this.defaultMinimumSpreadSubunits;
     const release = options?.engineRelease ?? this.engineRelease;

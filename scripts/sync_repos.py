@@ -268,7 +268,9 @@ def main():
     args = parser.parse_args()
 
     if args.daemon or args.watch:
-        daemon_loop(interval=args.interval, debounce=args.debounce, target_repo=args.repo)
+        print("[GOVERNANCE ERROR] Continuous auto-commit daemon mode (--daemon / --watch) is strictly disabled per Charter §10.2, ADR-0001, and Independent Audit Finding ARGON-REMED-TECH-004.")
+        print("Automatic commits to main are forbidden. Use explicit invocation: python scripts/sync_repos.py --once [--push-only]")
+        sys.exit(1)
     else:
         success = run_sync_all(push_only=args.push_only, force=args.force, target_repo=args.repo)
         sys.exit(0 if success else 1)

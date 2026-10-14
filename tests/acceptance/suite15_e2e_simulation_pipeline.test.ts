@@ -368,8 +368,11 @@ describe('SUITE-15: Gate M2 Increment 4 — End-to-End Simulation Pipeline & Int
     await activeServer.stop();
     activeServer = null;
 
-    // Await reconnect exhaustion
-    await new Promise((r) => setTimeout(r, 350));
+    // Await reconnect exhaustion deterministically
+    const deadline = Date.now() + 2000;
+    while (activeAdapter.getConnectionState() !== 'CLOSED' && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
 
     expect(activeAdapter.getConnectionState()).toBe('CLOSED');
     expect(activeAdapter.getReconnectAttempts()).toBe(2);

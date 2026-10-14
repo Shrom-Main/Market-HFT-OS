@@ -72,6 +72,8 @@ export interface OfferPersistenceDatabaseTransaction {
     payload_kind: string;
     payload: OfferPromotionEventPayload;
     event_sha256: string;
+    previous_event_hash?: string;
+    created_at_utc?: string;
   }): Promise<void>;
   updateOfferStreamHead(offer_id: string, resulting_sequence_number: CanonicalStreamSequence, resulting_status: CommercialOfferStatus, updated_at_utc: string): Promise<void>;
   getOfferStreamEvent(stream_id: string, sequence_number: CanonicalStreamSequence): Promise<{
@@ -80,6 +82,7 @@ export interface OfferPersistenceDatabaseTransaction {
     payload_kind: string;
     payload: OfferPromotionEventPayload;
     event_sha256: string;
+    previous_event_hash?: string;
     created_at_utc: string;
   } | null>;
 }
@@ -110,6 +113,7 @@ export class InMemoryOfferPersistenceDatabaseSession implements OfferPersistence
     payload_kind: string;
     payload: OfferPromotionEventPayload;
     event_sha256: string;
+    previous_event_hash?: string;
     created_at_utc: string;
   }> = new Map();
 
@@ -178,7 +182,8 @@ export class InMemoryOfferPersistenceDatabaseSession implements OfferPersistence
           const key = `${ev.stream_id}:${ev.sequence_number}`;
           clonedEvents.set(key, {
             ...ev,
-            created_at_utc: new Date().toISOString()
+            previous_event_hash: ev.previous_event_hash ?? '0'.repeat(64),
+            created_at_utc: ev.created_at_utc ?? new Date().toISOString()
           });
         },
         updateOfferStreamHead: async (offer_id: string, resulting_sequence_number: CanonicalStreamSequence, resulting_status: CommercialOfferStatus) => {
@@ -335,12 +340,23 @@ export async function commitPromotionIfVersionAndConsumeNonces(
     const event_bytes = Buffer.from(canonicalizeJCS(eventPayload), 'utf8');
     const event_sha256 = sha256(event_bytes);
 
+    let previous_event_hash = '0'.repeat(64);
+    if (priorSeqBigInt >= 0n) {
+      const priorSeq = parseCanonicalStreamSequence(priorSeqBigInt.toString());
+      const priorEvent = await tx.getOfferStreamEvent(`stream:offer:${offer.offer_id}`, priorSeq);
+      if (priorEvent?.event_sha256) {
+        previous_event_hash = priorEvent.event_sha256;
+      }
+    }
+
     await tx.appendOfferStreamEvent({
       stream_id: `stream:offer:${offer.offer_id}`,
       sequence_number: resulting_stream_sequence,
       payload_kind: 'OFFER_STATUS_TRANSITION',
       payload: eventPayload,
-      event_sha256
+      event_sha256,
+      previous_event_hash,
+      created_at_utc: tx_auth_time_utc
     });
 
     await tx.updateOfferStreamHead(

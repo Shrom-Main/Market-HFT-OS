@@ -380,6 +380,7 @@ describe('SUITE-12: Durable Persistence & Ambiguous Commit Recovery', () => {
       payload_kind: 'OFFER_STATUS_TRANSITION',
       payload: promotionPayload,
       event_sha256: validEventSha,
+      previous_event_hash: '0'.repeat(64),
       created_at_utc: '2026-10-10T12:00:00Z'
     });
     db.heads.set(offer_id, { sequence_number: parseCanonicalStreamSequence('12'), offer_status: 'VERIFIED_EXECUTABLE_OFFER' });
@@ -404,5 +405,66 @@ describe('SUITE-12: Durable Persistence & Ambiguous Commit Recovery', () => {
     const recon = await reconcileAmbiguousPromotionCommit(db, offer_id, '11', '12', 'hash');
     expect(recon.outcome).toBe('OUTCOME_UNKNOWN');
     expect(recon.stream_sequence).toBeNull();
+  });
+
+  it('PERSIST-STREAM-HASH-CHAIN-008: Verifies previous_event_hash chaining across stream event transitions', async () => {
+    const db = new InMemoryOfferPersistenceDatabaseSession();
+    const stream_id = 'stream:offer:off_chain_test';
+
+    await db.executeTransaction(async (tx) => {
+      await tx.appendOfferStreamEvent({
+        stream_id,
+        sequence_number: parseCanonicalStreamSequence('0'),
+        payload_kind: 'OFFER_STATUS_TRANSITION',
+        payload: {
+          offer_id: 'off_chain_test',
+          expected_stream_sequence: '0',
+          resulting_stream_sequence: parseCanonicalStreamSequence('0'),
+          assessment_id: 'asmt:0',
+          assessment_sha256: 'a'.repeat(64),
+          claims_evidence_summary: { summary: 'genesis' },
+          policy_version: 'v1.0',
+          evaluator_version: 'eval-v1',
+          target_offer_status: 'INDICATIVE_QUOTE',
+          target_verification_status: 'UNVERIFIED',
+          consumed_nonces: [],
+          decision_timestamp_utc: '2026-10-10T00:00:00Z'
+        },
+        event_sha256: '1'.repeat(64),
+        previous_event_hash: '0'.repeat(64),
+        created_at_utc: '2026-10-10T00:00:00Z'
+      });
+
+      await tx.appendOfferStreamEvent({
+        stream_id,
+        sequence_number: parseCanonicalStreamSequence('1'),
+        payload_kind: 'OFFER_STATUS_TRANSITION',
+        payload: {
+          offer_id: 'off_chain_test',
+          expected_stream_sequence: '0',
+          resulting_stream_sequence: parseCanonicalStreamSequence('1'),
+          assessment_id: 'asmt:1',
+          assessment_sha256: 'b'.repeat(64),
+          claims_evidence_summary: { summary: 'promoted' },
+          policy_version: 'v1.0',
+          evaluator_version: 'eval-v1',
+          target_offer_status: 'VERIFIED_EXECUTABLE_OFFER',
+          target_verification_status: 'VERIFIED',
+          consumed_nonces: [],
+          decision_timestamp_utc: '2026-10-10T01:00:00Z'
+        },
+        event_sha256: '2'.repeat(64),
+        previous_event_hash: '1'.repeat(64),
+        created_at_utc: '2026-10-10T01:00:00Z'
+      });
+    });
+
+    const ev0 = await db.executeTransaction(tx => tx.getOfferStreamEvent(stream_id, parseCanonicalStreamSequence('0')));
+    const ev1 = await db.executeTransaction(tx => tx.getOfferStreamEvent(stream_id, parseCanonicalStreamSequence('1')));
+
+    expect(ev0).not.toBeNull();
+    expect(ev0!.previous_event_hash).toBe('0'.repeat(64));
+    expect(ev1).not.toBeNull();
+    expect(ev1!.previous_event_hash).toBe(ev0!.event_sha256);
   });
 });

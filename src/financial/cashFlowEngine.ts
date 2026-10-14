@@ -1,9 +1,15 @@
-import { validateIso8601UtcTimestamp } from '../canonical/domain.js';
+import {
+  CanonicalMoney,
+  CurrencyCode,
+  validateIso8601UtcTimestamp
+} from '../canonical/domain.js';
 
 export interface OperatingCashFlowEntry {
   entry_timestamp_utc: string;
   sequence_number: number;
-  amount: number; // Positive for inflow, negative for outflow
+  amount: number | bigint | CanonicalMoney; // Positive for inflow, negative for outflow
+  amount_subunits?: string; // string representation of integer subunits
+  currency?: CurrencyCode; // ISO 4217 currency code
   flow_kind:
     | 'PROCUREMENT_OUTLAY'
     | 'FREIGHT'
@@ -19,6 +25,33 @@ export interface OperatingCashFlowEntry {
 export interface CashFlowSeriesValidationResult {
   has_gross: boolean;
   has_net_disbursement: boolean;
+}
+
+export function extractOperatingCashFlowAmount(entry: OperatingCashFlowEntry): number {
+  if (entry.amount_subunits !== undefined) {
+    const val = BigInt(entry.amount_subunits);
+    if (val > BigInt(Number.MAX_SAFE_INTEGER) || val < BigInt(Number.MIN_SAFE_INTEGER)) {
+      throw new Error('E-ERR-024: INVALID_CASH_FLOW_AMOUNT: Subunit amount exceeds safe integer range');
+    }
+    return Number(val);
+  }
+  if (typeof entry.amount === 'object' && entry.amount !== null && 'amount_subunits' in entry.amount) {
+    const val = BigInt(entry.amount.amount_subunits);
+    if (val > BigInt(Number.MAX_SAFE_INTEGER) || val < BigInt(Number.MIN_SAFE_INTEGER)) {
+      throw new Error('E-ERR-024: INVALID_CASH_FLOW_AMOUNT: Subunit amount exceeds safe integer range');
+    }
+    return Number(val);
+  }
+  if (typeof entry.amount === 'bigint') {
+    if (entry.amount > BigInt(Number.MAX_SAFE_INTEGER) || entry.amount < BigInt(Number.MIN_SAFE_INTEGER)) {
+      throw new Error('E-ERR-024: INVALID_CASH_FLOW_AMOUNT: Subunit amount exceeds safe integer range');
+    }
+    return Number(entry.amount);
+  }
+  if (typeof entry.amount === 'number' && Number.isSafeInteger(entry.amount)) {
+    return entry.amount;
+  }
+  throw new Error('E-ERR-024: INVALID_CASH_FLOW_AMOUNT: Operating cash flow amounts must be safe integers or integer subunits');
 }
 
 export function validateCashFlowDoubleCounting(entries: OperatingCashFlowEntry[]): void {
@@ -43,6 +76,39 @@ export function validateCashFlowDoubleCounting(entries: OperatingCashFlowEntry[]
   }
 }
 
+export function validateCashFlowEntries(
+  entries: OperatingCashFlowEntry[],
+  inceptionMs: number
+): void {
+  validateCashFlowDoubleCounting(entries);
+  let baseCurrency: CurrencyCode | undefined;
+
+  for (const e of entries) {
+    validateIso8601UtcTimestamp(e.entry_timestamp_utc);
+    extractOperatingCashFlowAmount(e);
+
+    if (e.currency) {
+      if (!baseCurrency) {
+        baseCurrency = e.currency;
+      } else if (baseCurrency !== e.currency) {
+        throw new Error(`E-ERR-008: CROSS_CURRENCY_OPERATION_PROHIBITED: Mixed currencies in operating cash flow series ('${baseCurrency}' and '${e.currency}')`);
+      }
+    }
+
+    if (typeof e.amount === 'object' && e.amount !== null && 'currency' in e.amount) {
+      if (!baseCurrency) {
+        baseCurrency = e.amount.currency;
+      } else if (baseCurrency !== e.amount.currency) {
+        throw new Error(`E-ERR-008: CROSS_CURRENCY_OPERATION_PROHIBITED: Mixed currencies in operating cash flow series ('${baseCurrency}' and '${e.amount.currency}')`);
+      }
+    }
+
+    if (Date.parse(e.entry_timestamp_utc) < inceptionMs) {
+      throw new Error('E-ERR-024: CASH_FLOW_BEFORE_INCEPTION: Entry timestamp precedes position inception timestamp');
+    }
+  }
+}
+
 export interface OperatingCashSeriesResult {
   cumulative_balances: number[]; // B_ops(k) for k = 0, 1, ..., K
   peak_operating_funding: number; // C_peak, ops
@@ -53,19 +119,9 @@ export function computeOperatingCashFlowSeries(
   entries: OperatingCashFlowEntry[],
   position_inception_utc: string
 ): OperatingCashSeriesResult {
-  validateCashFlowDoubleCounting(entries);
   validateIso8601UtcTimestamp(position_inception_utc);
   const inceptionMs = Date.parse(position_inception_utc);
-
-  for (const e of entries) {
-    validateIso8601UtcTimestamp(e.entry_timestamp_utc);
-    if (typeof e.amount !== 'number' || !Number.isSafeInteger(e.amount)) {
-      throw new Error('E-ERR-024: INVALID_CASH_FLOW_AMOUNT: Operating cash flow amounts must be safe integers');
-    }
-    if (Date.parse(e.entry_timestamp_utc) < inceptionMs) {
-      throw new Error('E-ERR-024: CASH_FLOW_BEFORE_INCEPTION: Entry timestamp precedes position inception timestamp');
-    }
-  }
+  validateCashFlowEntries(entries, inceptionMs);
 
   // Deterministic sort strictly by parsed timestamp ms, then sequence_number
   const sorted = [...entries].sort((a, b) => {
@@ -80,7 +136,7 @@ export function computeOperatingCashFlowSeries(
   let maxDeficit = 0;
 
   for (let j = 0; j < sorted.length; j++) {
-    const amount = sorted[j].amount;
+    const amount = extractOperatingCashFlowAmount(sorted[j]);
     currentBalance += amount;
     balances.push(currentBalance);
     const deficit = -currentBalance;
@@ -96,7 +152,7 @@ export function computeOperatingCashFlowSeries(
   for (const entry of sorted) {
     const dateKey = entry.entry_timestamp_utc.substring(0, 10);
     const prev = dailyNets.get(dateKey) || 0;
-    dailyNets.set(dateKey, prev + entry.amount);
+    dailyNets.set(dateKey, prev + extractOperatingCashFlowAmount(entry));
   }
 
   let dailyRunningBalance = 0;
@@ -118,7 +174,7 @@ export function computeOperatingCashFlowSeries(
 }
 
 export interface CapitalRecoveryResult {
-  status: 'RECOVERED' | 'NOT_RECOVERED' | 'ZERO_OPERATING_OUTLAY';
+  status: 'RECOVERED' | 'NOT_RECOVERED' | 'ZERO_OPERATING_OUTLAY' | 'RELAPSED_INTO_DEFICIT';
   k_outlay?: number;
   outlay_timestamp_utc?: string;
   k_rec?: number;
@@ -126,6 +182,8 @@ export interface CapitalRecoveryResult {
   outlay_recovery_duration_days?: number;
   lifecycle_recovery_duration_days?: number;
   peak_operating_funding: number;
+  transient_recovery_detected?: boolean;
+  transient_k_rec?: number;
   note?: string;
 }
 
@@ -133,19 +191,9 @@ export function computePostOutlayRecoveryMetrics(
   entries: OperatingCashFlowEntry[],
   position_inception_utc: string
 ): CapitalRecoveryResult {
-  validateCashFlowDoubleCounting(entries);
   validateIso8601UtcTimestamp(position_inception_utc);
   const t0_ms = Date.parse(position_inception_utc);
-
-  for (const e of entries) {
-    validateIso8601UtcTimestamp(e.entry_timestamp_utc);
-    if (typeof e.amount !== 'number' || !Number.isSafeInteger(e.amount)) {
-      throw new Error('E-ERR-024: INVALID_CASH_FLOW_AMOUNT: Operating cash flow amounts must be safe integers');
-    }
-    if (Date.parse(e.entry_timestamp_utc) < t0_ms) {
-      throw new Error('E-ERR-024: CASH_FLOW_BEFORE_INCEPTION: Entry timestamp precedes position inception timestamp');
-    }
-  }
+  validateCashFlowEntries(entries, t0_ms);
 
   const sorted = [...entries].sort((a, b) => {
     const timeDelta = Date.parse(a.entry_timestamp_utc) - Date.parse(b.entry_timestamp_utc);
@@ -158,7 +206,7 @@ export function computePostOutlayRecoveryMetrics(
   let maxDeficit = 0;
 
   for (let j = 0; j < sorted.length; j++) {
-    currentBalance += sorted[j].amount;
+    currentBalance += extractOperatingCashFlowAmount(sorted[j]);
     balances.push(currentBalance);
     if (-currentBalance > maxDeficit) {
       maxDeficit = -currentBalance;
@@ -205,6 +253,27 @@ export function computePostOutlayRecoveryMetrics(
     };
   }
 
+  // Check if balance ever relapses into deficit after k_rec
+  let hasRelapsed = false;
+  for (let k = k_rec + 1; k < balances.length; k++) {
+    if (balances[k] < 0) {
+      hasRelapsed = true;
+      break;
+    }
+  }
+
+  if (hasRelapsed) {
+    return {
+      status: 'NOT_RECOVERED',
+      k_outlay,
+      outlay_timestamp_utc: outlay_entry.entry_timestamp_utc,
+      peak_operating_funding: peak_funding,
+      transient_recovery_detected: true,
+      transient_k_rec: k_rec,
+      note: 'Transient zero-crossing detected, but operating balance relapsed into deficit'
+    };
+  }
+
   const rec_entry = sorted[k_rec - 1];
   const t_rec_ms = Date.parse(rec_entry.entry_timestamp_utc);
 
@@ -246,7 +315,7 @@ export function computeRoPF(
     };
   }
 
-  const sumOperatingFlows = entries.reduce((acc, e) => acc + e.amount, 0);
+  const sumOperatingFlows = entries.reduce((acc, e) => acc + extractOperatingCashFlowAmount(e), 0);
   const ropf = ((sumOperatingFlows + verified_ending_valuation) / series.peak_operating_funding) * 100;
 
   return {
@@ -260,10 +329,11 @@ export function computeCoC(entries: OperatingCashFlowEntry[]): number | { status
   let outflows = 0;
 
   for (const e of entries) {
-    if (e.amount > 0) {
-      inflows += e.amount;
-    } else if (e.amount < 0) {
-      outflows += Math.abs(e.amount);
+    const amt = extractOperatingCashFlowAmount(e);
+    if (amt > 0) {
+      inflows += amt;
+    } else if (amt < 0) {
+      outflows += Math.abs(amt);
     }
   }
 

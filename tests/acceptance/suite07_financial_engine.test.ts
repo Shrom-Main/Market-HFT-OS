@@ -235,4 +235,86 @@ describe('SUITE-07: Financial Engine & Recovery Durations', () => {
     expect(ledger.getBalances().b_clearing).toBe(0);
     expect(ledger.getBalances().b_bank).toBe(9700);
   });
+
+  it('FIN-RECOVERY-TRANSIENT-001: Transient recovery relapsing into deficit is classified as NOT_RECOVERED', () => {
+    const t0 = '2026-10-01T00:00:00Z';
+    const flows = [
+      {
+        entry_timestamp_utc: '2026-10-05T00:00:00Z',
+        sequence_number: 1,
+        amount: -1000,
+        flow_kind: 'PROCUREMENT_OUTLAY' as const
+      },
+      {
+        entry_timestamp_utc: '2026-10-10T00:00:00Z',
+        sequence_number: 2,
+        amount: 1200, // Reaches +200 at k_rec = 2
+        flow_kind: 'NET_MERCHANT_PROCEEDS' as const
+      },
+      {
+        entry_timestamp_utc: '2026-10-15T00:00:00Z',
+        sequence_number: 3,
+        amount: -500, // Drops back to -300 at k = 3 (relapse)
+        flow_kind: 'STATUTORY_TAX_REMIT' as const
+      }
+    ];
+
+    const result = computePostOutlayRecoveryMetrics(flows, t0);
+    expect(result.status).toBe('NOT_RECOVERED');
+    expect(result.transient_recovery_detected).toBe(true);
+    expect(result.transient_k_rec).toBe(2);
+    expect(result.peak_operating_funding).toBe(1000);
+  });
+
+  it('FIN-CASHFLOW-SUBUNITS-002: Accepts integer subunits and CanonicalMoney entries, and rejects cross-currency mixtures', () => {
+    const t0 = '2026-10-01T00:00:00Z';
+    const flows = [
+      {
+        entry_timestamp_utc: '2026-10-05T00:00:00Z',
+        sequence_number: 1,
+        amount: { amount_subunits: '-5000', currency: 'INR' as const, scale: 2 },
+        flow_kind: 'PROCUREMENT_OUTLAY' as const
+      },
+      {
+        entry_timestamp_utc: '2026-10-10T00:00:00Z',
+        sequence_number: 2,
+        amount: 0,
+        amount_subunits: '8000',
+        currency: 'INR' as const,
+        flow_kind: 'NET_MERCHANT_PROCEEDS' as const
+      }
+    ];
+
+    const res = computeOperatingCashFlowSeries(flows, t0);
+    expect(res.cumulative_balances).toEqual([0, -5000, 3000]);
+    expect(res.peak_operating_funding).toBe(5000);
+
+    // Cross-currency mixture must throw E-ERR-008
+    const mixed = [
+      ...flows,
+      {
+        entry_timestamp_utc: '2026-10-12T00:00:00Z',
+        sequence_number: 3,
+        amount: 100,
+        currency: 'USD' as const,
+        flow_kind: 'NET_MERCHANT_PROCEEDS' as const
+      }
+    ];
+    expect(() => computeOperatingCashFlowSeries(mixed, t0)).toThrow('E-ERR-008: CROSS_CURRENCY_OPERATION_PROHIBITED');
+  });
+
+  it('FIN-CASHFLOW-PREINCEPTION-003: Rejects entries before position inception timestamp fail-closed', () => {
+    const t0 = '2026-10-10T00:00:00Z';
+    const flows = [
+      {
+        entry_timestamp_utc: '2026-10-09T23:59:59Z',
+        sequence_number: 1,
+        amount: -100,
+        flow_kind: 'PROCUREMENT_OUTLAY' as const
+      }
+    ];
+
+    expect(() => computeOperatingCashFlowSeries(flows, t0)).toThrow('E-ERR-024: CASH_FLOW_BEFORE_INCEPTION');
+    expect(() => computePostOutlayRecoveryMetrics(flows, t0)).toThrow('E-ERR-024: CASH_FLOW_BEFORE_INCEPTION');
+  });
 });

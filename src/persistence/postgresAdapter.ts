@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS offer_stream_events (
   payload_kind VARCHAR(64) NOT NULL,
   payload JSONB NOT NULL,
   event_sha256 CHAR(64) NOT NULL,
+  previous_event_hash CHAR(64) NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000',
   created_at_utc TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (stream_id, sequence_number),
   CONSTRAINT chk_event_sequence_bounds CHECK (
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS offer_stream_events (
     CAST(sequence_number AS NUMERIC) <= 18446744073709551615
   )
 );
+ALTER TABLE offer_stream_events ADD COLUMN IF NOT EXISTS previous_event_hash CHAR(64) NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000';
 
 -- 3. Offer Nonce Store with bound gateway_id
 CREATE TABLE IF NOT EXISTS offer_nonce_store (
@@ -170,10 +172,14 @@ export class PostgresOfferPersistenceDatabaseTransaction implements OfferPersist
     payload_kind: string;
     payload: OfferPromotionEventPayload;
     event_sha256: string;
+    previous_event_hash?: string;
+    created_at_utc?: string;
   }): Promise<void> {
+    const prevHash = event.previous_event_hash ?? '0'.repeat(64);
+    const createdAt = event.created_at_utc ?? new Date().toISOString();
     await this.client.query(
-      'INSERT INTO offer_stream_events (stream_id, sequence_number, payload_kind, payload, event_sha256, created_at_utc) VALUES ($1, $2, $3, $4, $5, NOW())',
-      [event.stream_id, event.sequence_number, event.payload_kind, JSON.stringify(event.payload), event.event_sha256]
+      'INSERT INTO offer_stream_events (stream_id, sequence_number, payload_kind, payload, event_sha256, previous_event_hash, created_at_utc) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+      [event.stream_id, event.sequence_number, event.payload_kind, JSON.stringify(event.payload), event.event_sha256, prevHash, createdAt]
     );
   }
 
@@ -190,10 +196,11 @@ export class PostgresOfferPersistenceDatabaseTransaction implements OfferPersist
     payload_kind: string;
     payload: OfferPromotionEventPayload;
     event_sha256: string;
+    previous_event_hash: string;
     created_at_utc: string;
   } | null> {
     const res = await this.client.query(
-      'SELECT stream_id, sequence_number, payload_kind, payload, event_sha256, created_at_utc FROM offer_stream_events WHERE stream_id = $1 AND sequence_number = $2',
+      'SELECT stream_id, sequence_number, payload_kind, payload, event_sha256, COALESCE(previous_event_hash, repeat(\'0\', 64)) AS previous_event_hash, created_at_utc FROM offer_stream_events WHERE stream_id = $1 AND sequence_number = $2',
       [stream_id, sequence_number]
     );
     if (res.rows.length === 0) return null;
@@ -205,7 +212,8 @@ export class PostgresOfferPersistenceDatabaseTransaction implements OfferPersist
       payload_kind: row.payload_kind,
       payload,
       event_sha256: row.event_sha256,
-      created_at_utc: typeof row.created_at_utc === 'string' ? row.created_at_utc : row.created_at_utc.toISOString()
+      previous_event_hash: row.previous_event_hash ?? '0'.repeat(64),
+      created_at_utc: row.created_at_utc instanceof Date ? row.created_at_utc.toISOString() : String(row.created_at_utc)
     };
   }
 }
@@ -267,7 +275,7 @@ export interface PostgresTransactionalPoolOptions {
  */
 export class PostgresTransactionalEngine {
   public readonly streamHeads = new Map<string, { sequence_number: string; offer_status: string; updated_at_utc: string }>();
-  public readonly streamEvents = new Map<string, { stream_id: string; sequence_number: string; payload_kind: string; payload: any; event_sha256: string; created_at_utc: string }>();
+  public readonly streamEvents = new Map<string, { stream_id: string; sequence_number: string; payload_kind: string; payload: any; event_sha256: string; previous_event_hash: string; created_at_utc: string }>();
   public readonly nonces = new Map<string, { nonce: string; gateway_id: string; expires_at_utc: string; consumed_at_utc: string }>();
   public readonly assessments = new Map<string, { assessment_sha256: string; canonical_bytes: Buffer; created_at_utc: string }>();
 
@@ -381,7 +389,7 @@ export class PostgresTransactionalPool implements PostgresPoolLike {
 
     // Transaction staging
     let stagedStreamHeads = new Map<string, { sequence_number: string; offer_status: string; updated_at_utc: string }>();
-    let stagedStreamEvents = new Map<string, { stream_id: string; sequence_number: string; payload_kind: string; payload: any; event_sha256: string; created_at_utc: string }>();
+    let stagedStreamEvents = new Map<string, { stream_id: string; sequence_number: string; payload_kind: string; payload: any; event_sha256: string; previous_event_hash: string; created_at_utc: string }>();
     let stagedNonces = new Map<string, { nonce: string; gateway_id: string; expires_at_utc: string; consumed_at_utc: string }>();
     let stagedAssessments = new Map<string, { assessment_sha256: string; canonical_bytes: Buffer; created_at_utc: string }>();
 
@@ -572,11 +580,12 @@ export class PostgresTransactionalPool implements PostgresPoolLike {
           const payload_kind = params![2] as string;
           const rawPayload = params![3] as string;
           const event_sha256 = params![4] as string;
-          const nowStr = new Date().toISOString();
+          const previous_event_hash = (params!.length >= 7 ? params![5] : '0'.repeat(64)) as string;
+          const createdAt = (params!.length >= 7 ? params![6] : (params!.length >= 6 ? params![5] : new Date().toISOString())) as string;
 
           const key = `${stream_id}::${sequence_number}`;
           const payload = typeof rawPayload === 'string' ? JSON.parse(rawPayload) : rawPayload;
-          const record = { stream_id, sequence_number, payload_kind, payload, event_sha256, created_at_utc: nowStr };
+          const record = { stream_id, sequence_number, payload_kind, payload, event_sha256, previous_event_hash, created_at_utc: createdAt };
 
           if (inTransaction) {
             stagedStreamEvents.set(key, record);
@@ -603,6 +612,7 @@ export class PostgresTransactionalPool implements PostgresPoolLike {
               payload_kind: item.payload_kind,
               payload: item.payload,
               event_sha256: item.event_sha256,
+              previous_event_hash: item.previous_event_hash ?? '0'.repeat(64),
               created_at_utc: item.created_at_utc
             }],
             rowCount: 1
