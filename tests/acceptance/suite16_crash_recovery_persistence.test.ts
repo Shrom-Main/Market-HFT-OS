@@ -1225,7 +1225,7 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
       expect(entries[1].prev_entry_sha256).toBe(entries[0].entry_sha256);
       verifiedJournal.close();
 
-      // 5. Injected normalization write/flush failure prevents further journal writes
+      // 5. Injected normalization write/flush failure during constructor normalization
       const failInitJournal = new FileBackedDurableRecoveryJournal(failWalPath);
       failInitJournal.appendEvent('INTENT_RECORDED', { intent_id: 'i-fail-1' }, '2026-10-12T10:00:00.000Z');
       failInitJournal.close();
@@ -1234,23 +1234,100 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
       fs.writeFileSync(failWalPath, failRawContent, 'utf8');
       expect(fs.readFileSync(failWalPath, 'utf8').endsWith('\n')).toBe(false);
 
-      // Inject failure on fsyncSync during normalization
+      // 5A. Fault Injection: fsyncSync fails during constructor normalization (newline written to OS buffer, flush fails)
       const origFsyncSync = fs.fsyncSync;
+      let normalizationFsyncCalls = 0;
       (fs as any).fsyncSync = () => {
-        throw new Error('EIO: simulated physical I/O failure during normalization');
+        normalizationFsyncCalls++;
+        throw new Error('EIO: simulated physical I/O flush failure during constructor normalization');
+      };
+
+      let failingJournal: FileBackedDurableRecoveryJournal | null = null;
+      try {
+        failingJournal = new FileBackedDurableRecoveryJournal(failWalPath);
+        // Verified: Constructor detected unterminated record and attempted normalization flush
+        expect(normalizationFsyncCalls).toBe(1);
+        // Verified: Returned object is poisoned fail-closed rather than usable
+        expect(failingJournal.getIsPoisoned()).toBe(true);
+        expect(failingJournal.getEntryCount()).toBe(1);
+
+        // Verified: Both appendEvent and repeated mutation calls reject fail-closed
+        expect(() => {
+          failingJournal!.appendEvent('ORDER_SUBMITTED', { order_id: 'o-fail-2' }, '2026-10-12T10:00:02.000Z');
+        }).toThrow('E-ERR-024: JOURNAL_POISONED');
+
+        expect(() => {
+          failingJournal!.appendEvent('PORTFOLIO_APPLIED', { fill_id: 'f-fail-2' }, '2026-10-12T10:00:03.000Z');
+        }).toThrow('E-ERR-024: JOURNAL_POISONED');
+      } finally {
+        fs.fsyncSync = origFsyncSync; // Guaranteed restoration in finally block
+      }
+
+      // 5B. Documented Recovery Policy on Reopen:
+      // Even though fsync failed earlier, the file on restart recovers cleanly without corruption
+      const recoveredAfterFsyncFailure = new FileBackedDurableRecoveryJournal(failWalPath);
+      expect(recoveredAfterFsyncFailure.getIsPoisoned()).toBe(false);
+      expect(recoveredAfterFsyncFailure.getEntryCount()).toBe(1);
+      expect(recoveredAfterFsyncFailure.verifyIntegrity().isValid).toBe(true);
+
+      // Subsequent append succeeds cleanly with unbroken hash chain
+      const postFailEntry = recoveredAfterFsyncFailure.appendEvent(
+        'ORDER_SUBMITTED',
+        { order_id: 'o-recov-2' },
+        '2026-10-12T10:00:04.000Z'
+      );
+      expect(postFailEntry.sequence_number).toBe(2);
+      expect(recoveredAfterFsyncFailure.verifyIntegrity().isValid).toBe(true);
+      recoveredAfterFsyncFailure.close();
+
+      // Confirm physical persistence on disk
+      const diskReopen = new FileBackedDurableRecoveryJournal(failWalPath);
+      expect(diskReopen.getEntryCount()).toBe(2);
+      expect(diskReopen.verifyIntegrity().isValid).toBe(true);
+      diskReopen.close();
+
+      // 5C. Fault Injection: writeSync fails before any newline bytes are written
+      const failWriteWalPath = path.join(tmpDir, `fail_write_${Date.now()}.wal`);
+      const jWriteInit = new FileBackedDurableRecoveryJournal(failWriteWalPath);
+      jWriteInit.appendEvent('INTENT_RECORDED', { intent_id: 'i-write-1' }, '2026-10-12T10:00:00.000Z');
+      jWriteInit.close();
+
+      const writeRawContent = fs.readFileSync(failWriteWalPath, 'utf8').trimEnd();
+      fs.writeFileSync(failWriteWalPath, writeRawContent, 'utf8');
+      expect(fs.readFileSync(failWriteWalPath, 'utf8').endsWith('\n')).toBe(false);
+
+      const origWriteSync = fs.writeSync;
+      let normalizationWriteCalls = 0;
+      (fs as any).writeSync = (fd: number, buf: Buffer, offset: number, len: number) => {
+        normalizationWriteCalls++;
+        throw new Error('EIO: simulated physical write failure during constructor normalization');
       };
 
       try {
-        const failingJournal = new FileBackedDurableRecoveryJournal(failWalPath);
-        // Live journal is poisoned upon normalization failure
-        expect(failingJournal.getIsPoisoned()).toBe(true);
-        // Attempting to append must fail closed and reject further writes
+        const failingWriteJournal = new FileBackedDurableRecoveryJournal(failWriteWalPath);
+        expect(normalizationWriteCalls).toBe(1);
+        expect(failingWriteJournal.getIsPoisoned()).toBe(true);
         expect(() => {
-          failingJournal.appendEvent('ORDER_SUBMITTED', { order_id: 'o-fail-2' }, '2026-10-12T10:00:02.000Z');
+          failingWriteJournal.appendEvent('ORDER_SUBMITTED', { order_id: 'o-fail-write' }, '2026-10-12T10:00:05.000Z');
         }).toThrow('E-ERR-024: JOURNAL_POISONED');
       } finally {
-        fs.fsyncSync = origFsyncSync;
+        fs.writeSync = origWriteSync; // Guaranteed restoration in finally block
       }
+
+      // Reopening after write failure normalizes cleanly and appends sequence 2
+      const recoveredAfterWriteFail = new FileBackedDurableRecoveryJournal(failWriteWalPath);
+      expect(recoveredAfterWriteFail.getIsPoisoned()).toBe(false);
+      expect(recoveredAfterWriteFail.getEntryCount()).toBe(1);
+      const postWriteFailEntry = recoveredAfterWriteFail.appendEvent(
+        'ORDER_SUBMITTED',
+        { order_id: 'o-recov-write-2' },
+        '2026-10-12T10:00:06.000Z'
+      );
+      expect(postWriteFailEntry.sequence_number).toBe(2);
+      expect(recoveredAfterWriteFail.verifyIntegrity().isValid).toBe(true);
+      recoveredAfterWriteFail.close();
+
+      if (fs.existsSync(failWriteWalPath)) fs.unlinkSync(failWriteWalPath);
     } finally {
       if (fs.existsSync(walPath)) fs.unlinkSync(walPath);
       if (fs.existsSync(failWalPath)) fs.unlinkSync(failWalPath);
