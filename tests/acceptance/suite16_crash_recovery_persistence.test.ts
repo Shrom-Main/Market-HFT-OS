@@ -1173,4 +1173,88 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
       if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  // --------------------------------------------------------------------------------------
+  // 12. Valid Unterminated Record Normalization & Append Safety
+  // --------------------------------------------------------------------------------------
+  it('M3-WAL-VALID-UNTERMINATED-RECORD-017: Valid final record without newline is safely normalized before subsequent appends; normalization failure prevents further writes', () => {
+    const tmpDir = path.resolve(process.cwd(), 'tmp_test_wal_unterminated');
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+
+    const walPath = path.join(tmpDir, `unterminated_${Date.now()}.wal`);
+    const failWalPath = path.join(tmpDir, `fail_norm_${Date.now()}.wal`);
+
+    try {
+      // 1. Create a WAL with 1 valid entry
+      const initialJournal = new FileBackedDurableRecoveryJournal(walPath);
+      initialJournal.appendEvent('INTENT_RECORDED', { intent_id: 'i-norm-1' }, '2026-10-12T10:00:00.000Z');
+      initialJournal.close();
+
+      // 2. Strip trailing newline on disk to produce a valid but unterminated final record
+      const rawContent = fs.readFileSync(walPath, 'utf8');
+      expect(rawContent.endsWith('\n')).toBe(true);
+      const unterminatedContent = rawContent.trimEnd();
+      fs.writeFileSync(walPath, unterminatedContent, 'utf8');
+      expect(fs.readFileSync(walPath, 'utf8').endsWith('\n')).toBe(false);
+
+      // 3. Reopen, append a second event, and close
+      const reopenedJournal = new FileBackedDurableRecoveryJournal(walPath);
+      expect(reopenedJournal.getEntryCount()).toBe(1);
+      expect(reopenedJournal.verifyIntegrity().isValid).toBe(true);
+
+      const entry2 = reopenedJournal.appendEvent('ORDER_SUBMITTED', { order_id: 'o-norm-2' }, '2026-10-12T10:00:01.000Z');
+      expect(entry2.sequence_number).toBe(2);
+      expect(reopenedJournal.verifyIntegrity().isValid).toBe(true);
+      reopenedJournal.close();
+
+      // Verify physical disk file has not concatenated the records
+      const multiLineContent = fs.readFileSync(walPath, 'utf8');
+      const diskLines = multiLineContent.split('\n').filter(l => l.trim().length > 0);
+      expect(diskLines.length).toBe(2);
+
+      // 4. Reopen again: both entries preserved with valid sequence numbers and hash chain
+      const verifiedJournal = new FileBackedDurableRecoveryJournal(walPath);
+      expect(verifiedJournal.getEntryCount()).toBe(2);
+      expect(verifiedJournal.verifyIntegrity().isValid).toBe(true);
+
+      const entries = verifiedJournal.getEntries();
+      expect(entries[0].sequence_number).toBe(1);
+      expect(entries[0].event_type).toBe('INTENT_RECORDED');
+      expect(entries[1].sequence_number).toBe(2);
+      expect(entries[1].event_type).toBe('ORDER_SUBMITTED');
+      expect(entries[1].prev_entry_sha256).toBe(entries[0].entry_sha256);
+      verifiedJournal.close();
+
+      // 5. Injected normalization write/flush failure prevents further journal writes
+      const failInitJournal = new FileBackedDurableRecoveryJournal(failWalPath);
+      failInitJournal.appendEvent('INTENT_RECORDED', { intent_id: 'i-fail-1' }, '2026-10-12T10:00:00.000Z');
+      failInitJournal.close();
+
+      const failRawContent = fs.readFileSync(failWalPath, 'utf8').trimEnd();
+      fs.writeFileSync(failWalPath, failRawContent, 'utf8');
+      expect(fs.readFileSync(failWalPath, 'utf8').endsWith('\n')).toBe(false);
+
+      // Inject failure on fsyncSync during normalization
+      const origFsyncSync = fs.fsyncSync;
+      (fs as any).fsyncSync = () => {
+        throw new Error('EIO: simulated physical I/O failure during normalization');
+      };
+
+      try {
+        const failingJournal = new FileBackedDurableRecoveryJournal(failWalPath);
+        // Live journal is poisoned upon normalization failure
+        expect(failingJournal.getIsPoisoned()).toBe(true);
+        // Attempting to append must fail closed and reject further writes
+        expect(() => {
+          failingJournal.appendEvent('ORDER_SUBMITTED', { order_id: 'o-fail-2' }, '2026-10-12T10:00:02.000Z');
+        }).toThrow('E-ERR-024: JOURNAL_POISONED');
+      } finally {
+        fs.fsyncSync = origFsyncSync;
+      }
+    } finally {
+      if (fs.existsSync(walPath)) fs.unlinkSync(walPath);
+      if (fs.existsSync(failWalPath)) fs.unlinkSync(failWalPath);
+      if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

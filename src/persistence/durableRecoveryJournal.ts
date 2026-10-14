@@ -188,6 +188,7 @@ export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
   private fileDescriptor: number | null = null;
   private isPoisoned: boolean = false;
   private poisonError: string | null = null;
+  private needsNormalization: boolean = false;
 
   constructor(optionsOrPath: string | FileBackedJournalOptions) {
     const options: FileBackedJournalOptions =
@@ -199,15 +200,21 @@ export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
     const tornTailPolicy = options.tornTailPolicy ?? 'TRUNCATE_TORN_TAIL';
 
     let initialEntries: RecoveryJournalEntry[] = [];
+    let needsNormalization = false;
+
     if (fs.existsSync(filePath)) {
-      const content = fs.readFileSync(filePath, 'utf8');
+      const fileBuffer = fs.readFileSync(filePath);
+      const endsWithNewline = fileBuffer.length === 0 || fileBuffer[fileBuffer.length - 1] === 0x0a;
+      const content = fileBuffer.toString('utf8');
       const lines = content.split('\n');
       let validBytesLength = 0;
       let encounteredTornTail = false;
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        if (i === lines.length - 1 && line.trim().length === 0) {
+        const isTerminalLine = i === lines.length - 1;
+
+        if (isTerminalLine && line.trim().length === 0) {
           continue; // Normal trailing blank line after final newline
         }
         if (line.trim().length === 0) continue;
@@ -215,7 +222,15 @@ export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
         try {
           const parsed = JSON.parse(line) as RecoveryJournalEntry;
           initialEntries.push(parsed);
-          validBytesLength += Buffer.byteLength(line, 'utf8') + 1; // line + \n
+
+          // Byte accounting: if this is the final line and the physical file didn't end with a newline,
+          // on-disk bytes for this record do not include a trailing delimiter.
+          if (isTerminalLine && !endsWithNewline) {
+            validBytesLength += Buffer.byteLength(line, 'utf8');
+            needsNormalization = true;
+          } else {
+            validBytesLength += Buffer.byteLength(line, 'utf8') + 1; // line + \n
+          }
         } catch (err: any) {
           const isLastNonEmptyLine =
             i === lines.length - 1 ||
@@ -223,6 +238,7 @@ export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
 
           if (isLastNonEmptyLine && tornTailPolicy === 'TRUNCATE_TORN_TAIL') {
             encounteredTornTail = true;
+            needsNormalization = false;
             break;
           } else {
             throw new Error(`E-ERR-024: CORRUPT_JOURNAL: Malformed line at index ${i + 1}: ${err.message}`);
@@ -250,7 +266,44 @@ export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
     super(initialEntries);
     this.filePath = filePath;
     this.tornTailPolicy = tornTailPolicy;
+    this.needsNormalization = needsNormalization;
     this.fileDescriptor = fs.openSync(this.filePath, 'a+');
+
+    if (this.needsNormalization) {
+      try {
+        this.normalizeTrailingNewline();
+      } catch (err: any) {
+        this.isPoisoned = true;
+        this.poisonError = err.message || String(err);
+      }
+    }
+  }
+
+  private normalizeTrailingNewline(): void {
+    if (!this.needsNormalization || this.fileDescriptor === null) return;
+    try {
+      const newlineBuf = Buffer.from('\n', 'utf8');
+      let bytesWritten = 0;
+      while (bytesWritten < newlineBuf.length) {
+        const written = fs.writeSync(
+          this.fileDescriptor,
+          newlineBuf,
+          bytesWritten,
+          newlineBuf.length - bytesWritten
+        );
+        if (written <= 0) {
+          throw new Error(`Short write while normalizing unterminated WAL record: ${written} bytes written`);
+        }
+        bytesWritten += written;
+      }
+      fs.fsyncSync(this.fileDescriptor);
+      this.needsNormalization = false;
+    } catch (err: any) {
+      this.isPoisoned = true;
+      this.poisonError = err.message || String(err);
+      this.close();
+      throw new Error(`E-ERR-024: WAL_FSYNC_FAILED: Normalization disk flush failed: ${this.poisonError}`);
+    }
   }
 
   public override appendEvent(
@@ -262,6 +315,10 @@ export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
       throw new Error(
         `E-ERR-024: JOURNAL_POISONED: Live journal is poisoned following previous disk flush/write failure: ${this.poisonError}`
       );
+    }
+
+    if (this.needsNormalization) {
+      this.normalizeTrailingNewline();
     }
 
     validateIso8601UtcTimestamp(timestamp_utc);
