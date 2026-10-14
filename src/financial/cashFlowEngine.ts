@@ -24,6 +24,7 @@ export interface CashFlowSeriesValidationResult {
 export function validateCashFlowDoubleCounting(entries: OperatingCashFlowEntry[]): void {
   let hasGross = false;
   let hasNetDisbursement = false;
+  let hasNetProceeds = false;
 
   for (const entry of entries) {
     if (entry.flow_kind === 'GROSS_CHECKOUT_PROCEEDS') {
@@ -32,10 +33,13 @@ export function validateCashFlowDoubleCounting(entries: OperatingCashFlowEntry[]
     if (entry.flow_kind === 'NET_MERCHANT_DISBURSEMENT') {
       hasNetDisbursement = true;
     }
+    if (entry.flow_kind === 'NET_MERCHANT_PROCEEDS') {
+      hasNetProceeds = true;
+    }
   }
 
-  if (hasGross && hasNetDisbursement) {
-    throw new Error('E-ERR-038: CASH_FLOW_DOUBLE_COUNTING_PROHIBITED: Cannot include both gross checkout proceeds and net merchant disbursements in operating series');
+  if (hasGross && (hasNetDisbursement || hasNetProceeds)) {
+    throw new Error('E-ERR-038: CASH_FLOW_DOUBLE_COUNTING_PROHIBITED: Cannot include both gross checkout proceeds and net merchant disbursements or proceeds in operating series');
   }
 }
 
@@ -51,11 +55,22 @@ export function computeOperatingCashFlowSeries(
 ): OperatingCashSeriesResult {
   validateCashFlowDoubleCounting(entries);
   validateIso8601UtcTimestamp(position_inception_utc);
+  const inceptionMs = Date.parse(position_inception_utc);
 
-  // Deterministic sort strictly by (entry_timestamp_utc, sequence_number)
+  for (const e of entries) {
+    validateIso8601UtcTimestamp(e.entry_timestamp_utc);
+    if (typeof e.amount !== 'number' || !Number.isSafeInteger(e.amount)) {
+      throw new Error('E-ERR-024: INVALID_CASH_FLOW_AMOUNT: Operating cash flow amounts must be safe integers');
+    }
+    if (Date.parse(e.entry_timestamp_utc) < inceptionMs) {
+      throw new Error('E-ERR-024: CASH_FLOW_BEFORE_INCEPTION: Entry timestamp precedes position inception timestamp');
+    }
+  }
+
+  // Deterministic sort strictly by parsed timestamp ms, then sequence_number
   const sorted = [...entries].sort((a, b) => {
-    if (a.entry_timestamp_utc < b.entry_timestamp_utc) return -1;
-    if (a.entry_timestamp_utc > b.entry_timestamp_utc) return 1;
+    const timeDelta = Date.parse(a.entry_timestamp_utc) - Date.parse(b.entry_timestamp_utc);
+    if (timeDelta !== 0) return timeDelta;
     return a.sequence_number - b.sequence_number;
   });
 
@@ -122,9 +137,19 @@ export function computePostOutlayRecoveryMetrics(
   validateIso8601UtcTimestamp(position_inception_utc);
   const t0_ms = Date.parse(position_inception_utc);
 
+  for (const e of entries) {
+    validateIso8601UtcTimestamp(e.entry_timestamp_utc);
+    if (typeof e.amount !== 'number' || !Number.isSafeInteger(e.amount)) {
+      throw new Error('E-ERR-024: INVALID_CASH_FLOW_AMOUNT: Operating cash flow amounts must be safe integers');
+    }
+    if (Date.parse(e.entry_timestamp_utc) < t0_ms) {
+      throw new Error('E-ERR-024: CASH_FLOW_BEFORE_INCEPTION: Entry timestamp precedes position inception timestamp');
+    }
+  }
+
   const sorted = [...entries].sort((a, b) => {
-    if (a.entry_timestamp_utc < b.entry_timestamp_utc) return -1;
-    if (a.entry_timestamp_utc > b.entry_timestamp_utc) return 1;
+    const timeDelta = Date.parse(a.entry_timestamp_utc) - Date.parse(b.entry_timestamp_utc);
+    if (timeDelta !== 0) return timeDelta;
     return a.sequence_number - b.sequence_number;
   });
 
@@ -268,6 +293,9 @@ export class CommittedCapitalManager {
   public total_committed_capital: number = 0;
 
   public authorizePO(po_id: string, amount: number): void {
+    if (typeof amount !== 'number' || !Number.isSafeInteger(amount) || amount <= 0) {
+      throw new Error(`E-ERR-035: INVALID_PO_AMOUNT: Authorized amount must be a strictly positive safe integer for '${po_id}'`);
+    }
     if (this.orders.has(po_id)) {
       throw new Error(`E-ERR-035: DUPLICATE_PO: Purchase order '${po_id}' already exists`);
     }
@@ -283,8 +311,8 @@ export class CommittedCapitalManager {
   public cancelPO(po_id: string): void {
     const po = this.orders.get(po_id);
     if (!po) throw new Error(`E-ERR-035: UNKNOWN_PO: '${po_id}'`);
-    if (['CANCELLED', 'REPLACED'].includes(po.status)) {
-      throw new Error(`E-ERR-035: PO_ALREADY_TERMINAL: '${po_id}'`);
+    if (['CANCELLED', 'REPLACED', 'FULFILLED'].includes(po.status)) {
+      throw new Error(`E-ERR-035: PO_ALREADY_TERMINAL: '${po_id}' is already in terminal state '${po.status}'`);
     }
     this.total_committed_capital -= po.unfulfilled_commitment;
     po.unfulfilled_commitment = 0;
@@ -294,8 +322,11 @@ export class CommittedCapitalManager {
   public fulfillPO(po_id: string, delivery_amount: number): void {
     const po = this.orders.get(po_id);
     if (!po) throw new Error(`E-ERR-035: UNKNOWN_PO: '${po_id}'`);
-    if (['CANCELLED', 'REPLACED'].includes(po.status)) {
-      throw new Error(`E-ERR-035: PO_ALREADY_TERMINAL: '${po_id}'`);
+    if (['CANCELLED', 'REPLACED', 'FULFILLED'].includes(po.status)) {
+      throw new Error(`E-ERR-035: PO_ALREADY_TERMINAL: '${po_id}' is already in terminal state '${po.status}'`);
+    }
+    if (typeof delivery_amount !== 'number' || !Number.isSafeInteger(delivery_amount) || delivery_amount <= 0) {
+      throw new Error(`E-ERR-035: INVALID_PO_AMOUNT: Delivery fulfillment amount must be strictly positive for '${po_id}'`);
     }
     const relief = Math.min(delivery_amount, po.unfulfilled_commitment);
     po.unfulfilled_commitment -= relief;
@@ -305,16 +336,230 @@ export class CommittedCapitalManager {
     }
   }
 
+  public amendPO(po_id: string, new_amount: number): void {
+    const po = this.orders.get(po_id);
+    if (!po) throw new Error(`E-ERR-035: UNKNOWN_PO: '${po_id}'`);
+    if (['CANCELLED', 'REPLACED', 'FULFILLED'].includes(po.status)) {
+      throw new Error(`E-ERR-035: PO_ALREADY_TERMINAL: '${po_id}' is already in terminal state '${po.status}'`);
+    }
+    if (typeof new_amount !== 'number' || !Number.isSafeInteger(new_amount) || new_amount <= 0) {
+      throw new Error(`E-ERR-035: INVALID_PO_AMOUNT: Amended amount must be strictly positive for '${po_id}'`);
+    }
+    const delivered = po.authorized_amount - po.unfulfilled_commitment;
+    if (new_amount < delivered) {
+      throw new Error(`E-ERR-035: INVALID_PO_AMENDMENT: Amended amount (${new_amount}) cannot be less than already delivered amount (${delivered})`);
+    }
+    const delta = new_amount - po.authorized_amount;
+    po.authorized_amount = new_amount;
+    po.unfulfilled_commitment += delta;
+    this.total_committed_capital += delta;
+  }
+
   public replacePO(old_po_id: string, new_po_id: string, new_amount: number): void {
     const old_po = this.orders.get(old_po_id);
     if (!old_po) throw new Error(`E-ERR-035: UNKNOWN_PO: '${old_po_id}'`);
-    if (['CANCELLED', 'REPLACED'].includes(old_po.status)) {
-      throw new Error(`E-ERR-035: PO_ALREADY_TERMINAL: '${old_po_id}'`);
+    if (['CANCELLED', 'REPLACED', 'FULFILLED'].includes(old_po.status)) {
+      throw new Error(`E-ERR-035: PO_ALREADY_TERMINAL: '${old_po_id}' is already in terminal state '${old_po.status}'`);
     }
+    if (typeof new_amount !== 'number' || !Number.isSafeInteger(new_amount) || new_amount <= 0) {
+      throw new Error(`E-ERR-035: INVALID_PO_AMOUNT: New authorized amount must be strictly positive for '${new_po_id}'`);
+    }
+    if (this.orders.has(new_po_id)) {
+      throw new Error(`E-ERR-035: DUPLICATE_PO: Replacement purchase order '${new_po_id}' already exists`);
+    }
+
     this.total_committed_capital -= old_po.unfulfilled_commitment;
     old_po.unfulfilled_commitment = 0;
     old_po.status = 'REPLACED';
 
     this.authorizePO(new_po_id, new_amount);
   }
+}
+
+/**
+ * Two-Tier Gross-Clearing Accounting Ledger
+ * Isolates Tier 1 trade clearing asset (B_clearing) from Tier 2 liquid treasury bank cash (B_bank).
+ */
+export class TwoTierGrossClearingLedger {
+  private b_clearing: number = 0;
+  private b_bank: number = 0;
+
+  constructor(initialBankCash: number = 0) {
+    if (typeof initialBankCash !== 'number' || !Number.isSafeInteger(initialBankCash) || initialBankCash < 0) {
+      throw new Error('E-ERR-024: INVALID_INITIAL_CASH: Initial bank cash must be a non-negative safe integer');
+    }
+    this.b_bank = initialBankCash;
+  }
+
+  public recordGrossProceeds(grossAmount: number): void {
+    if (typeof grossAmount !== 'number' || !Number.isSafeInteger(grossAmount) || grossAmount <= 0) {
+      throw new Error('E-ERR-024: INVALID_GROSS_PROCEEDS: Gross proceeds must be a strictly positive safe integer');
+    }
+    this.b_clearing += grossAmount;
+  }
+
+  public recordClearingDeduction(deductionAmount: number): void {
+    if (typeof deductionAmount !== 'number' || !Number.isSafeInteger(deductionAmount) || deductionAmount <= 0) {
+      throw new Error('E-ERR-024: INVALID_DEDUCTION: Clearing deduction must be a strictly positive safe integer');
+    }
+    this.b_clearing -= deductionAmount;
+  }
+
+  public recordNetDisbursementToBank(p_net: number): void {
+    if (typeof p_net !== 'number' || !Number.isSafeInteger(p_net) || p_net <= 0) {
+      throw new Error('E-ERR-024: INVALID_NET_DISBURSEMENT: Net disbursement must be a strictly positive safe integer');
+    }
+    this.b_clearing -= p_net;
+    this.b_bank += p_net;
+  }
+
+  public getBalances(): { b_clearing: number; b_bank: number } {
+    return {
+      b_clearing: this.b_clearing,
+      b_bank: this.b_bank
+    };
+  }
+}
+
+export type XIRRStatus =
+  | 'CONVERGED'
+  | 'NO_ROOT_FOUND_IN_SEARCH_DOMAIN'
+  | 'MULTIPLE_ROOTS_DETECTED'
+  | 'OUT_OF_SUPPORTED_DOMAIN'
+  | 'INVALID_CASH_FLOWS'
+  | 'NUMERICAL_FAILURE';
+
+export interface XIRRSolverResult {
+  status: XIRRStatus;
+  xirr?: number;
+  xirr_percentage?: number;
+  roots?: number[];
+  note?: string;
+}
+
+/**
+ * Robust Polynomial Return Solver (DEC-012, DEC-014)
+ * Solves NPV(r) = sum(C_j / (1 + r)^t_j) = 0 across search domain [-0.99, 10.0].
+ * Explicitly distinguishes unique roots, multiple roots, and domain failures.
+ */
+export function solveXIRR(
+  flows: { amount: number; entry_timestamp_utc?: string; date_utc?: string; t_years?: number }[]
+): XIRRSolverResult {
+  if (!Array.isArray(flows) || flows.length < 2) {
+    return { status: 'INVALID_CASH_FLOWS', note: 'At least 2 cash flows required' };
+  }
+
+  let hasInflow = false;
+  let hasOutflow = false;
+
+  for (const f of flows) {
+    if (typeof f.amount !== 'number' || !Number.isFinite(f.amount)) {
+      return { status: 'INVALID_CASH_FLOWS', note: 'Amounts must be finite numbers' };
+    }
+    if (f.amount > 0) hasInflow = true;
+    if (f.amount < 0) hasOutflow = true;
+  }
+
+  if (!hasInflow || !hasOutflow) {
+    return { status: 'INVALID_CASH_FLOWS', note: 'Cash flows must contain both positive inflows and negative outflows' };
+  }
+
+  let baseMs: number | null = null;
+  const parsedFlows: { amount: number; t: number }[] = [];
+
+  for (let i = 0; i < flows.length; i++) {
+    const f = flows[i];
+    if (f.t_years !== undefined) {
+      parsedFlows.push({ amount: f.amount, t: f.t_years });
+    } else {
+      const ts = f.entry_timestamp_utc || f.date_utc;
+      if (!ts) {
+        parsedFlows.push({ amount: f.amount, t: i });
+      } else {
+        validateIso8601UtcTimestamp(ts);
+        const ms = Date.parse(ts);
+        if (baseMs === null) baseMs = ms;
+        parsedFlows.push({ amount: f.amount, t: (ms - baseMs) / (365.25 * 86400000) });
+      }
+    }
+  }
+
+  function npv(r: number): number {
+    let sum = 0;
+    for (const f of parsedFlows) {
+      const denom = Math.pow(1 + r, f.t);
+      if (denom === 0 || !Number.isFinite(denom)) return NaN;
+      sum += f.amount / denom;
+    }
+    return sum;
+  }
+
+  const domainMin = -0.99;
+  const domainMax = 10.0;
+  const step = 0.01;
+  const detectedBrackets: [number, number][] = [];
+  const exactRoots: number[] = [];
+
+  let prevR = domainMin;
+  let prevV = npv(prevR);
+
+  for (let r = domainMin + step; r <= domainMax + 1e-9; r += step) {
+    const v = npv(r);
+    if (!Number.isFinite(v)) continue;
+
+    if (Math.abs(v) < 1e-9) {
+      exactRoots.push(Math.round(r * 1e6) / 1e6);
+    } else if (Number.isFinite(prevV) && prevV * v < 0) {
+      detectedBrackets.push([prevR, r]);
+    }
+    prevR = r;
+    prevV = v;
+  }
+
+  const allRootCount = exactRoots.length + detectedBrackets.length;
+  if (allRootCount > 1) {
+    const rootsFound = [...exactRoots];
+    for (const [a, b] of detectedBrackets) {
+      rootsFound.push(Math.round(((a + b) / 2) * 1e4) / 1e4);
+    }
+    return {
+      status: 'MULTIPLE_ROOTS_DETECTED',
+      roots: rootsFound,
+      note: 'Multiple internal rates of return exist for non-conventional cash flow series'
+    };
+  }
+
+  if (allRootCount === 0) {
+    return {
+      status: 'NO_ROOT_FOUND_IN_SEARCH_DOMAIN',
+      note: 'No root found in search domain [-0.99, 10.0]'
+    };
+  }
+
+  let root = exactRoots.length > 0 ? exactRoots[0] : 0;
+  if (detectedBrackets.length > 0) {
+    let [low, high] = detectedBrackets[0];
+    let fLow = npv(low);
+    for (let iter = 0; iter < 100; iter++) {
+      const mid = (low + high) / 2;
+      const fMid = npv(mid);
+      if (Math.abs(fMid) < 1e-10 || (high - low) / 2 < 1e-8) {
+        root = mid;
+        break;
+      }
+      if (fLow * fMid < 0) {
+        high = mid;
+      } else {
+        low = mid;
+        fLow = fMid;
+      }
+      root = mid;
+    }
+  }
+
+  return {
+    status: 'CONVERGED',
+    xirr: root,
+    xirr_percentage: root * 100
+  };
 }

@@ -14,7 +14,7 @@ import {
 import {
   SimulationPortfolio,
   PortfolioSnapshot,
-  PortfolioCheckpoint,
+  DurablePortfolioCheckpoint,
   computeFillFingerprint
 } from '../portfolio/simulationPortfolio.js';
 import { DeterministicClock } from '../canonical/deterministic.js';
@@ -217,7 +217,10 @@ export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
         if (isTerminalLine && line.trim().length === 0) {
           continue; // Normal trailing blank line after final newline
         }
-        if (line.trim().length === 0) continue;
+        if (line.trim().length === 0) {
+          validBytesLength += Buffer.byteLength(line, 'utf8') + 1;
+          continue;
+        }
 
         try {
           const parsed = JSON.parse(line) as RecoveryJournalEntry;
@@ -236,7 +239,7 @@ export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
             i === lines.length - 1 ||
             (i === lines.length - 2 && lines[lines.length - 1].trim().length === 0);
 
-          if (isLastNonEmptyLine && tornTailPolicy === 'TRUNCATE_TORN_TAIL') {
+          if (isLastNonEmptyLine && !endsWithNewline && tornTailPolicy === 'TRUNCATE_TORN_TAIL') {
             encounteredTornTail = true;
             needsNormalization = false;
             break;
@@ -244,6 +247,19 @@ export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
             throw new Error(`E-ERR-024: CORRUPT_JOURNAL: Malformed line at index ${i + 1}: ${err.message}`);
           }
         }
+      }
+
+      // Verify prefix hash-chain integrity BEFORE truncating disk file
+      let prevPrefixHash = '0'.repeat(64);
+      for (let k = 0; k < initialEntries.length; k++) {
+        const ent = initialEntries[k];
+        if (ent.sequence_number !== k + 1) {
+          throw new Error(`E-ERR-024: CORRUPT_JOURNAL: Broken sequence at index ${k + 1}`);
+        }
+        if (ent.prev_entry_sha256 !== prevPrefixHash) {
+          throw new Error(`E-ERR-024: CORRUPT_JOURNAL: Hash chain broken at sequence ${ent.sequence_number}`);
+        }
+        prevPrefixHash = ent.entry_sha256;
       }
 
       if (encounteredTornTail) {
@@ -391,6 +407,10 @@ export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
     return this.isPoisoned;
   }
 
+  public getPoisonError(): string | null {
+    return this.poisonError;
+  }
+
   public close(): void {
     if (this.fileDescriptor !== null) {
       try {
@@ -411,12 +431,26 @@ export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
  * Flushes temporary file, renames atomically, and attempts directory barrier flush where platform-supported.
  */
 export class DurablePortfolioCheckpointStore {
-  public static saveCheckpoint(checkpointPath: string, portfolio: SimulationPortfolio): void {
+  public static saveCheckpoint(checkpointPath: string, portfolio: SimulationPortfolio, journal: DurableRecoveryJournal): void {
     const dir = path.dirname(checkpointPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    const checkpoint = portfolio.exportCheckpoint();
+    const journalIntegrity = journal.verifyIntegrity();
+    if (!journalIntegrity.isValid) {
+      throw new Error(`E-ERR-024: CORRUPT_JOURNAL: Cannot anchor checkpoint to invalid journal at sequence ${journalIntegrity.brokenSequence}`);
+    }
+    const checkpointData = portfolio.exportCheckpoint();
+    const unsignedCheckpoint = {
+      ...checkpointData,
+      schema_version: 'POC-001/PORTFOLIO_CHECKPOINT/v1' as const,
+      wal_sequence_number: journal.getEntryCount(),
+      wal_entry_sha256: journal.getLastEntrySha256()
+    };
+    const checkpoint: DurablePortfolioCheckpoint = {
+      ...unsignedCheckpoint,
+      checkpoint_sha256: sha256(Buffer.from(canonicalizeJCS(unsignedCheckpoint), 'utf8'))
+    };
     const jsonStr = canonicalizeJCS(checkpoint);
     const tmpPath = `${checkpointPath}.tmp.${Date.now()}.${process.pid}`;
     const fd = fs.openSync(tmpPath, 'w');
@@ -438,13 +472,36 @@ export class DurablePortfolioCheckpointStore {
     }
   }
 
-  public static loadCheckpoint(checkpointPath: string): SimulationPortfolio {
+  public static loadCheckpoint(checkpointPath: string, journal: DurableRecoveryJournal): SimulationPortfolio {
     if (!fs.existsSync(checkpointPath)) {
       throw new Error(`E-ERR-024: CHECKPOINT_NOT_FOUND: Checkpoint file not found at ${checkpointPath}`);
     }
     const content = fs.readFileSync(checkpointPath, 'utf8');
-    const checkpoint = JSON.parse(content) as PortfolioCheckpoint;
-    return SimulationPortfolio.restoreFromCheckpoint(checkpoint);
+    let checkpoint: DurablePortfolioCheckpoint;
+    try {
+      checkpoint = JSON.parse(content) as DurablePortfolioCheckpoint;
+    } catch {
+      throw new Error('E-ERR-024: INVALID_CHECKPOINT: Checkpoint JSON is malformed');
+    }
+    const journalIntegrity = journal.verifyIntegrity();
+    if (!journalIntegrity.isValid) {
+      throw new Error(`E-ERR-024: CORRUPT_JOURNAL: Cannot verify checkpoint against invalid journal at sequence ${journalIntegrity.brokenSequence}`);
+    }
+    const checkpointSequence = checkpoint?.wal_sequence_number;
+    if (typeof checkpointSequence !== 'number' || !Number.isSafeInteger(checkpointSequence) ||
+        checkpointSequence < 0 || checkpointSequence > journal.getEntryCount()) {
+      throw new Error('E-ERR-024: CHECKPOINT_WAL_MISMATCH: Checkpoint WAL sequence is not present in the journal');
+    }
+    const expectedWalHash = checkpointSequence === 0
+      ? '0'.repeat(64)
+      : journal.getEntries()[checkpointSequence - 1]?.entry_sha256;
+    if (!expectedWalHash || checkpoint.wal_entry_sha256 !== expectedWalHash) {
+      throw new Error('E-ERR-024: CHECKPOINT_WAL_MISMATCH: Checkpoint does not match the journal hash at its recorded sequence');
+    }
+    return SimulationPortfolio.restoreFromCheckpoint(checkpoint, {
+      sequence_number: checkpointSequence,
+      entry_sha256: expectedWalHash
+    });
   }
 }
 
@@ -498,6 +555,13 @@ export class CrashRecoveryEngine {
 
     for (const [fillId, { fill, order }] of recordedFills.entries()) {
       if (portfolio.isFillProcessed(fillId)) {
+        if (!appliedFillIds.has(fillId)) {
+          journal.appendEvent('PORTFOLIO_APPLIED', {
+            fill_id: fill.fill_id,
+            order_id: fill.order_id,
+            reconciled_unmarked: true
+          }, currentTimeUtc);
+        }
         skippedDuplicateCount++;
         continue;
       }
@@ -506,12 +570,14 @@ export class CrashRecoveryEngine {
       portfolio.processFill(fill, order, currentTimeUtc);
       recoveredCount++;
 
-      // Append PORTFOLIO_APPLIED to seal recovery in journal
-      journal.appendEvent('PORTFOLIO_APPLIED', {
-        fill_id: fill.fill_id,
-        order_id: fill.order_id,
-        recovered: true
-      }, currentTimeUtc);
+      // Append PORTFOLIO_APPLIED to seal recovery in journal if not already present
+      if (!appliedFillIds.has(fill.fill_id)) {
+        journal.appendEvent('PORTFOLIO_APPLIED', {
+          fill_id: fill.fill_id,
+          order_id: fill.order_id,
+          recovered: true
+        }, currentTimeUtc);
+      }
     }
 
     return {
@@ -538,6 +604,11 @@ export class CrashRecoveryEngine {
     currentTimeUtc: string
   ): DurableCrashRecoveryResult {
     validateIso8601UtcTimestamp(currentTimeUtc);
+
+    // Fail-closed if journal is poisoned before mutating portfolio
+    if (journal instanceof FileBackedDurableRecoveryJournal && journal.getIsPoisoned()) {
+      throw new Error(`E-ERR-024: JOURNAL_POISONED: Cannot recover with a poisoned journal: ${journal.getPoisonError()}`);
+    }
 
     // 5. Journal integrity check
     const integrity = journal.verifyIntegrity();
@@ -571,19 +642,12 @@ export class CrashRecoveryEngine {
     let reconciledUnmarkedCount = 0;
     let skippedDuplicateCount = 0;
 
-    // Check boundary 3: Marker recorded, state restoration incomplete
+    // Verify all PORTFOLIO_APPLIED markers correspond to a recorded fill payload
     for (const appliedFillId of appliedFillIds) {
-      if (!portfolio.isFillProcessed(appliedFillId)) {
-        const rec = recordedFills.get(appliedFillId);
-        if (!rec) {
-          throw new Error(
-            `E-ERR-047: RECOVERY_STATE_INCONSISTENCY: PORTFOLIO_APPLIED marker recorded for '${appliedFillId}' but fill payload is missing from journal`
-          );
-        }
-        // Incomplete state restoration: replay the recorded fill to bring portfolio up to state
-        const fillTime = (rec.fill as any).fill_timestamp_utc || (rec.fill as any).timestamp_utc || currentTimeUtc;
-        portfolio.processFill(rec.fill, rec.order, fillTime);
-        recoveredCount++;
+      if (!recordedFills.has(appliedFillId)) {
+        throw new Error(
+          `E-ERR-047: RECOVERY_STATE_INCONSISTENCY: PORTFOLIO_APPLIED marker recorded for '${appliedFillId}' but fill payload is missing from journal`
+        );
       }
     }
 

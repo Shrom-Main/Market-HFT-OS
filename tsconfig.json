@@ -11,6 +11,6 @@
     "rootDir": ".",
     "declaration": true
   },
-  "include": ["src/**/*", "tests/**/*"],
+  "include": ["src/**/*", "tests/**/*", "scripts/**/*"],
   "exclude": ["node_modules", "_salvage", "dist"]
 }

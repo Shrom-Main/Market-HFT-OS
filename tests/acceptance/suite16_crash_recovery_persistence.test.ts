@@ -834,7 +834,7 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
       expect(reloadedJournal.getLastEntrySha256()).toBe(recoveredData.lastEntrySha256);
 
       // I. Repeated recovery idempotency: running recovery again does NOT alter economic state
-      const reloadedPortfolio = DurablePortfolioCheckpointStore.loadCheckpoint(crashCheckpoint);
+      const reloadedPortfolio = DurablePortfolioCheckpointStore.loadCheckpoint(crashCheckpoint, reloadedJournal);
       const secondRecovery = CrashRecoveryEngine.recoverDurable(reloadedJournal, reloadedPortfolio, '2026-10-12T10:00:10.000Z');
       expect(secondRecovery.recovered_fills_count).toBe(0);
       expect(secondRecovery.skipped_duplicate_fills_count).toBe(2);
@@ -1067,7 +1067,7 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
       liveJournal.appendEvent('FILL_RECORDED', { fill: fill1, order: order1 }, '2026-10-12T10:00:01.000Z');
       livePortfolio.processFill(fill1, order1, '2026-10-12T10:00:01.000Z');
       liveJournal.appendEvent('PORTFOLIO_APPLIED', { fill_id: fill1.fill_id, order_id: order1.order_id }, '2026-10-12T10:00:01.000Z');
-      DurablePortfolioCheckpointStore.saveCheckpoint(checkpointPath, livePortfolio);
+      DurablePortfolioCheckpointStore.saveCheckpoint(checkpointPath, livePortfolio, liveJournal);
 
       expect(liveJournal.getEntryCount()).toBe(2);
       expect(livePortfolio.getSnapshot().available_cash.amount_subunits).toBe('999000000'); // 100,000 - 100 = 99,900 EUR
@@ -1113,7 +1113,7 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
       expect(restartJournal.verifyIntegrity().isValid).toBe(true);
 
       // Reload portfolio from checkpoint (at Fill 1)
-      const restartPortfolio = DurablePortfolioCheckpointStore.loadCheckpoint(checkpointPath);
+      const restartPortfolio = DurablePortfolioCheckpointStore.loadCheckpoint(checkpointPath, restartJournal);
       expect(restartPortfolio.isFillProcessed(fill2.fill_id)).toBe(false);
 
       // Execute crash recovery

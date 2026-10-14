@@ -13,7 +13,6 @@ import { sha256, ed25519Sign } from '../../src/canonical/crypto.js';
 import { canonicalizeJCS } from '../../src/canonical/jcs.js';
 import {
   InMemoryOfferPersistenceDatabaseSession,
-  SystemTrustedClock,
   commitPromotionIfVersionAndConsumeNonces,
   reconcileAmbiguousPromotionCommit
 } from '../../src/persistence/atomicPromotion.js';
@@ -26,6 +25,7 @@ import {
   validateAndBuildClaimSigningPayload,
   VerificationClaimsAssessment
 } from '../../src/verification/claims.js';
+import { TEST_PRINCIPAL_AUTHORITY_REGISTRY } from '../fixtures/trustedRegistries.js';
 
 describe('SUITE-12: Durable Persistence & Ambiguous Commit Recovery', () => {
   const offer_id = 'off:din3017:sup-01:2026-q4';
@@ -225,15 +225,15 @@ describe('SUITE-12: Durable Persistence & Ambiguous Commit Recovery', () => {
     };
 
     // Both evaluations evaluate against initial stream sequence '0'
-    const draftA = evaluateOfferPromotionReadOnly(offer, assessment, '0', EVALUATOR_SECRET_HEX, nowUtc);
-    const draftB = evaluateOfferPromotionReadOnly(offer, assessment, '0', EVALUATOR_SECRET_HEX, nowUtc);
+    const draftA = evaluateOfferPromotionReadOnly(offer, assessment, '0', EVALUATOR_SECRET_HEX, nowUtc, TEST_PRINCIPAL_AUTHORITY_REGISTRY);
+    const draftB = evaluateOfferPromotionReadOnly(offer, assessment, '0', EVALUATOR_SECRET_HEX, nowUtc, TEST_PRINCIPAL_AUTHORITY_REGISTRY);
 
     const db = new InMemoryOfferPersistenceDatabaseSession();
-    const clock = new SystemTrustedClock();
+    const clock = { nowUtc: () => nowUtc };
 
     // Fire both promotion transactions concurrently
-    const promiseA = commitPromotionIfVersionAndConsumeNonces(db, clock, offer, '0', draftA, assessment, tokenVerifier);
-    const promiseB = commitPromotionIfVersionAndConsumeNonces(db, clock, offer, '0', draftB, assessment, tokenVerifier);
+    const promiseA = commitPromotionIfVersionAndConsumeNonces(db, clock, offer, '0', draftA, assessment, tokenVerifier, TEST_PRINCIPAL_AUTHORITY_REGISTRY);
+    const promiseB = commitPromotionIfVersionAndConsumeNonces(db, clock, offer, '0', draftB, assessment, tokenVerifier, TEST_PRINCIPAL_AUTHORITY_REGISTRY);
 
     const results = await Promise.allSettled([promiseA, promiseB]);
 

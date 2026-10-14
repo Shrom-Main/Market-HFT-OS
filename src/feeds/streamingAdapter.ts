@@ -136,6 +136,9 @@ export class SimulatedStreamingMarketFeedAdapter {
 
     const fromBig = BigInt(fromSeq);
     const toBig = BigInt(toSeq);
+    if (toBig < fromBig || toBig - fromBig > 10000n) {
+      throw new Error('E-ERR-024: REPLAY_RANGE_EXCEEDED: Replay sequence range must be non-negative and cannot exceed 10000 messages');
+    }
     const messagesToReplay: RawMarketDataMessage[] = [];
 
     for (let seq = fromBig; seq <= toBig; seq++) {

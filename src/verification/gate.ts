@@ -10,6 +10,10 @@ import {
 import { canonicalizeJCS } from '../canonical/jcs.js';
 import { sha256, hmacSha256, ed25519Verify } from '../canonical/crypto.js';
 import {
+  validateEvidenceAllowlistEligibility,
+  CLAIM_PERMITTED_DOCUMENT_TYPES
+} from '../canonical/allowlist.js';
+import {
   AttesterRole,
   AnyVerificationClaim,
   VerificationClaimsAssessment,
@@ -19,7 +23,9 @@ import {
   validateGatewayEndorsementReceipt,
   validateAttesterAuthority,
   validateAndBuildClaimSigningPayload,
-  GATEWAY_AUTHORITY_REGISTRY
+  GATEWAY_AUTHORITY_REGISTRY,
+  PRINCIPAL_AUTHORITY_REGISTRY,
+  PrincipalAuthorityRegistry
 } from './claims.js';
 
 export interface CommercialReconciliationResult {
@@ -47,6 +53,9 @@ export function reconcileOfferClaims(
   // 1. Commercial Terms Reconciliation & Observation Freshness
   const terms = assessment.claim_commercial_terms.claim_parameters;
   const terms_ev = resolved_evidence[assessment.claim_commercial_terms.attestation.evidence_id] || resolved_evidence['COMMERCIAL_TERMS'];
+  if (!terms_ev || !terms_ev.provenance) {
+    throw new Error('E-ERR-012: UNRESOLVED_EVIDENCE_ENVELOPE: Missing commercial terms evidence or provenance');
+  }
   validateIso8601UtcTimestamp(terms.valid_until_utc);
   const valid_until_ms = Date.parse(terms.valid_until_utc);
   if (current_ms > valid_until_ms) {
@@ -70,6 +79,9 @@ export function reconcileOfferClaims(
     throw new Error('E-ERR-028: OFFER_PRICE_CLAIM_MISMATCH');
   }
   const price_ev = resolved_evidence[assessment.claim_price_confirmation.attestation.evidence_id] || resolved_evidence['PRICE_CONFIRMATION'];
+  if (!price_ev || !price_ev.provenance) {
+    throw new Error('E-ERR-012: UNRESOLVED_EVIDENCE_ENVELOPE: Missing price confirmation evidence or provenance');
+  }
   const price_ts = (price_ev.provenance.is_authenticated_source_feed && price_ev.provenance.occurred_at_raw)
     ? price_ev.provenance.occurred_at_raw
     : price_ev.provenance.observed_at_utc;
@@ -83,6 +95,9 @@ export function reconcileOfferClaims(
   // 3. Stock Availability Reconciliation & Freshness
   const stock = assessment.claim_stock_availability.claim_parameters;
   const stock_ev = resolved_evidence[assessment.claim_stock_availability.attestation.evidence_id] || resolved_evidence['STOCK_AVAILABILITY'];
+  if (!stock_ev || !stock_ev.provenance) {
+    throw new Error('E-ERR-012: UNRESOLVED_EVIDENCE_ENVELOPE: Missing stock availability evidence or provenance');
+  }
   validateIso8601UtcTimestamp(stock_ev.provenance.observed_at_utc);
   const stock_ms = Date.parse(stock_ev.provenance.observed_at_utc);
   if (stock_ms > current_ms + 300000) throw new Error('E-ERR-007: CLOCK_SKEW_EXCEEDED');
@@ -95,6 +110,9 @@ export function reconcileOfferClaims(
 
   // 4. Source Authenticity Freshness
   const src_ev = resolved_evidence[assessment.claim_source_authenticity.attestation.evidence_id] || resolved_evidence['SOURCE_AUTHENTICITY'];
+  if (!src_ev || !src_ev.provenance) {
+    throw new Error('E-ERR-012: UNRESOLVED_EVIDENCE_ENVELOPE: Missing source authenticity evidence or provenance');
+  }
   validateIso8601UtcTimestamp(src_ev.provenance.observed_at_utc);
   const src_ms = Date.parse(src_ev.provenance.observed_at_utc);
   if (src_ms > current_ms + 300000) throw new Error('E-ERR-007: CLOCK_SKEW_EXCEEDED');
@@ -403,7 +421,8 @@ export function evaluateOfferPromotionReadOnly(
   assessment: unknown,
   expected_stream_sequence: string,
   evaluator_secret_hex: string,
-  current_time_utc: string
+  current_time_utc: string,
+  principal_registry: PrincipalAuthorityRegistry = PRINCIPAL_AUTHORITY_REGISTRY
 ): PromotionEvaluationDraft {
   const canonical_seq = parseCanonicalStreamSequence(expected_stream_sequence);
   validateAssessmentStructure(assessment);
@@ -437,6 +456,15 @@ export function evaluateOfferPromotionReadOnly(
     resolved_evidence[claim.claim_type] = ev;
     resolved_evidence[claim.attestation.evidence_id] = ev;
 
+    const defaultDoc = CLAIM_PERMITTED_DOCUMENT_TYPES[claim.claim_type]?.[0] || 'PROFORMA_INVOICE';
+    validateEvidenceAllowlistEligibility(
+      ev.evidence_kind || 'OBSERVED',
+      ev.verification_status || 'VERIFIED',
+      ev.offer_status || 'VERIFIED_EXECUTABLE_OFFER',
+      claim.claim_type,
+      ev.document_type || defaultDoc
+    );
+
     let claim_ref: ClaimEvidenceReference;
 
     if (claim.attestation.auth.auth_mechanism === 'DIRECT_KEY_SIGNATURE') {
@@ -450,7 +478,8 @@ export function evaluateOfferPromotionReadOnly(
         claim.attestation.claimed_role,
         claim.claim_type,
         claim.attestation.attested_at_utc,
-        current_time_utc
+        current_time_utc,
+        principal_registry
       );
 
       if (!ed25519Verify(payload_bytes, principal.public_key_hex, sig)) {
@@ -470,10 +499,12 @@ export function evaluateOfferPromotionReadOnly(
       const rcpt = claim.attestation.auth.endorsement_receipt;
       if (!rcpt) throw new Error('E-ERR-017: MISSING_GATEWAY_RECEIPT');
 
-      const expectedPayloadDigest = rcpt.claim_payload_digest || rcpt.claim_signing_payload_sha256;
       const actualDigest = sha256(payload_bytes);
-      if (expectedPayloadDigest !== actualDigest && expectedPayloadDigest !== params_sha256) {
-        throw new Error('E-ERR-017: INVALID_OR_MISSING_ATTESTATION_AUTHENTICATION');
+      if (rcpt.claim_signing_payload_sha256 !== actualDigest) {
+        throw new Error('E-ERR-017: DIGEST_BINDING_MISMATCH: Endorsement receipt digest does not match claim signing payload');
+      }
+      if (rcpt.operator_id !== claim.attestation.attester_id || rcpt.operator_role !== claim.attestation.claimed_role) {
+        throw new Error('E-ERR-017: GATEWAY_OPERATOR_ROLE_MISMATCH: Gateway receipt operator does not match claim attester');
       }
 
       validateAttesterAuthority(
@@ -481,7 +512,8 @@ export function evaluateOfferPromotionReadOnly(
         claim.attestation.claimed_role,
         claim.claim_type,
         claim.attestation.attested_at_utc,
-        current_time_utc
+        current_time_utc,
+        principal_registry
       );
 
       validateGatewayEndorsementReceipt(rcpt, current_time_utc, GATEWAY_AUTHORITY_REGISTRY);

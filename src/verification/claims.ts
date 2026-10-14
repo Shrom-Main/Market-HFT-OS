@@ -28,6 +28,8 @@ export interface RegisteredPrincipal {
   compromised?: boolean;
 }
 
+export type PrincipalAuthorityRegistry = Readonly<Record<string, RegisteredPrincipal>>;
+
 export interface RegisteredGateway {
   gateway_id: string;
   public_key_hex: string;
@@ -142,27 +144,15 @@ export interface ResolvedEvidenceEnvelope {
   evidence_id: string;
   event_sha256: string;
   provenance: ProvenanceMetadata;
+  evidence_kind?: string;
+  verification_status?: string;
+  offer_status?: string;
+  document_type?: string;
 }
 
-export const PRINCIPAL_AUTHORITY_REGISTRY: Record<string, RegisteredPrincipal> = {
-  'op:sec:shrom-principal-01': {
-    principal_id: 'op:sec:shrom-principal-01',
-    principal_type: 'HUMAN_OPERATOR',
-    assigned_roles: [
-      'PORTFOLIO_MANAGER',
-      'COMMERCIAL_SOURCING_SPECIALIST',
-      'WAREHOUSE_OPERATIONS_MANAGER',
-      'SUPPLY_CHAIN_ANALYST',
-      'COMPLIANCE_OFFICER',
-      'LEGAL_COUNSEL',
-      'RISK_OFFICER'
-    ],
-    public_key_hex: '79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664',
-    valid_from_utc: '2026-01-01T00:00:00Z',
-    valid_until_utc: '2027-01-01T00:00:00Z',
-    revoked: false
-  }
-};
+// Production authority is deliberately empty until a verified bootstrap supplies principals.
+// Test keys live under tests/fixtures and are passed explicitly by test callers.
+export const PRINCIPAL_AUTHORITY_REGISTRY: PrincipalAuthorityRegistry = Object.freeze({});
 
 export const GATEWAY_AUTHORITY_REGISTRY: Record<string, RegisteredGateway> = {
   'gw:auth:platform-core-01': {
@@ -305,13 +295,13 @@ export function validateAttesterAuthority(
   claim_type: 'SOURCE_AUTHENTICITY' | 'PRICE_CONFIRMATION' | 'STOCK_AVAILABILITY' | 'COMMERCIAL_TERMS',
   attested_at_utc: string,
   current_time_utc: string,
-  principal_registry: Record<string, RegisteredPrincipal> = PRINCIPAL_AUTHORITY_REGISTRY
+  principal_registry: PrincipalAuthorityRegistry = PRINCIPAL_AUTHORITY_REGISTRY
 ): RegisteredPrincipal {
   validateIso8601UtcTimestamp(attested_at_utc);
   validateIso8601UtcTimestamp(current_time_utc);
 
   const principal = principal_registry[attester_id];
-  if (!principal) {
+  if (!principal || principal.principal_id !== attester_id) {
     throw new Error('E-ERR-018: INSUFFICIENT_ATTESTER_ROLE: Unregistered principal');
   }
 
@@ -341,12 +331,21 @@ export function validateAttesterAuthority(
     throw new Error('E-ERR-019: OPERATOR_KEY_REVOKED: Principal key validity window elapsed at attestation time');
   }
 
+  if (principal.compromised) {
+    throw new Error('E-ERR-019: OPERATOR_KEY_REVOKED: Principal key compromised (retroactive invalidation)');
+  }
+
   if (principal.revoked) {
-    if (principal.compromised) {
-      throw new Error('E-ERR-019: OPERATOR_KEY_REVOKED: Principal key compromised (retroactive invalidation)');
+    if (!principal.revoked_at_utc) {
+      throw new Error('E-ERR-019: OPERATOR_KEY_REVOKED: Revoked principal missing revocation timestamp');
     }
-    const revoked_ms = Date.parse(principal.revoked_at_utc || '');
-    if (!isNaN(revoked_ms) && attested_ms >= revoked_ms) {
+    try {
+      validateIso8601UtcTimestamp(principal.revoked_at_utc);
+    } catch {
+      throw new Error('E-ERR-019: OPERATOR_KEY_REVOKED: Invalid revocation timestamp format');
+    }
+    const revoked_ms = Date.parse(principal.revoked_at_utc);
+    if (attested_ms >= revoked_ms) {
       throw new Error('E-ERR-019: OPERATOR_KEY_REVOKED: Attestation signed at or after key revocation timestamp');
     }
   }

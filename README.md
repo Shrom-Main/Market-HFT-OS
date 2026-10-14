@@ -5,7 +5,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4.5-blue.svg)](https://www.typescriptlang.org/)
 [![Vitest](https://img.shields.io/badge/Vitest-1.6.0-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
-[![Status](https://img.shields.io/badge/Gate_M3_Preflight-Passing_(116_Tests)-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Gate_M3_Preflight-Passing_(146_Tests)-brightgreen.svg)]()
 
 ---
 
@@ -52,13 +52,13 @@ npm run typecheck
 ```bash
 npm test
 ```
-*Expected output: 16 test files passed, 116 tests passed (Exit code 0).*
+*Expected output: 18 test files passed, 146 tests passed (Exit code 0).*
 
 ### Step 4: Generate Machine-Readable Audit Report
 ```bash
 npm run test:json
 ```
-*Generates `test-results.json` recording 16 passed suites and 116 passed tests.*
+*Generates `test-results.json` recording 18 passed suites and 146 passed tests.*
 
 ---
 
@@ -70,7 +70,7 @@ npm run test:json
 - **`suite04_historical_exclusion.test.ts` (2 tests)**: Backfilled evidence exclusion (`E-ERR-032`), fail-closed 18-tuple allowlist (`E-ERR-001`).
 - **`suite05_claim_derivation.test.ts` (3 tests)**: KAT-05A direct Ed25519 signature proof, KAT-05B gateway endorsement receipt proof (exact 300,000 ms lifetime).
 - **`suite06_commercial_reconciliation.test.ts` (4 tests)**: Zero-tolerance matching on unit price (`E-ERR-028`), MOQ (`E-ERR-029`), payment terms (`E-ERR-030`), Incoterms (`E-ERR-031`).
-- **`suite07_financial_engine.test.ts` (7 tests)**: Acceptance fixture `REC-OUTLAY-001` (15-day outlay recovery, 25-day lifecycle recovery, 1,000 peak funding), KAT-03 safe-integer volumetric proof (1,200g), committed capital netting.
+- **`suite07_financial_engine.test.ts` (15 tests)**: Acceptance fixture `REC-OUTLAY-001`, product normalization, physical dimensions, safe-integer volumetric proof, RoPF, CoC, HPR, XIRR polynomial root solver, committed capital netting, and Two-Tier Gross-Clearing ledger (`B_clearing` vs `B_bank`).
 - **`suite08_quarantine_isolation.test.ts` (2 tests)**: Zero legacy imports assertion and `.gitignore` integrity.
 - **`suite09_virtual_genesis.test.ts` (2 tests)**: Virtual genesis head convention ($H_{-1} = 0^{64}$) and monotonic hash chaining.
 - **`suite10_checkpoint_anchor.test.ts` (3 tests)**: Stream checkpoint trust anchor verification with operational vs historical modes.
@@ -79,7 +79,7 @@ npm run test:json
 - **`suite13_market_feed_execution.test.ts` (21 tests)**: Market feed normalization, exact decimal price parsing to integer subunits (`parseDecimalPriceToSubunits` without precision truncation), monotonic sequence enforcement, duplicate rejection, sequence gap buffering & replay, commercial spread dry-run execution, MOQ/expiration gating, and dual-ledger quarantine guard.
 - **`suite14_websocket_portfolio.test.ts` (19 tests)**: Local loopback WebSocket streaming transport, exponential backoff, sequence gap recovery, immutable order lifecycle journal (`SimulatedOrderTransitionEvent`), two-step cancellation with fill-cancel race invariance ($Q_{\text{filled}} + Q_{\text{remaining}} \equiv Q_{\text{total}}$), intent idempotency conflict prevention (`E-ERR-039`), and simulation portfolio ledger.
 - **`suite15_e2e_simulation_pipeline.test.ts` (13 tests)**: End-to-end simulation coordinator (`SimulationPipeline`), exact aggregate cost basis, anchored cumulative COGS allocation ($A(s) = \operatorname{divideHalfEven}(C_0 \cdot s, Q_0)$) proving strict fill-partition invariance across arbitrary order splits (including reviewer's $C_0=5, Q_0=3$ case and multi-partition randomizations), interleaved purchase epoch transitions, unsupported short-position prohibition (`E-ERR-044`), cumulative quantity overflow guards against `Number.MAX_SAFE_INTEGER` (`E-ERR-045`), byte-accurate WebSocket payload limits (`Buffer.byteLength`) guarding against multibyte UTF-8 expansion, transport native `maxPayload`, connection stabilization window preventing endless reconnect retry loops under peer bombardment (`M2-WS-LIFECYCLE-OVERSIZED-BOMB-012`), reproducible event replay producing bit-identical state digests (Condition A), continuous capital and quantity invariant verification (Condition B), fault injection recovery (Condition C), and dual-ledger safety isolation (Condition D).
-- **`suite16_crash_recovery_persistence.test.ts` (10 tests)**: Gate M3 crash recovery and persistence:
+- **`suite16_crash_recovery_persistence.test.ts` (17 tests)**: Gate M3 crash recovery and persistence:
   - Conflicting fill ID reuse detection (`E-ERR-046: FILL_IDEMPOTENCY_CONFLICT`) with snapshot atomic invariance (`M3-IDEMPOTENCY-CONFLICT-001`).
   - Idempotent identical fill replay with zero balance mutation or duplicate journal entries (`M3-IDEMPOTENCY-EXACT-REPLAY-002`).
   - Bit-identical deterministic virtual clock & counter ID generator replay producing exact state digests (`M3-DETERMINISTIC-CLOCK-REPLAY-003`).
@@ -90,3 +90,27 @@ npm run test:json
   - Connection pool capacity wait queue serialization (`M3-POSTGRES-CONNECTION-POOL-QUEUE-008`).
   - Durable write-ahead recovery journal (`DurableRecoveryJournal` & `CrashRecoveryEngine`) reconciling orphaned gateway fills after simulated process termination with exact-once accounting parity (`M3-CRASH-FAULT-INJECTION-JOURNAL-RECOVERY-009`).
   - Concurrent multi-symbol WebSocket streaming feeds across separate handlers without cross-talk or sequence gaps (`M3-MULTI-STREAM-CONCURRENCY-010`).
+  - In-flight fill recovery with simulated process termination (`M3-CRASH-SEPARATE-PROCESS-RECOVERY-011`).
+  - Snapshot persistence roundtrip and verification (`M3-SNAPSHOT-DURABILITY-ROUNDTRIP-012`).
+  - Corrupt snapshot rejection with hash-binding validation (`M3-SNAPSHOT-CORRUPT-DIGEST-REJECT-013`).
+  - Torn WAL record detection and repair (`M3-WAL-TORN-RECORD-TRUNCATE-014`).
+  - Mid-log bit-flip corruption fail-closed rejection (`M3-WAL-INTERIOR-CORRUPTION-FAILCLOSED-015`).
+  - WAL write ordering verification (`M3-WAL-WRITE-ORDER-BEFORE-CHECKPOINT-016`).
+  - Valid unterminated final record normalization and flush (`M3-WAL-VALID-UNTERMINATED-RECORD-017`).
+- **`suite17_real_postgres_integration.test.ts` (6 tests)**: Real PostgreSQL 16.8 native database integration (running on `localhost:5432`):
+  - Live server engine verification (`M3-REAL-POSTGRES-SERVER-VERSION-001`).
+  - Real concurrent row-lock serialization across independent PostgreSQL backend connections (`M3-REAL-POSTGRES-CONCURRENT-ROWLOCK-002`).
+  - Real transaction rollback isolation on simulated network error (`M3-REAL-POSTGRES-ROLLBACK-ISOLATION-003`).
+  - Ambiguous commit recovery against real PostgreSQL stream heads (`M3-REAL-POSTGRES-AMBIGUOUS-COMMIT-RECOVERY-004`).
+  - Real connection pool exhaustion and queueing (`M3-REAL-POSTGRES-POOL-EXHAUSTION-QUEUE-005`).
+  - Exact state reconciliation between PostgreSQL stream heads and offer assessment store (`M3-REAL-POSTGRES-STATE-RECONCILIATION-006`).
+- **`suite18_adversarial_remediation.test.ts` (9 tests)**: Independent audit review notes adversarial remediation suite:
+  - Cryptographic gateway receipt binding & cross-offer replay rejection (`ADV-CRYPTO-01`).
+  - Attester authority fail-closed revocation & compromise rejection (`ADV-CRYPTO-02`).
+  - Exact rational FX scaling, non-positive rate rejection, and trusted oracle authentication (`ADV-FIN-01`).
+  - Cash flow timestamp epoch sort, NaN fail-closed validation, and PO lifecycle integrity (`ADV-FIN-02`).
+  - Polynomial NPV / XIRR solver convergence and multiple root detection (`ADV-FIN-03`).
+  - WAL blank-line byte offset accounting and torn-tail truncation preservation (`ADV-PERSIST-01`).
+  - Reverse simulation guard (`E-ERR-025`) and strict JSON duplicate key detection (`ADV-PERSIST-02`).
+  - SimulationPipeline offer inventory depletion and expiration (`ADV-SIM-01`).
+  - Feed handler non-numeric sequence rejection, crossed-price rejection, and bounded replay buffer (`ADV-SEC-01`).

@@ -56,7 +56,8 @@ export type FeedIngestionOutcome =
   | 'DUPLICATE_IGNORED'
   | 'OUT_OF_ORDER_REJECTED'
   | 'GAP_DETECTED'
-  | 'INVALID_FORMAT';
+  | 'INVALID_FORMAT'
+  | 'BUFFER_OVERFLOW';
 
 export interface FeedIngestionResult {
   outcome: FeedIngestionOutcome;
@@ -156,8 +157,30 @@ export class MarketFeedHandler {
       };
     }
 
+    const seqStr = String(raw.sequence);
+    if (!/^\d+$/.test(seqStr)) {
+      return {
+        outcome: 'INVALID_FORMAT',
+        stream_key: `${raw.venue_id}:${raw.raw_symbol}`,
+        expected_sequence: '0',
+        received_sequence: seqStr,
+        reason: 'E-ERR-024: INVALID_SEQUENCE_FORMAT: Sequence must be a non-negative integer string'
+      };
+    }
+    const rawSeq = BigInt(seqStr);
+
+    if (!Number.isSafeInteger(raw.bid_quantity) || raw.bid_quantity <= 0 ||
+        !Number.isSafeInteger(raw.ask_quantity) || raw.ask_quantity <= 0) {
+      return {
+        outcome: 'INVALID_FORMAT',
+        stream_key: `${raw.venue_id}:${raw.raw_symbol}`,
+        expected_sequence: '0',
+        received_sequence: seqStr,
+        reason: 'E-ERR-024: INVALID_QUANTITY: Bid and ask quantities must be positive safe integers'
+      };
+    }
+
     const streamKey = `${raw.venue_id}:${product_id}`;
-    const rawSeq = BigInt(raw.sequence);
     let expectedSeq = this.sequenceMap.get(streamKey);
 
     if (expectedSeq === undefined) {
@@ -180,7 +203,17 @@ export class MarketFeedHandler {
       if (!this.pendingGapBuffer.has(streamKey)) {
         this.pendingGapBuffer.set(streamKey, new Map());
       }
-      this.pendingGapBuffer.get(streamKey)!.set(rawSeq.toString(), raw);
+      const gapMap = this.pendingGapBuffer.get(streamKey)!;
+      if (gapMap.size >= this.maxReplayBufferSize) {
+        return {
+          outcome: 'BUFFER_OVERFLOW',
+          stream_key: streamKey,
+          expected_sequence: expectedSeq.toString(),
+          received_sequence: rawSeq.toString(),
+          reason: 'E-ERR-024: GAP_BUFFER_OVERFLOW: Pending gap buffer exceeded maximum capacity'
+        };
+      }
+      gapMap.set(rawSeq.toString(), raw);
 
       return {
         outcome: 'GAP_DETECTED',
@@ -195,8 +228,40 @@ export class MarketFeedHandler {
     // rawSeq === expectedSeq: Normal in-order ingestion
     const currency: CurrencyCode = raw.currency ?? 'INR';
     const def = CURRENCY_REGISTRY[currency];
-    const bidSubunits = parseDecimalPriceToSubunits(raw.bid_price, def.internal_accounting_scale);
-    const askSubunits = parseDecimalPriceToSubunits(raw.ask_price, def.internal_accounting_scale);
+    if (!def) {
+      return {
+        outcome: 'INVALID_FORMAT',
+        stream_key: streamKey,
+        expected_sequence: expectedSeq.toString(),
+        received_sequence: rawSeq.toString(),
+        reason: `E-ERR-010: INVALID_CURRENCY: Unsupported currency code '${currency}'`
+      };
+    }
+
+    let bidSubunits: string;
+    let askSubunits: string;
+    try {
+      bidSubunits = parseDecimalPriceToSubunits(raw.bid_price, def.internal_accounting_scale);
+      askSubunits = parseDecimalPriceToSubunits(raw.ask_price, def.internal_accounting_scale);
+    } catch (err: any) {
+      return {
+        outcome: 'INVALID_FORMAT',
+        stream_key: streamKey,
+        expected_sequence: expectedSeq.toString(),
+        received_sequence: rawSeq.toString(),
+        reason: `E-ERR-024: INVALID_PRICE_FORMAT: ${err.message}`
+      };
+    }
+
+    if (BigInt(bidSubunits) <= 0n || BigInt(askSubunits) <= 0n || BigInt(bidSubunits) > BigInt(askSubunits)) {
+      return {
+        outcome: 'INVALID_FORMAT',
+        stream_key: streamKey,
+        expected_sequence: expectedSeq.toString(),
+        received_sequence: rawSeq.toString(),
+        reason: 'E-ERR-024: INVALID_MARKET_PRICES: Bid and ask prices must be positive and non-crossed'
+      };
+    }
 
     const bid_price = createCanonicalMoney(bidSubunits, currency, def.internal_accounting_scale);
     const ask_price = createCanonicalMoney(askSubunits, currency, def.internal_accounting_scale);

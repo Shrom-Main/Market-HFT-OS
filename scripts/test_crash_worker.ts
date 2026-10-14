@@ -27,63 +27,61 @@ const initialCash: CanonicalMoney = {
 };
 
 const fill1: SimulatedFillEvent = {
-  event_type: 'FILL',
-  venue_id: 'SIMULATED-LOCAL',
-  venue_event_id: 've-fill-001',
-  order_id: 'ord:001',
-  intent_id: 'intent:001',
   fill_id: 'fill:worker:001',
+  order_id: 'ord:001',
+  fill_timestamp_utc: '2026-10-12T10:00:01.000Z',
   fill_price: { currency: 'EUR', amount_subunits: '100000', scale: 4 }, // 10.0000 EUR
   fill_quantity: 100,
   cumulative_quantity: 100,
-  remaining_quantity: 0,
-  timestamp_utc: '2026-10-12T10:00:01.000Z'
+  remaining_quantity: 0
 };
 
 const order1: SimulatedOrderRecord = {
   order_id: 'ord:001',
   intent_id: 'intent:001',
+  offer_id: 'off:001',
   product_id: 'DIN3017-W4-CLAMP-001',
+  venue_id: 'SIMULATED-LOCAL',
   side: 'BUY',
-  requested_quantity: 100,
-  limit_price: { currency: 'EUR', amount_subunits: '100000', scale: 4 },
+  order_price: { currency: 'EUR', amount_subunits: '100000', scale: 4 },
+  total_quantity: 100,
+  filled_quantity: 100,
+  remaining_quantity: 0,
   status: 'FILLED',
   created_at_utc: '2026-10-12T10:00:00.000Z',
   updated_at_utc: '2026-10-12T10:00:01.000Z',
-  cumulative_filled_quantity: 100,
-  remaining_quantity: 0,
-  average_fill_price_subunits: '100000',
-  fills: [fill1]
+  fills: [fill1],
+  events: [],
+  intent_sha256: '0'.repeat(64)
 };
 
 const fill2: SimulatedFillEvent = {
-  event_type: 'FILL',
-  venue_id: 'SIMULATED-LOCAL',
-  venue_event_id: 've-fill-002',
-  order_id: 'ord:002',
-  intent_id: 'intent:002',
   fill_id: 'fill:worker:002',
+  order_id: 'ord:002',
+  fill_timestamp_utc: '2026-10-12T10:00:02.000Z',
   fill_price: { currency: 'EUR', amount_subunits: '110000', scale: 4 }, // 11.0000 EUR
   fill_quantity: 50,
   cumulative_quantity: 50,
-  remaining_quantity: 0,
-  timestamp_utc: '2026-10-12T10:00:02.000Z'
+  remaining_quantity: 0
 };
 
 const order2: SimulatedOrderRecord = {
   order_id: 'ord:002',
   intent_id: 'intent:002',
+  offer_id: 'off:002',
   product_id: 'DIN3017-W4-CLAMP-001',
+  venue_id: 'SIMULATED-LOCAL',
   side: 'BUY',
-  requested_quantity: 50,
-  limit_price: { currency: 'EUR', amount_subunits: '110000', scale: 4 },
+  order_price: { currency: 'EUR', amount_subunits: '110000', scale: 4 },
+  total_quantity: 50,
+  filled_quantity: 50,
+  remaining_quantity: 0,
   status: 'FILLED',
   created_at_utc: '2026-10-12T10:00:01.500Z',
   updated_at_utc: '2026-10-12T10:00:02.000Z',
-  cumulative_filled_quantity: 50,
-  remaining_quantity: 0,
-  average_fill_price_subunits: '110000',
-  fills: [fill2]
+  fills: [fill2],
+  events: [],
+  intent_sha256: '0'.repeat(64)
 };
 
 if (args.mode === 'BENCHMARK') {
@@ -103,7 +101,7 @@ if (args.mode === 'BENCHMARK') {
 
   const benchEntries = journal.getEntries();
   const benchLastEntrySha256 = journal.getLastEntrySha256();
-  DurablePortfolioCheckpointStore.saveCheckpoint(args.checkpointPath, portfolio);
+  DurablePortfolioCheckpointStore.saveCheckpoint(args.checkpointPath, portfolio, journal);
   journal.close();
 
   if (args.outputPath) {
@@ -127,7 +125,7 @@ if (args.mode === 'BENCHMARK') {
   journal.appendEvent('PORTFOLIO_APPLIED', { fill_id: fill1.fill_id, order_id: fill1.order_id }, '2026-10-12T10:00:01.000Z');
 
   // Save checkpoint at Fill 1
-  DurablePortfolioCheckpointStore.saveCheckpoint(args.checkpointPath, portfolio);
+  DurablePortfolioCheckpointStore.saveCheckpoint(args.checkpointPath, portfolio, journal);
 
   // Step 2: Gateway emits and durably records Fill 2 in WAL
   journal.appendEvent('FILL_RECORDED', { fill: fill2, order: order2 }, '2026-10-12T10:00:02.000Z');
@@ -139,7 +137,7 @@ if (args.mode === 'BENCHMARK') {
 } else if (args.mode === 'RECOVER') {
   // Step 3: Fresh process starts up from durable files
   const journal = new FileBackedDurableRecoveryJournal(args.journalPath);
-  const portfolio = DurablePortfolioCheckpointStore.loadCheckpoint(args.checkpointPath);
+  const portfolio = DurablePortfolioCheckpointStore.loadCheckpoint(args.checkpointPath, journal);
 
   const recoveryResult = CrashRecoveryEngine.recoverDurable(journal, portfolio, '2026-10-12T10:00:05.000Z');
 
@@ -147,7 +145,7 @@ if (args.mode === 'BENCHMARK') {
   const recoveredLastEntrySha256 = journal.getLastEntrySha256();
 
   // Save recovered checkpoint
-  DurablePortfolioCheckpointStore.saveCheckpoint(args.checkpointPath, portfolio);
+  DurablePortfolioCheckpointStore.saveCheckpoint(args.checkpointPath, portfolio, journal);
   journal.close();
 
   if (args.outputPath) {

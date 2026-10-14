@@ -1,6 +1,7 @@
 import {
   CanonicalMoney,
   CurrencyCode,
+  createCanonicalMoney,
   validateIso8601UtcTimestamp
 } from '../canonical/domain.js';
 import { canonicalizeJCS } from '../canonical/jcs.js';
@@ -10,6 +11,7 @@ import {
   SimulatedFillEvent,
   SimulatedOrderRecord
 } from '../execution/simulatedGateway.js';
+import { roundSubunitFractionalBankers } from '../canonical/currency.js';
 
 export interface CostBasisRational {
   numerator_subunits: string;
@@ -81,6 +83,18 @@ export interface PortfolioCheckpoint {
   processed_fill_ids: string[];
   processed_fill_fingerprints: Array<[string, string]>;
   journal: PortfolioJournalEntry[];
+}
+
+export interface DurablePortfolioCheckpoint extends PortfolioCheckpoint {
+  schema_version: 'POC-001/PORTFOLIO_CHECKPOINT/v1';
+  wal_sequence_number: number;
+  wal_entry_sha256: string;
+  checkpoint_sha256: string;
+}
+
+export interface PortfolioCheckpointWalHead {
+  sequence_number: number;
+  entry_sha256: string;
 }
 
 export interface SimulationPortfolioOptions {
@@ -261,7 +275,7 @@ export class SimulationPortfolio {
   private clonePositionSnapshot(pos: InternalPosition): PositionSnapshot {
     const netQty = pos.net_quantity;
     const aggCostBig = BigInt(pos.aggregate_cost_subunits);
-    const wacbSubunits = netQty > 0 ? (aggCostBig / BigInt(netQty)).toString() : '0';
+    const wacbSubunits = netQty > 0 ? roundSubunitFractionalBankers(aggCostBig, BigInt(netQty)).toString() : '0';
 
     return {
       product_id: pos.product_id,
@@ -345,50 +359,146 @@ export class SimulationPortfolio {
     });
   }
 
-  public static restoreFromCheckpoint(checkpoint: PortfolioCheckpoint): SimulationPortfolio {
-    if (!checkpoint || !checkpoint.initial_cash || typeof checkpoint.available_cash_subunits !== 'string') {
-      throw new Error('E-ERR-024: INVALID_CHECKPOINT: Checkpoint format invalid');
+  public static restoreFromCheckpoint(
+    checkpoint: DurablePortfolioCheckpoint,
+    expectedWalHead: PortfolioCheckpointWalHead
+  ): SimulationPortfolio {
+    const invalid = (detail: string): never => {
+      throw new Error(`E-ERR-024: INVALID_CHECKPOINT: ${detail}`);
+    };
+    if (!checkpoint || typeof checkpoint !== 'object' ||
+        checkpoint.schema_version !== 'POC-001/PORTFOLIO_CHECKPOINT/v1') {
+      return invalid('Checkpoint format or schema version invalid');
     }
-    const portfolio = new SimulationPortfolio({
-      initialCash: checkpoint.initial_cash,
-      allowShort: false
-    });
 
-    portfolio.availableCashSubunits = checkpoint.available_cash_subunits;
-    portfolio.cumulativeRealizedPnlSubunits = checkpoint.cumulative_realized_pnl_subunits || '0';
+    const { checkpoint_sha256, ...unsignedCheckpoint } = checkpoint;
+    if (!/^[a-f0-9]{64}$/.test(checkpoint_sha256) ||
+        sha256(Buffer.from(canonicalizeJCS(unsignedCheckpoint), 'utf8')) !== checkpoint_sha256) {
+      return invalid('Checkpoint SHA-256 digest mismatch');
+    }
+    if (!Number.isSafeInteger(checkpoint.wal_sequence_number) || checkpoint.wal_sequence_number < 0 ||
+        !/^[a-f0-9]{64}$/.test(checkpoint.wal_entry_sha256)) {
+      return invalid('Checkpoint WAL anchor is malformed');
+    }
+    if (!expectedWalHead || checkpoint.wal_sequence_number !== expectedWalHead.sequence_number ||
+        checkpoint.wal_entry_sha256 !== expectedWalHead.entry_sha256) {
+      return invalid('Checkpoint WAL anchor does not match the verified journal head');
+    }
+    if (checkpoint.allow_short !== false) {
+      return invalid('Short positions are not supported');
+    }
+    if (!checkpoint.initial_cash || checkpoint.currency !== checkpoint.initial_cash.currency ||
+        checkpoint.scale !== checkpoint.initial_cash.scale) {
+      return invalid('Checkpoint currency metadata does not match initial cash');
+    }
 
-    if (Array.isArray(checkpoint.positions)) {
-      for (const pos of checkpoint.positions) {
-        portfolio.positions.set(pos.product_id, {
-          product_id: pos.product_id,
-          net_quantity: pos.net_quantity,
-          total_bought_quantity: pos.total_bought_quantity,
-          total_sold_quantity: pos.total_sold_quantity,
-          aggregate_cost_subunits: pos.aggregate_cost_subunits,
-          cumulative_realized_pnl_subunits: pos.cumulative_realized_pnl_subunits,
-          epoch_start_cost_subunits: pos.epoch_start_cost_subunits,
-          epoch_start_quantity: pos.epoch_start_quantity,
-          epoch_cumulative_sold_quantity: pos.epoch_cumulative_sold_quantity
-        });
+    let initialCash: CanonicalMoney;
+    let availableCash: CanonicalMoney;
+    let cumulativeRealized: CanonicalMoney;
+    try {
+      initialCash = createCanonicalMoney(
+        checkpoint.initial_cash.amount_subunits,
+        checkpoint.initial_cash.currency,
+        checkpoint.initial_cash.scale
+      );
+      availableCash = createCanonicalMoney(checkpoint.available_cash_subunits, checkpoint.currency, checkpoint.scale);
+      cumulativeRealized = createCanonicalMoney(checkpoint.cumulative_realized_pnl_subunits, checkpoint.currency, checkpoint.scale);
+    } catch {
+      return invalid('Checkpoint contains malformed or out-of-range monetary values');
+    }
+    if (BigInt(initialCash.amount_subunits) < 0n || BigInt(availableCash.amount_subunits) < 0n) {
+      return invalid('Negative initial or available cash');
+    }
+    if (!Array.isArray(checkpoint.positions) || !Array.isArray(checkpoint.processed_fill_ids) ||
+        !Array.isArray(checkpoint.processed_fill_fingerprints) || !Array.isArray(checkpoint.journal)) {
+      return invalid('Checkpoint collections are malformed');
+    }
+
+    let aggregatePositionCost = 0n;
+    let aggregatePositionRealized = 0n;
+    const positionIds = new Set<string>();
+    for (const pos of checkpoint.positions) {
+      if (!pos || typeof pos.product_id !== 'string' || pos.product_id.length === 0 || positionIds.has(pos.product_id)) {
+        return invalid('Position identifiers are malformed or duplicated');
       }
-    }
-
-    if (Array.isArray(checkpoint.processed_fill_ids)) {
-      for (const id of checkpoint.processed_fill_ids) {
-        portfolio.processedFillIds.add(id);
+      positionIds.add(pos.product_id);
+      const quantities = [
+        pos.net_quantity,
+        pos.total_bought_quantity,
+        pos.total_sold_quantity,
+        pos.epoch_start_quantity,
+        pos.epoch_cumulative_sold_quantity
+      ];
+      if (quantities.some(q => !Number.isSafeInteger(q) || q < 0) ||
+          pos.net_quantity !== pos.total_bought_quantity - pos.total_sold_quantity ||
+          pos.net_quantity < 0 || pos.epoch_cumulative_sold_quantity > pos.epoch_start_quantity ||
+          pos.net_quantity !== pos.epoch_start_quantity - pos.epoch_cumulative_sold_quantity) {
+        return invalid(`Position quantity invariants failed for '${pos.product_id}'`);
       }
-    }
 
-    if (Array.isArray(checkpoint.processed_fill_fingerprints)) {
-      for (const [id, fp] of checkpoint.processed_fill_fingerprints) {
-        portfolio.processedFillFingerprints.set(id, fp);
+      let aggregateCost: CanonicalMoney;
+      let positionRealized: CanonicalMoney;
+      let epochCost: CanonicalMoney;
+      try {
+        aggregateCost = createCanonicalMoney(pos.aggregate_cost_subunits, checkpoint.currency, checkpoint.scale);
+        positionRealized = createCanonicalMoney(pos.cumulative_realized_pnl_subunits, checkpoint.currency, checkpoint.scale);
+        epochCost = createCanonicalMoney(pos.epoch_start_cost_subunits, checkpoint.currency, checkpoint.scale);
+      } catch {
+        return invalid(`Position monetary values are malformed for '${pos.product_id}'`);
       }
+      const aggregateCostBig = BigInt(aggregateCost.amount_subunits);
+      const epochCostBig = BigInt(epochCost.amount_subunits);
+      if (aggregateCostBig < 0n || epochCostBig < 0n ||
+          (pos.net_quantity === 0 && (aggregateCostBig !== 0n || epochCostBig !== 0n || pos.epoch_start_quantity !== 0))) {
+        return invalid(`Position cost basis invariants failed for '${pos.product_id}'`);
+      }
+      aggregatePositionCost += aggregateCostBig;
+      aggregatePositionRealized += BigInt(positionRealized.amount_subunits);
     }
 
-    if (Array.isArray(checkpoint.journal)) {
-      portfolio.journal = checkpoint.journal.map(e => ({ ...e }));
+    if (aggregatePositionRealized !== BigInt(cumulativeRealized.amount_subunits)) {
+      return invalid('Portfolio realized P&L does not equal the sum of position realized P&L');
+    }
+    if (BigInt(availableCash.amount_subunits) + aggregatePositionCost - BigInt(cumulativeRealized.amount_subunits) !== BigInt(initialCash.amount_subunits)) {
+      return invalid('Cash and position cost basis do not reconcile to initial cash');
     }
 
+    if (checkpoint.processed_fill_ids.some(id => typeof id !== 'string' || id.length === 0) ||
+        new Set(checkpoint.processed_fill_ids).size !== checkpoint.processed_fill_ids.length) {
+      return invalid('Processed fill identifiers are malformed or duplicated');
+    }
+    const fingerprintIds = new Set<string>();
+    for (const pair of checkpoint.processed_fill_fingerprints) {
+      if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== 'string' ||
+          !/^[a-f0-9]{64}$/.test(pair[1]) || fingerprintIds.has(pair[0])) {
+        return invalid('Processed fill fingerprints are malformed or duplicated');
+      }
+      fingerprintIds.add(pair[0]);
+    }
+    if (fingerprintIds.size !== checkpoint.processed_fill_ids.length ||
+        checkpoint.processed_fill_ids.some(id => !fingerprintIds.has(id))) {
+      return invalid('Processed fill identifiers and fingerprints do not match');
+    }
+
+    const portfolio = new SimulationPortfolio({ initialCash, allowShort: false });
+    portfolio.availableCashSubunits = availableCash.amount_subunits;
+    portfolio.cumulativeRealizedPnlSubunits = cumulativeRealized.amount_subunits;
+    for (const pos of checkpoint.positions) {
+      portfolio.positions.set(pos.product_id, {
+        product_id: pos.product_id,
+        net_quantity: pos.net_quantity,
+        total_bought_quantity: pos.total_bought_quantity,
+        total_sold_quantity: pos.total_sold_quantity,
+        aggregate_cost_subunits: pos.aggregate_cost_subunits,
+        cumulative_realized_pnl_subunits: pos.cumulative_realized_pnl_subunits,
+        epoch_start_cost_subunits: pos.epoch_start_cost_subunits,
+        epoch_start_quantity: pos.epoch_start_quantity,
+        epoch_cumulative_sold_quantity: pos.epoch_cumulative_sold_quantity
+      });
+    }
+    for (const id of checkpoint.processed_fill_ids) portfolio.processedFillIds.add(id);
+    for (const [id, fp] of checkpoint.processed_fill_fingerprints) portfolio.processedFillFingerprints.set(id, fp);
+    portfolio.journal = checkpoint.journal.map(e => ({ ...e }));
     return portfolio;
   }
 

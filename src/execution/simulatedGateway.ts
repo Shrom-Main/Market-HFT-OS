@@ -7,6 +7,8 @@ import {
   DeterministicIdGenerator
 } from '../canonical/deterministic.js';
 import { deepFreeze } from '../verification/gate.js';
+import { canonicalizeJCS } from '../canonical/jcs.js';
+import { sha256 } from '../canonical/crypto.js';
 import { ExecutionIntent } from './engine.js';
 
 export type SimulatedOrderStatus =
@@ -110,6 +112,13 @@ export class SimulatedExecutionGateway {
     // 1. Dual-Ledger Safety Isolation: strictly DRY_RUN
     if (intent.payload.mode !== 'DRY_RUN') {
       throw new Error('E-ERR-020: ACTUALS_LEDGER_WRITE_VIOLATION: Live capital orders cannot route to simulated execution gateway');
+    }
+
+    // 1b. Verify Canonical Intent Hash
+    const canonicalPayloadBytes = Buffer.from(canonicalizeJCS(intent.payload), 'utf8');
+    const expectedHash = sha256(canonicalPayloadBytes);
+    if (intent.canonical_intent_sha256 !== expectedHash) {
+      throw new Error('E-ERR-024: INVALID_INTENT_DIGEST: Intent canonical hash does not match payload JCS hash');
     }
 
     // 2. Idempotency Check

@@ -3,7 +3,9 @@ import { createCanonicalMoney } from '../../src/canonical/domain.js';
 import {
   convertMoneySubunitsExact,
   validateFXReceiptAtPointOfUse,
-  FXConversionReceipt
+  addCanonicalMoney,
+  FXConversionReceipt,
+  FXOracleRegistry
 } from '../../src/canonical/currency.js';
 import { ed25519Sign, sha256 } from '../../src/canonical/crypto.js';
 import { canonicalizeJCS } from '../../src/canonical/jcs.js';
@@ -13,15 +15,12 @@ describe('SUITE-11: Cross-Currency FX Conversions & Summation Prohibition', () =
     const inr = createCanonicalMoney('1000000', 'INR', 4);
     const usd = createCanonicalMoney('50000', 'USD', 4);
 
-    // Summing differing currencies without conversion throws E-ERR-008
-    function sumMoneyDirect(a: typeof inr, b: typeof usd) {
-      if (a.currency !== b.currency) {
-        throw new Error('E-ERR-008: CROSS_CURRENCY_SUMMATION_ILLEGAL: Cannot sum monetary amounts of different currencies directly');
-      }
-      return BigInt(a.amount_subunits) + BigInt(b.amount_subunits);
-    }
+    expect(() => addCanonicalMoney(inr, usd)).toThrow(/E-ERR-008: CROSS_CURRENCY_SUMMATION_ILLEGAL/);
 
-    expect(() => sumMoneyDirect(inr, usd)).toThrow(/E-ERR-008: CROSS_CURRENCY_SUMMATION_ILLEGAL/);
+    const inr2 = createCanonicalMoney('500000', 'INR', 4);
+    const summed = addCanonicalMoney(inr, inr2);
+    expect(summed.amount_subunits).toBe('1500000');
+    expect(summed.currency).toBe('INR');
   });
 
   it('FX-RECEIPT-VALID-001: Point-of-use FX receipt validation with signed oracle', () => {
@@ -55,13 +54,17 @@ describe('SUITE-11: Cross-Currency FX Conversions & Summation Prohibition', () =
       ...unsignedReceipt,
       oracle_signature: signature
     };
+    const testOracleRegistry: FXOracleRegistry = {
+      RBI_OFFICIAL_REFERENCE: oraclePubHex
+    };
 
     // Valid within 24h
     expect(() => validateFXReceiptAtPointOfUse(
       validReceipt,
       'USD',
       'INR',
-      '2026-10-10T14:00:00Z'
+      '2026-10-10T14:00:00Z',
+      testOracleRegistry
     )).not.toThrow();
 
     // Mismatched target currency throws E-ERR-008
@@ -69,7 +72,8 @@ describe('SUITE-11: Cross-Currency FX Conversions & Summation Prohibition', () =
       validReceipt,
       'USD',
       'EUR' as any,
-      '2026-10-10T14:00:00Z'
+      '2026-10-10T14:00:00Z',
+      testOracleRegistry
     )).toThrow(/E-ERR-008: FX_RECEIPT_CURRENCY_MISMATCH/);
   });
 });

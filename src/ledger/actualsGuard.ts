@@ -128,6 +128,9 @@ export async function enforceActualsLedgerWrite(
   const current_ms = Date.parse(current_time_utc);
   const exp_ms = Date.parse(payload.expires_at_utc);
   const iss_ms = Date.parse(payload.issued_at_utc);
+  if (exp_ms - iss_ms !== 300000) {
+    throw new Error('E-ERR-026: ACTUALS_LEDGER_UNAUTHORIZED_CONTEXT: Ticket validity window must be exactly 300000ms (5 minutes)');
+  }
   if (current_ms > exp_ms || current_ms < iss_ms - 300000) {
     throw new Error('E-ERR-026: ACTUALS_LEDGER_UNAUTHORIZED_CONTEXT: Ticket expired or clock skew exceeded');
   }
@@ -171,3 +174,13 @@ export async function enforceActualsLedgerWrite(
     throw new Error(`E-ERR-026: ACTUALS_LEDGER_MUTATION_FAILED: ${errorMsg}`);
   }
 }
+
+/**
+ * Reverse simulation guard: prevents live capital contexts or actuals contexts from mutating simulation state.
+ */
+export function enforceSimulationLedgerWrite(ctx: LedgerContext): void {
+  if (ctx.ledger_type !== 'SIMULATION_LEDGER') {
+    throw new Error('E-ERR-025: SIMULATION_LEDGER_WRITE_VIOLATION: Actuals ledger or non-simulation context cannot mutate simulation state');
+  }
+}
+

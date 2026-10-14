@@ -109,7 +109,10 @@ export class SimulationPipeline {
     if (offer.verification_status !== 'VERIFIED') {
       throw new Error(`E-ERR-024: UNVERIFIED_OFFER: Cannot register offer with status '${offer.verification_status}'`);
     }
-    this.verifiedOffers.set(offer.offer_id, deepFreeze({ ...offer }));
+    if (offer.offer_status !== 'VERIFIED_EXECUTABLE_OFFER') {
+      throw new Error(`E-ERR-024: UNVERIFIED_OFFER: Cannot register offer with offer status '${offer.offer_status}'`);
+    }
+    this.verifiedOffers.set(offer.offer_id, { ...offer });
   }
 
   public getVerifiedOffer(offer_id: string): CanonicalOffer | null {
@@ -169,15 +172,16 @@ export class SimulationPipeline {
       // If selling into market bid, fund inventory from supplier offer first
       if (this.autoFundInventoryFromOffer && intent.payload.target_side === 'SELL') {
         const buyNotionalSubunits = (BigInt(offer.unit_price.amount_subunits) * BigInt(fillQty)).toString();
+        const supplierPayload = {
+          ...intent.payload,
+          intent_id: `sup:${intent.payload.intent_id}`,
+          target_side: 'BUY' as const,
+          market_unit_price: offer.unit_price,
+          gross_notional: createCanonicalMoney(buyNotionalSubunits, offer.unit_price.currency, offer.unit_price.scale)
+        };
         const supplierIntent: ExecutionIntent = {
-          payload: {
-            ...intent.payload,
-            intent_id: `sup:${intent.payload.intent_id}`,
-            target_side: 'BUY',
-            market_unit_price: offer.unit_price,
-            gross_notional: createCanonicalMoney(buyNotionalSubunits, offer.unit_price.currency, offer.unit_price.scale)
-          },
-          canonical_intent_sha256: sha256(Buffer.from(`sup:${intent.canonical_intent_sha256}`))
+          payload: supplierPayload,
+          canonical_intent_sha256: sha256(Buffer.from(canonicalizeJCS(supplierPayload), 'utf8'))
         };
         const buyOrder = this.executionGateway.submitExecutionIntent(supplierIntent, currentTime);
         const buyFilled = this.executionGateway.simulateFill(buyOrder.order_id, fillQty, offer.unit_price, currentTime);
@@ -193,6 +197,15 @@ export class SimulationPipeline {
 
       // 4. Update Simulation Portfolio
       const portfolioSnap = this.portfolio.processFill(latestFill, filledOrder, currentTime);
+
+      // 4b. Decrement available quantity on verified offer to prevent infinite inventory replay
+      const currentOffer = this.verifiedOffers.get(offer.offer_id);
+      if (currentOffer && currentOffer.available_quantity !== undefined) {
+        currentOffer.available_quantity = Math.max(0, currentOffer.available_quantity - fillQty);
+        if (currentOffer.available_quantity < currentOffer.minimum_order_quantity) {
+          currentOffer.offer_status = 'EXPIRED_OFFER';
+        }
+      }
 
       // 5. Verify Continuous Accounting Invariants
       const invariantsSatisfied = this.verifyAccountingInvariants(filledOrder, portfolioSnap);
@@ -264,6 +277,9 @@ export class SimulationPipeline {
       processed_events_count: this.processedEventsHistory.length,
       offers_count: this.verifiedOffers.size,
       reports_count: this.stepReports.length,
+      events: this.processedEventsHistory,
+      offers: Array.from(this.verifiedOffers.values()).sort((a, b) => a.offer_id.localeCompare(b.offer_id)),
+      orders: this.executionGateway.getAllOrders(),
       portfolio: {
         currency: snap.currency,
         scale: snap.scale,
@@ -276,8 +292,14 @@ export class SimulationPipeline {
           weighted_cost_basis_subunits: p.weighted_cost_basis_subunits,
           cumulative_realized_pnl_subunits: p.cumulative_realized_pnl_subunits
         })),
-        journal_entries_count: snap.journal.length
-      }
+        journal: snap.journal
+      },
+      step_reports: this.stepReports.map(r => ({
+        offer_id: r.offer_id,
+        executed: r.executed,
+        invariants_satisfied: r.invariants_satisfied,
+        skip_reason: r.skip_reason
+      }))
     };
 
     const jcsBytes = Buffer.from(canonicalizeJCS(canonicalState), 'utf8');

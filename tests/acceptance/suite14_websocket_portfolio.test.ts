@@ -29,6 +29,8 @@ import {
   CanonicalOffer,
   createCanonicalMoney
 } from '../../src/canonical/domain.js';
+import { canonicalizeJCS } from '../../src/canonical/jcs.js';
+import { sha256 } from '../../src/canonical/crypto.js';
 
 describe('SUITE-14: Gate M2 Increment 3 — WebSocket Transport, Order Lifecycle Events & Simulation Portfolio', () => {
   const venueId = 'VENUE_NSE_COMMERCIAL';
@@ -51,7 +53,7 @@ describe('SUITE-14: Gate M2 Increment 3 — WebSocket Transport, Order Lifecycle
 
   function createSampleIntent(
     intent_id: string,
-    sha: string,
+    sha?: string,
     overrides?: Partial<ExecutionIntentPayload>
   ): ExecutionIntent {
     const payload: ExecutionIntentPayload = {
@@ -73,9 +75,10 @@ describe('SUITE-14: Gate M2 Increment 3 — WebSocket Transport, Order Lifecycle
       market_event_sha256: '0'.repeat(64),
       ...overrides
     };
+    const realHash = sha256(Buffer.from(canonicalizeJCS(payload), 'utf8'));
     return {
       payload,
-      canonical_intent_sha256: sha
+      canonical_intent_sha256: sha !== undefined ? sha : realHash
     };
   }
 
@@ -167,11 +170,11 @@ describe('SUITE-14: Gate M2 Increment 3 — WebSocket Transport, Order Lifecycle
   it('M2-CORR-IDEMPOTENCY-003: Intent submission with conflicting canonical hash under same intent_id throws E-ERR-039', () => {
     const gateway = new SimulatedExecutionGateway();
 
-    const validIntent = createSampleIntent('intent-conflict-test', 'a'.repeat(64));
+    const validIntent = createSampleIntent('intent-conflict-test');
     gateway.submitExecutionIntent(validIntent, '2026-10-11T12:00:01Z');
 
-    // Conflicting payload under same intent_id
-    const conflictingIntent = createSampleIntent('intent-conflict-test', 'b'.repeat(64));
+    // Conflicting payload under same intent_id with valid JCS hash for differing payload
+    const conflictingIntent = createSampleIntent('intent-conflict-test', undefined, { order_quantity: 99 });
 
     expect(() => gateway.submitExecutionIntent(conflictingIntent, '2026-10-11T12:00:02Z'))
       .toThrow(/E-ERR-039: IDEMPOTENCY_CONFLICT/);
@@ -180,7 +183,7 @@ describe('SUITE-14: Gate M2 Increment 3 — WebSocket Transport, Order Lifecycle
   it('M2-CORR-TRANSITION-JOURNAL-004: Explicit order-state transition journal records full history with sequential numbering', () => {
     const gateway = new SimulatedExecutionGateway();
 
-    const intent = createSampleIntent('intent-journal-01', 'c'.repeat(64), { order_quantity: 100 });
+    const intent = createSampleIntent('intent-journal-01', undefined, { order_quantity: 100 });
 
     const o1 = gateway.submitExecutionIntent(intent, '2026-10-11T12:00:01Z');
     expect(o1.events.length).toBe(1);
@@ -215,7 +218,7 @@ describe('SUITE-14: Gate M2 Increment 3 — WebSocket Transport, Order Lifecycle
   it('M2-CORR-CANCEL-TWOSTEP-005: Cancellation requires explicit request followed by confirmation, blocking premature confirmation', () => {
     const gateway = new SimulatedExecutionGateway();
 
-    const intent = createSampleIntent('intent-twostep-01', 'd'.repeat(64));
+    const intent = createSampleIntent('intent-twostep-01');
     const order = gateway.submitExecutionIntent(intent, '2026-10-11T12:00:01Z');
 
     // Premature confirmation on ACKNOWLEDGED order fails closed
@@ -248,7 +251,7 @@ describe('SUITE-14: Gate M2 Increment 3 — WebSocket Transport, Order Lifecycle
   it('M2-CORR-FILL-CANCEL-RACE-006: Manages fill arriving while cancellation is requested, preserving filled + remaining === total invariant', () => {
     const gateway = new SimulatedExecutionGateway();
 
-    const intent = createSampleIntent('intent-race-01', 'e'.repeat(64), { order_quantity: 100 });
+    const intent = createSampleIntent('intent-race-01', undefined, { order_quantity: 100 });
     const order = gateway.submitExecutionIntent(intent, '2026-10-11T12:00:01Z');
 
     // Client sends cancel request
@@ -278,7 +281,7 @@ describe('SUITE-14: Gate M2 Increment 3 — WebSocket Transport, Order Lifecycle
   it('M2-CORR-IMMUTABILITY-007: Gateway order snapshots and transition histories are deeply immutable', () => {
     const gateway = new SimulatedExecutionGateway();
 
-    const intent = createSampleIntent('intent-freeze-01', 'f'.repeat(64));
+    const intent = createSampleIntent('intent-freeze-01');
     const order = gateway.submitExecutionIntent(intent, '2026-10-11T12:00:01Z');
 
     expect(() => {
@@ -821,7 +824,7 @@ describe('SUITE-14: Gate M2 Increment 3 — WebSocket Transport, Order Lifecycle
       initialCash: createCanonicalMoney('10000000', 'INR', 4)
     });
 
-    const intent = createSampleIntent('intent-part-cancel-01', 'f'.repeat(64));
+    const intent = createSampleIntent('intent-part-cancel-01');
     const order = gateway.submitExecutionIntent(intent, '2026-10-11T12:00:01Z');
 
     // Partial fill 20 units

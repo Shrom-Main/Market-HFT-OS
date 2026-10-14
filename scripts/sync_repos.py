@@ -33,10 +33,15 @@ REPOSITORIES = [
 FORBIDDEN_FILES = [
     "GithubPersonalAccessTokenFORAG.env",
     "Alpaca_Key.env",
+    "Alpaca_Key.txt",
     "Alpaca_Secret.env",
+    "Alpaca_Secret.txt",
     "Eulerpool.env",
+    "Eulerpool.txt",
     "Groq_Key.env",
+    "Groq_Key.txt",
     "TinyFish.env",
+    "TinyFish.txt",
 ]
 
 
@@ -65,14 +70,13 @@ ASKPASS_BAT = r"D:\Market HFT OS\scripts\git_askpass.bat"
 
 
 def run_git(args: list[str], cwd: str, token: str, timeout: int = 30) -> tuple[int, str, str]:
-    """Execute git command safely using GIT_ASKPASS without token in argv, redacting token from output."""
+    """Execute git command safely using GIT_ASKPASS without token in argv or environment."""
     try:
         env = os.environ.copy()
         if os.path.exists(ASKPASS_BAT):
             env["GIT_ASKPASS"] = ASKPASS_BAT
         env["GIT_TERMINAL_PROMPT"] = "0"
-        if token:
-            env["GIT_PAT_SECRET"] = token
+        # Security: Do NOT inject PAT into env. git_askpass.py reads the token directly only during auth.
 
         proc = subprocess.run(
             ["git", "-C", cwd] + args,

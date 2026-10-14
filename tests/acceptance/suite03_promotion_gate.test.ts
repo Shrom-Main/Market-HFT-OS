@@ -11,6 +11,7 @@ import {
   registerStreamEvidence,
   validateAndBuildClaimSigningPayload
 } from '../../src/verification/claims.js';
+import { TEST_PRINCIPAL_AUTHORITY_REGISTRY } from '../fixtures/trustedRegistries.js';
 import {
   evaluateOfferPromotionReadOnly,
   ServiceBoundaryEvaluatorTokenVerifier,
@@ -18,7 +19,6 @@ import {
   validateEvaluationDraftIntegrity
 } from '../../src/verification/gate.js';
 import {
-  SystemTrustedClock,
   InMemoryOfferPersistenceDatabaseSession,
   commitPromotionIfVersionAndConsumeNonces,
   reconcileAmbiguousPromotionCommit
@@ -134,13 +134,13 @@ describe('SUITE-03: Two-Phase Promotion Gate & Atomic Persistence', () => {
 
   it('PROMO-GATE-PASS-010: Passes gate and commits atomically with 4 fresh claims', async () => {
     const assessment = createValidAssessment();
-    const draft = evaluateOfferPromotionReadOnly(offer, assessment, '0', EVALUATOR_SECRET_HEX, nowUtc);
+    const draft = evaluateOfferPromotionReadOnly(offer, assessment, '0', EVALUATOR_SECRET_HEX, nowUtc, TEST_PRINCIPAL_AUTHORITY_REGISTRY);
 
     expect(draft.promoted).toBe(true);
     expect(draft.assigned_offer_status).toBe('VERIFIED_EXECUTABLE_OFFER');
 
     const db = new InMemoryOfferPersistenceDatabaseSession();
-    const clock = new SystemTrustedClock();
+    const clock = { nowUtc: () => nowUtc };
 
     const event = await commitPromotionIfVersionAndConsumeNonces(
       db,
@@ -149,7 +149,8 @@ describe('SUITE-03: Two-Phase Promotion Gate & Atomic Persistence', () => {
       '0',
       draft,
       assessment,
-      tokenVerifier
+      tokenVerifier,
+      TEST_PRINCIPAL_AUTHORITY_REGISTRY
     );
 
     expect(event.resulting_stream_sequence).toBe('1');
@@ -163,7 +164,7 @@ describe('SUITE-03: Two-Phase Promotion Gate & Atomic Persistence', () => {
 
   it('EVAL-DECISION-HMAC-COVERAGE-039: Tampered evaluation draft fails HMAC verification', () => {
     const assessment = createValidAssessment();
-    const draft = evaluateOfferPromotionReadOnly(offer, assessment, '0', EVALUATOR_SECRET_HEX, nowUtc);
+    const draft = evaluateOfferPromotionReadOnly(offer, assessment, '0', EVALUATOR_SECRET_HEX, nowUtc, TEST_PRINCIPAL_AUTHORITY_REGISTRY);
 
     // Tamper with assigned status
     const tampered = { ...draft, assigned_offer_status: 'INDICATIVE_QUOTE' as const };
@@ -172,9 +173,9 @@ describe('SUITE-03: Two-Phase Promotion Gate & Atomic Persistence', () => {
 
   it('RECONCILE-AMBIGUOUS-COMMIT-045 & RECONCILE-SUBSEQUENT-EVENT-HEAD-046: Reconciles committed promotion even when head advanced', async () => {
     const assessment = createValidAssessment();
-    const draft = evaluateOfferPromotionReadOnly(offer, assessment, '0', EVALUATOR_SECRET_HEX, nowUtc);
+    const draft = evaluateOfferPromotionReadOnly(offer, assessment, '0', EVALUATOR_SECRET_HEX, nowUtc, TEST_PRINCIPAL_AUTHORITY_REGISTRY);
     const db = new InMemoryOfferPersistenceDatabaseSession();
-    const clock = new SystemTrustedClock();
+    const clock = { nowUtc: () => nowUtc };
 
     // Commit promotion at sequence 1
     const event = await commitPromotionIfVersionAndConsumeNonces(
@@ -184,7 +185,8 @@ describe('SUITE-03: Two-Phase Promotion Gate & Atomic Persistence', () => {
       '0',
       draft,
       assessment,
-      tokenVerifier
+      tokenVerifier,
+      TEST_PRINCIPAL_AUTHORITY_REGISTRY
     );
 
     // Simulate subsequent unrelated event advancing head to sequence 2
@@ -209,11 +211,11 @@ describe('SUITE-03: Two-Phase Promotion Gate & Atomic Persistence', () => {
 
   it('RECONCILE-EVENT-HASH-MISMATCH-047: Detects corrupted event and rejects as STREAM_ADVANCED_UNRELATED', async () => {
     const assessment = createValidAssessment();
-    const draft = evaluateOfferPromotionReadOnly(offer, assessment, '0', EVALUATOR_SECRET_HEX, nowUtc);
+    const draft = evaluateOfferPromotionReadOnly(offer, assessment, '0', EVALUATOR_SECRET_HEX, nowUtc, TEST_PRINCIPAL_AUTHORITY_REGISTRY);
     const db = new InMemoryOfferPersistenceDatabaseSession();
-    const clock = new SystemTrustedClock();
+    const clock = { nowUtc: () => nowUtc };
 
-    await commitPromotionIfVersionAndConsumeNonces(db, clock, offer, '0', draft, assessment, tokenVerifier);
+    await commitPromotionIfVersionAndConsumeNonces(db, clock, offer, '0', draft, assessment, tokenVerifier, TEST_PRINCIPAL_AUTHORITY_REGISTRY);
 
     // Corrupt stored event_sha256
     const key = `stream:offer:${offer.offer_id}:1`;

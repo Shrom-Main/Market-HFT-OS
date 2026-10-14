@@ -1,12 +1,12 @@
 # POC-001 — Capital-Allocation Research and Market Simulation Platform
 ## Project Charter v0.2.4
 
-**Document Status:** PROPOSED — awaiting project-owner approval  
+**Document Status:** APPROVED / IN-FLIGHT (Gate M0 Authorized; Gate M1 Frozen; Gate M2 Approved; Gate M3 In-Flight)  
 **Date:** 2026-10-10  
 **Target Repository:** `D:\Market HFT OS` (Workspace Root)  
 **Legacy Reference Repository:** `D:\Market HFT OS\_salvage\AIStudio` (Preserved in read-only quarantine)  
 **External Research Pool:** `D:\Market HFT OS\_salvage\external\` (Preserved in read-only quarantine)  
-**Operating Mode:** Strict Read-Only prior to Gate M0 authorization
+**Operating Mode:** DRY_RUN / Paper Simulation; Actuals Execution strictly disabled
 
 ---
 

@@ -223,6 +223,20 @@ export class MockLocalWebSocketFeedServer {
       if (parsed.type === 'REPLAY_REQUEST') {
         const fromSeq = BigInt(parsed.from_sequence);
         const toSeq = BigInt(parsed.to_sequence);
+
+        if (toSeq < fromSeq || toSeq - fromSeq > 10000n) {
+          const errorFrame: ReplayErrorFrame = {
+            type: 'REPLAY_ERROR',
+            venue_id: parsed.venue_id,
+            raw_symbol: parsed.raw_symbol,
+            from_sequence: parsed.from_sequence,
+            to_sequence: parsed.to_sequence,
+            reason: 'REPLAY_RANGE_EXCEEDED: Replay sequence range must be non-negative and cannot exceed 10000 messages'
+          };
+          socket.send(JSON.stringify(errorFrame));
+          return;
+        }
+
         const messages: RawMarketDataMessage[] = [];
         let missingAny = false;
 

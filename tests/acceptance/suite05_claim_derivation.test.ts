@@ -4,9 +4,9 @@ import { canonicalizeJCS } from '../../src/canonical/jcs.js';
 import {
   validateAttesterAuthority,
   validateGatewayEndorsementReceipt,
-  GATEWAY_AUTHORITY_REGISTRY,
-  PRINCIPAL_AUTHORITY_REGISTRY
+  GATEWAY_AUTHORITY_REGISTRY
 } from '../../src/verification/claims.js';
+import { TEST_PRINCIPAL_AUTHORITY_REGISTRY } from '../fixtures/trustedRegistries.js';
 
 describe('SUITE-05: Claim Derivation, Authority Validation & KAT-05 Vectors', () => {
   it('CLAIM-SIG-VALID-001 (KAT-05A): Valid direct Ed25519 claim signature verified bitwise', () => {
@@ -34,7 +34,8 @@ describe('SUITE-05: Claim Derivation, Authority Validation & KAT-05 Vectors', ()
       'VERIFIED_EXTERNAL_ORACLE' as any,
       'PRICE_CONFIRMATION',
       '2026-10-10T12:00:00Z',
-      '2026-10-10T12:00:00Z'
+      '2026-10-10T12:00:00Z',
+      TEST_PRINCIPAL_AUTHORITY_REGISTRY
     )).toThrow(/E-ERR-018: INSUFFICIENT_ATTESTER_ROLE/);
   });
 });

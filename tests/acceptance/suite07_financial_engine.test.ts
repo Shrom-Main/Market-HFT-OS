@@ -3,9 +3,20 @@ import {
   computeOperatingCashFlowSeries,
   computePostOutlayRecoveryMetrics,
   validateCashFlowDoubleCounting,
-  CommittedCapitalManager
+  CommittedCapitalManager,
+  computeRoPF,
+  computeCoC,
+  computeHPR,
+  solveXIRR,
+  TwoTierGrossClearingLedger
 } from '../../src/financial/cashFlowEngine.js';
-import { calculateVolumetricWeightGrams } from '../../src/canonical/product.js';
+import {
+  calculateVolumetricWeightGrams,
+  normalizeProductIdentityCore,
+  generateCanonicalProductId,
+  createPhysicalDimensions,
+  validateInventoryQuantity
+} from '../../src/canonical/product.js';
 
 describe('SUITE-07: Financial Engine & Recovery Durations', () => {
   it('REC-OUTLAY-001: Numerical proof of 15-day outlay recovery and 25-day lifecycle recovery', () => {
@@ -101,5 +112,127 @@ describe('SUITE-07: Financial Engine & Recovery Durations', () => {
     // Replace PO-1 ($50k remaining) with PO-2 ($80k)
     manager.replacePO('PO-1', 'PO-2', 80000);
     expect(manager.total_committed_capital).toBe(80000);
+  });
+
+  it('PROD-NORM-001: normalizeProductIdentityCore normalizes HSN, units, and preserves MPN casing', () => {
+    const raw = {
+      category_hsn: '7326 90 99',
+      unit_of_measure: 'PACK' as const,
+      units_per_pack: 10,
+      standard_specification: 'din 3017 ss304 w4',
+      manufacturer_id: 'mfr:in:bhiwadi',
+      manufacturer_part_number: 'BPC-3017-16-25-a'
+    };
+    const norm = normalizeProductIdentityCore(raw);
+    expect(norm.category_hsn).toBe('73269099');
+    expect(norm.standard_specification).toBe('DIN_3017_SS304_W4');
+    // Default preserves exact casing
+    expect(norm.manufacturer_part_number).toBe('BPC-3017-16-25-a');
+
+    // Case-insensitive namespace folds to uppercase
+    const normUpper = normalizeProductIdentityCore(raw, {
+      'mfr:in:bhiwadi': { manufacturer_id: 'mfr:in:bhiwadi', case_insensitive: true }
+    });
+    expect(normUpper.manufacturer_part_number).toBe('BPC-3017-16-25-A');
+  });
+
+  it('PROD-NORM-002: normalizeProductIdentityCore rejects control characters and duplicate dimension keys', () => {
+    expect(() => normalizeProductIdentityCore({
+      category_hsn: '7326\u000090',
+      unit_of_measure: 'PIECE',
+      units_per_pack: 1,
+      critical_dimension_key: 'range:16-25'
+    })).toThrow(/E-ERR-024: MALFORMED_IDENTIFIER/);
+
+    expect(() => normalizeProductIdentityCore({
+      category_hsn: '732690',
+      unit_of_measure: 'PIECE',
+      units_per_pack: 1,
+      critical_dimension_key: 'width:9;width:12'
+    })).toThrow(/E-ERR-024: DUPLICATE_DIMENSION_KEY/);
+  });
+
+  it('PROD-CANON-003: generateCanonicalProductId generates deterministic prod: SHA-256', () => {
+    const core = {
+      category_hsn: '73269099',
+      unit_of_measure: 'PACK' as const,
+      units_per_pack: 10,
+      critical_dimension_key: 'range:16-25;width:9'
+    };
+    const id1 = generateCanonicalProductId(core);
+    const id2 = generateCanonicalProductId(core);
+    expect(id1).toBe(id2);
+    expect(id1).toMatch(/^prod:[a-f0-9]{64}$/);
+  });
+
+  it('PHYS-DIM-001: createPhysicalDimensions computes volumetric weight and validates bounds', () => {
+    const dims = createPhysicalDimensions(300, 200, 100, 800, 1000);
+    expect(dims.calculated_volumetric_weight_g).toBe(1200);
+    expect(dims.gross_packaged_weight_g).toBe(1000);
+
+    expect(() => createPhysicalDimensions(300, 200, 100, 0, 1000)).toThrow(/E-ERR-021: DIMENSION_BOUNDS_EXCEEDED/);
+  });
+
+  it('INV-QTY-001: validateInventoryQuantity checks non-negative safe integer within 10^9', () => {
+    expect(() => validateInventoryQuantity(500)).not.toThrow();
+    expect(() => validateInventoryQuantity(0)).not.toThrow();
+    expect(() => validateInventoryQuantity(-1)).toThrow(/E-ERR-034: INVALID_INVENTORY_QUANTITY/);
+    expect(() => validateInventoryQuantity(1.5)).toThrow(/E-ERR-034: INVALID_INVENTORY_QUANTITY/);
+    expect(() => validateInventoryQuantity(1000000001)).toThrow(/E-ERR-034: INVALID_INVENTORY_QUANTITY/);
+  });
+
+  it('FIN-METRIC-001: computeRoPF, computeCoC, and computeHPR evaluate correctly', () => {
+    const t0 = '2026-10-01T00:00:00Z';
+    const flows = [
+      { entry_timestamp_utc: '2026-10-01T12:00:00Z', sequence_number: 1, amount: -1000, flow_kind: 'PROCUREMENT_OUTLAY' as const },
+      { entry_timestamp_utc: '2026-10-05T12:00:00Z', sequence_number: 2, amount: 1200, flow_kind: 'NET_MERCHANT_PROCEEDS' as const }
+    ];
+
+    // RoPF
+    const ropf = computeRoPF(flows, t0, 0);
+    expect(ropf.status).toBe('SUCCESS');
+    if (ropf.status === 'SUCCESS') {
+      expect(ropf.ropf_percentage).toBe(20); // (200 / 1000) * 100
+    }
+
+    // CoC
+    const coc = computeCoC(flows);
+    expect(coc).toBe(1.2); // 1200 / 1000
+
+    // HPR
+    const hpr = computeHPR(1000, 1150, 50);
+    expect(hpr).toBe(20); // ((1150 - 1000 + 50) / 1000) * 100
+  });
+
+  it('FIN-XIRR-001: solveXIRR converges on annual IRR and returns expected status codes', () => {
+    const flows = [
+      { entry_timestamp_utc: '2026-01-01T00:00:00Z', sequence_number: 1, amount: -100000, flow_kind: 'PROCUREMENT_OUTLAY' as const },
+      { entry_timestamp_utc: '2027-01-01T00:00:00Z', sequence_number: 2, amount: 110000, flow_kind: 'NET_MERCHANT_PROCEEDS' as const }
+    ];
+    const res = solveXIRR(flows);
+    expect(res.status).toBe('CONVERGED');
+    if (res.status === 'CONVERGED') {
+      expect(res.xirr).toBeCloseTo(0.10, 2);
+    }
+
+    // Invalid cash flows: all positive
+    const allPos = [
+      { entry_timestamp_utc: '2026-01-01T00:00:00Z', sequence_number: 1, amount: 100, flow_kind: 'NET_MERCHANT_PROCEEDS' as const }
+    ];
+    expect(solveXIRR(allPos).status).toBe('INVALID_CASH_FLOWS');
+  });
+
+  it('FIN-TWO-TIER-001: TwoTierGrossClearingLedger tracks clearing vs bank balances', () => {
+    const ledger = new TwoTierGrossClearingLedger();
+    ledger.recordGrossProceeds(10000);
+    expect(ledger.getBalances().b_clearing).toBe(10000);
+    expect(ledger.getBalances().b_bank).toBe(0);
+
+    ledger.recordClearingDeduction(300);
+    expect(ledger.getBalances().b_clearing).toBe(9700);
+
+    ledger.recordNetDisbursementToBank(9700);
+    expect(ledger.getBalances().b_clearing).toBe(0);
+    expect(ledger.getBalances().b_bank).toBe(9700);
   });
 });

@@ -17,12 +17,22 @@ import {
 import {
   validateAttesterAuthority,
   validateGatewayEndorsementReceipt,
-  GATEWAY_AUTHORITY_REGISTRY
+  validateAndBuildClaimSigningPayload,
+  resolveStreamEvidence,
+  GATEWAY_AUTHORITY_REGISTRY,
+  PRINCIPAL_AUTHORITY_REGISTRY,
+  PrincipalAuthorityRegistry
 } from '../verification/claims.js';
+import {
+  validateEvidenceAllowlistEligibility,
+  CLAIM_PERMITTED_DOCUMENT_TYPES
+} from '../canonical/allowlist.js';
 
 export interface TrustedClock {
   nowUtc(): string;
 }
+
+export const MAX_EVALUATION_DRAFT_AGE_MS = 300000;
 
 export class SystemTrustedClock implements TrustedClock {
   private last_ts: number = 0;
@@ -209,7 +219,8 @@ export async function commitPromotionIfVersionAndConsumeNonces(
   expected_stream_sequence: string,
   evaluation: PromotionEvaluationDraft,
   raw_assessment: unknown,
-  token_verifier: EvaluatorTokenVerifier
+  token_verifier: EvaluatorTokenVerifier,
+  principal_registry: PrincipalAuthorityRegistry = PRINCIPAL_AUTHORITY_REGISTRY
 ): Promise<OfferPromotionEventPayload> {
   const pre_tx_time_utc = clock.nowUtc();
   const validated = validateEvaluationDraftIntegrity(
@@ -231,6 +242,15 @@ export async function commitPromotionIfVersionAndConsumeNonces(
     validateIso8601UtcTimestamp(tx_auth_time_utc);
     const tx_auth_ms = Date.parse(tx_auth_time_utc);
 
+    const evaluation_age_ms = tx_auth_ms - Date.parse(validated.draft.evaluated_at_utc);
+    if (!Number.isFinite(evaluation_age_ms) || evaluation_age_ms < 0 || evaluation_age_ms > MAX_EVALUATION_DRAFT_AGE_MS) {
+      throw new Error('E-ERR-036: STALE_EVALUATION_DRAFT');
+    }
+    validateIso8601UtcTimestamp(offer.valid_until_utc);
+    if (tx_auth_ms > Date.parse(offer.valid_until_utc)) {
+      throw new Error('E-ERR-036: OFFER_TERMS_EXPIRED_AT_COMMIT');
+    }
+
     if (BigInt(streamHead.sequence_number) !== BigInt(validated.draft.expected_stream_sequence)) {
       throw new Error('E-ERR-037: CONCURRENCY_CONFLICT: Offer stream has advanced since evaluation started');
     }
@@ -241,19 +261,34 @@ export async function commitPromotionIfVersionAndConsumeNonces(
         claim.attestation.claimed_role,
         claim.claim_type,
         claim.attestation.attested_at_utc,
-        tx_auth_time_utc
+        tx_auth_time_utc,
+        principal_registry
       );
 
       if (claim.attestation.auth.auth_mechanism === 'GATEWAY_CLAIM_ENDORSEMENT') {
         const rcpt = claim.attestation.auth.endorsement_receipt;
         validateGatewayEndorsementReceipt(rcpt, tx_auth_time_utc, GATEWAY_AUTHORITY_REGISTRY);
 
-        const expectedPayloadDigest = rcpt.claim_payload_digest || rcpt.claim_signing_payload_sha256;
-        const param_canonical_bytes = Buffer.from(canonicalizeJCS(claim.claim_parameters), 'utf8');
-        const expected_param_digest = sha256(param_canonical_bytes);
-        if (expectedPayloadDigest !== expected_param_digest && expectedPayloadDigest !== rcpt.claim_signing_payload_sha256) {
-          throw new Error(`E-ERR-017: DIGEST_BINDING_MISMATCH: Endorsement receipt digest does not match claim parameters for '${claimType}'`);
+        const expectedPayload = validateAndBuildClaimSigningPayload(offer.offer_id, offer.product_id, claim);
+        const expected_digest = sha256(Buffer.from(canonicalizeJCS(expectedPayload), 'utf8'));
+        if (rcpt.claim_signing_payload_sha256 !== expected_digest) {
+          throw new Error(`E-ERR-017: DIGEST_BINDING_MISMATCH: Endorsement receipt digest does not match claim signing payload for '${claimType}'`);
         }
+        if (rcpt.operator_id !== claim.attestation.attester_id || rcpt.operator_role !== claim.attestation.claimed_role) {
+          throw new Error(`E-ERR-017: GATEWAY_OPERATOR_ROLE_MISMATCH: Gateway receipt operator does not match claim attester for '${claimType}'`);
+        }
+      }
+
+      const ev = resolveStreamEvidence(claim.attestation.evidence_id);
+      if (ev) {
+        const defaultDoc = CLAIM_PERMITTED_DOCUMENT_TYPES[claim.claim_type]?.[0] || 'PROFORMA_INVOICE';
+        validateEvidenceAllowlistEligibility(
+          ev.evidence_kind || 'OBSERVED',
+          ev.verification_status || 'VERIFIED',
+          ev.offer_status || 'VERIFIED_EXECUTABLE_OFFER',
+          claim.claim_type,
+          ev.document_type || defaultDoc
+        );
       }
     }
 

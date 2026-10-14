@@ -2,12 +2,13 @@ import {
   CurrencyCode,
   CanonicalMoney,
   CURRENCY_REGISTRY,
-  validateIso8601UtcTimestamp
+  validateIso8601UtcTimestamp,
+  createCanonicalMoney
 } from './domain.js';
 import { canonicalizeJCS } from './jcs.js';
 import { ed25519Verify } from './crypto.js';
 
-export { CURRENCY_REGISTRY };
+export { CURRENCY_REGISTRY, createCanonicalMoney };
 
 /**
  * Exact Bankers' Rounding (HALF_EVEN) for BigInt rational arithmetic
@@ -59,8 +60,26 @@ export function convertMoneySubunitsExact(
   }
   const effectiveTargetScale = targetScale !== undefined ? targetScale : targetDef.internal_accounting_scale;
 
+  createCanonicalMoney(source.amount_subunits, source.currency, source.scale);
+  if (typeof rateScale !== 'number' || !Number.isSafeInteger(rateScale) || rateScale < 0 || rateScale > 18) {
+    throw new Error('E-ERR-024: INVALID_RATE_SCALE: Rate scale must be an integer between 0 and 18');
+  }
+  if (typeof rateDecimal !== 'string' || !/^\d+(\.\d+)?$/.test(rateDecimal)) {
+    throw new Error('E-ERR-024: INVALID_RATE_DECIMAL_FORMAT: Rate must be a non-negative decimal string');
+  }
+  const parts = rateDecimal.split('.');
+  const intPart = parts[0];
+  const fracPart = parts[1] || '';
+  if (fracPart.length > rateScale) {
+    throw new Error(`E-ERR-024: RATE_SCALE_MISMATCH: Fractional part length ${fracPart.length} exceeds rateScale ${rateScale}`);
+  }
+  const paddedFrac = fracPart.padEnd(rateScale, '0');
+  const rateNumerator = BigInt(intPart + paddedFrac);
+  if (rateNumerator <= 0n) {
+    throw new Error('E-ERR-024: NON_POSITIVE_FX_RATE: FX exchange rate must be strictly positive');
+  }
+
   const sourceAmount = BigInt(source.amount_subunits);
-  const rateNumerator = BigInt(rateDecimal.replace('.', ''));
 
   const deltaScale = effectiveTargetScale - source.scale;
   let numerator: bigint;
@@ -97,17 +116,25 @@ export interface FXConversionReceipt {
   exchange_rate: string;                          // Decimal string with scale=6 (e.g. "86.500000")
   rate_publication_date: string;                  // YYYY-MM-DD
   effective_timestamp_utc: string;                // ISO-8601 UTC
-  rate_source: 'RBI_OFFICIAL_REFERENCE' | 'ECB_REFERENCE' | 'FED_H10';
+  rate_source: FXRateSource;
   rounding_stage: 'STAGE1_INTERNAL_HALF_EVEN';    // Rounded to target internal accounting scale
   oracle_public_key_hex: string;                  // 64-character lowercase hex Ed25519 key
   oracle_signature: string;                       // 128-char hex Ed25519 signature over canonical receipt bytes
 }
 
+export type FXRateSource = 'RBI_OFFICIAL_REFERENCE' | 'ECB_REFERENCE' | 'FED_H10';
+export type FXOracleRegistry = Readonly<Partial<Record<FXRateSource, string>>>;
+
+// No production oracle keys are pinned in this simulation repository. Callers must
+// supply a deployment-controlled registry; tests pass their fixture keys explicitly.
+export const FX_ORACLE_REGISTRY: FXOracleRegistry = Object.freeze({});
+
 export function validateFXReceiptAtPointOfUse(
   receipt: FXConversionReceipt,
   source_currency: CurrencyCode,
   target_currency: CurrencyCode,
-  transaction_time_utc: string
+  transaction_time_utc: string,
+  oracle_registry: FXOracleRegistry = FX_ORACLE_REGISTRY
 ): void {
   if (receipt.source_currency !== source_currency || receipt.target_currency !== target_currency) {
     throw new Error('E-ERR-008: FX_RECEIPT_CURRENCY_MISMATCH');
@@ -122,9 +149,34 @@ export function validateFXReceiptAtPointOfUse(
   if (Math.abs(tx_ms - fx_ms) > 86400000) {
     throw new Error('E-ERR-008: FX_RECEIPT_STALE: Receipt effective date deviates by more than 24 hours from transaction time');
   }
+  const trusted_oracle_key = oracle_registry[receipt.rate_source];
+  if (!trusted_oracle_key || !/^[0-9a-f]{64}$/.test(trusted_oracle_key) ||
+      receipt.oracle_public_key_hex !== trusted_oracle_key) {
+    throw new Error('E-ERR-008: UNTRUSTED_FX_ORACLE_KEY');
+  }
   const { oracle_signature, ...unsigned_receipt } = receipt;
   const unsigned_bytes = Buffer.from(canonicalizeJCS(unsigned_receipt), 'utf8');
-  if (!ed25519Verify(unsigned_bytes, receipt.oracle_public_key_hex, oracle_signature)) {
+  if (!ed25519Verify(unsigned_bytes, trusted_oracle_key, oracle_signature)) {
     throw new Error('E-ERR-008: FX_RECEIPT_SIGNATURE_INVALID');
   }
+}
+
+/**
+ * Safe canonical money addition. Prohibits cross-currency summation fail-closed.
+ */
+export function addCanonicalMoney(a: CanonicalMoney, b: CanonicalMoney): CanonicalMoney {
+  createCanonicalMoney(a.amount_subunits, a.currency, a.scale);
+  createCanonicalMoney(b.amount_subunits, b.currency, b.scale);
+  if (a.currency !== b.currency) {
+    throw new Error('E-ERR-008: CROSS_CURRENCY_SUMMATION_ILLEGAL: Cannot sum monetary amounts of different currencies directly');
+  }
+  if (a.scale !== b.scale) {
+    throw new Error('E-ERR-010: SCALE_MISMATCH: Cannot sum monetary amounts with differing scales');
+  }
+  const sum = BigInt(a.amount_subunits) + BigInt(b.amount_subunits);
+  return {
+    currency: a.currency,
+    amount_subunits: sum.toString(),
+    scale: a.scale
+  };
 }
