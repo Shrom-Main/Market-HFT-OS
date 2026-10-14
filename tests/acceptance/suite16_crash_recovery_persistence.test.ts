@@ -765,27 +765,81 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
       const recoveredData = JSON.parse(fs.readFileSync(crashOutput, 'utf8'));
 
       // 4. Prove complete bit-for-bit parity between recovered process and benchmark across all dimensions
-      // A. Complete snapshot parity (cash, positions, P&L, journal)
+      // A. Complete snapshot parity (canonical RFC 8785 JCS digest)
       expect(recoveredData.snapshot).toEqual(benchmarkData.snapshot);
       expect(canonicalizeJCS(recoveredData.snapshot)).toBe(canonicalizeJCS(benchmarkData.snapshot));
 
-      // B. Complete checkpoint parity (including processed fill IDs and fingerprints)
+      // B. Complete checkpoint parity (canonical RFC 8785 JCS digest)
       expect(recoveredData.checkpoint).toEqual(benchmarkData.checkpoint);
       expect(canonicalizeJCS(recoveredData.checkpoint)).toBe(canonicalizeJCS(benchmarkData.checkpoint));
 
-      // C. Processed fill fingerprints parity
+      // C. Explicit position field assertions (including epoch and rational cost basis)
+      const recPos = recoveredData.snapshot.positions[0];
+      const benchPos = benchmarkData.snapshot.positions[0];
+      expect(recPos.product_id).toBe('DIN3017-W4-CLAMP-001');
+      expect(recPos.net_quantity).toBe(150);
+      expect(recPos.total_bought_quantity).toBe(150);
+      expect(recPos.total_sold_quantity).toBe(0);
+      expect(recPos.aggregate_cost_subunits).toBe('15500000');
+      expect(recPos.cost_basis_rational.numerator_subunits).toBe('15500000');
+      expect(recPos.cost_basis_rational.denominator_quantity).toBe(150);
+      expect(recPos.weighted_cost_basis_subunits).toBe('103333');
+      expect(recPos.cumulative_realized_pnl_subunits).toBe('0');
+      expect(recPos.epoch_start_cost_subunits).toBe('15500000');
+      expect(recPos.epoch_start_quantity).toBe(150);
+      expect(recPos.epoch_cumulative_sold_quantity).toBe(0);
+      expect(recPos).toEqual(benchPos);
+
+      // D. Canonical integer/subunit representation for cash and realized P&L
+      expect(recoveredData.snapshot.available_cash.amount_subunits).toBe('984500000');
+      expect(recoveredData.snapshot.available_cash.amount_subunits).toBe(benchmarkData.snapshot.available_cash.amount_subunits);
+      expect(recoveredData.snapshot.cumulative_realized_pnl.amount_subunits).toBe('0');
+      expect(recoveredData.snapshot.cumulative_realized_pnl.amount_subunits).toBe(benchmarkData.snapshot.cumulative_realized_pnl.amount_subunits);
+
+      // E. Every expected fill ID and fingerprint
+      const expectedFillIds = ['fill:worker:001', 'fill:worker:002'];
+      expect(recoveredData.checkpoint.processed_fill_ids).toEqual(expectedFillIds);
+      expect(recoveredData.checkpoint.processed_fill_ids).toEqual(benchmarkData.checkpoint.processed_fill_ids);
+      expect(recoveredData.checkpoint.processed_fill_fingerprints.length).toBe(2);
       expect(recoveredData.checkpoint.processed_fill_fingerprints).toEqual(benchmarkData.checkpoint.processed_fill_fingerprints);
 
-      // D. Full journal entries history parity
+      // F. Every expected WAL journal event and applied marker in exact sequence
+      expect(recoveredData.journalEntries.length).toBe(4);
+      expect(recoveredData.journalEntries.map((e: any) => e.event_type)).toEqual([
+        'FILL_RECORDED',
+        'PORTFOLIO_APPLIED',
+        'FILL_RECORDED',
+        'PORTFOLIO_APPLIED'
+      ]);
+      // Pre-crash WAL entries (1 to 3) are bit-for-bit identical to benchmark
+      expect(recoveredData.journalEntries.slice(0, 3)).toEqual(benchmarkData.journalEntries.slice(0, 3));
+      // Entry 4 is the recovery-sealed marker recording audit provenance
+      expect(recoveredData.journalEntries[3].event_type).toBe('PORTFOLIO_APPLIED');
+      expect(recoveredData.journalEntries[3].payload).toEqual({
+        fill_id: 'fill:worker:002',
+        order_id: 'ord:002',
+        recovered: true
+      });
+
+      // And portfolio journal contains exactly the 2 processed fills with bit-level parity
+      expect(recoveredData.snapshot.journal.length).toBe(2);
       expect(recoveredData.snapshot.journal).toEqual(benchmarkData.snapshot.journal);
 
-      // E. Recovery result verification
-      expect(recoveredData.recoveryResult.recovered_fills_count).toBe(1);
-      expect(recoveredData.recoveryResult.skipped_duplicate_fills_count).toBe(1);
+      // G. Journal hash-chain head is verified and tamper-evident
+      expect(recoveredData.lastEntrySha256).toBe(recoveredData.journalEntries[3].entry_sha256);
 
-      // F. Verify reloaded WAL hash chain
+      // H. Verify reloaded WAL from disk and assert hash chain integrity
       const reloadedJournal = new FileBackedDurableRecoveryJournal(crashWal);
       expect(reloadedJournal.verifyIntegrity().isValid).toBe(true);
+      expect(reloadedJournal.getLastEntrySha256()).toBe(recoveredData.lastEntrySha256);
+
+      // I. Repeated recovery idempotency: running recovery again does NOT alter economic state
+      const reloadedPortfolio = DurablePortfolioCheckpointStore.loadCheckpoint(crashCheckpoint);
+      const secondRecovery = CrashRecoveryEngine.recoverDurable(reloadedJournal, reloadedPortfolio, '2026-10-12T10:00:10.000Z');
+      expect(secondRecovery.recovered_fills_count).toBe(0);
+      expect(secondRecovery.skipped_duplicate_fills_count).toBe(2);
+      expect(canonicalizeJCS(reloadedPortfolio.getSnapshot())).toBe(canonicalizeJCS(recoveredData.snapshot));
+      expect(canonicalizeJCS(reloadedPortfolio.exportCheckpoint())).toBe(canonicalizeJCS(recoveredData.checkpoint));
       reloadedJournal.close();
     } finally {
       if (fs.existsSync(tmpDir)) {
@@ -797,7 +851,7 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
   // --------------------------------------------------------------------------------------
   // 9. WAL Flush Failure Fault Injection & Live State Poisoning
   // --------------------------------------------------------------------------------------
-  it('M3-WAL-FLUSH-FAIL-POISONING-014: Disk flush failure poisons live journal without in-memory state divergence', () => {
+  it('M3-WAL-FLUSH-FAIL-POISONING-014: Short writes complete; write and fsync failures poison without in-memory divergence', () => {
     const tmpDir = path.resolve(process.cwd(), 'tmp_test_wal_poison');
     if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
     const walPath = path.join(tmpDir, `poison_test_${Date.now()}.log`);
@@ -829,6 +883,53 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
       // Verify live journal is permanently poisoned and rejects further writes
       expect(() => journal.appendEvent('ORDER_SUBMITTED', { order: 'o-002' }, '2026-10-12T10:00:02.000Z'))
         .toThrow('E-ERR-024: JOURNAL_POISONED');
+
+      // A short write is retried until the complete WAL record has been written.
+      const shortWalPath = path.join(tmpDir, 'short_write.wal');
+      const shortWriteJournal = new FileBackedDurableRecoveryJournal(shortWalPath);
+      const origShortWriteSync = (fs as any).writeSync;
+      let forceOneShortWrite = true;
+      (fs as any).writeSync = (fd: number, buffer: Buffer, offset: number, length: number) => {
+        if (forceOneShortWrite) {
+          forceOneShortWrite = false;
+          return origShortWriteSync(fd, buffer, offset, Math.max(1, Math.floor(length / 2)));
+        }
+        return origShortWriteSync(fd, buffer, offset, length);
+      };
+      try {
+        shortWriteJournal.appendEvent('INTENT_RECORDED', { intent_id: 'i-short' }, '2026-10-12T10:00:03.000Z');
+      } finally {
+        (fs as any).writeSync = origShortWriteSync;
+      }
+      expect(forceOneShortWrite).toBe(false);
+      expect(shortWriteJournal.getEntryCount()).toBe(1);
+      expect(shortWriteJournal.verifyIntegrity().isValid).toBe(true);
+      shortWriteJournal.close();
+
+      // A failed fsync is also ambiguous durability and permanently poisons the live journal.
+      const fsyncWalPath = path.join(tmpDir, 'fsync_failure.wal');
+      const fsyncJournal = new FileBackedDurableRecoveryJournal(fsyncWalPath);
+      fsyncJournal.appendEvent('INTENT_RECORDED', { intent_id: 'i-fsync-1' }, '2026-10-12T10:00:04.000Z');
+      const origFsyncSync = (fs as any).fsyncSync;
+      (fs as any).fsyncSync = () => {
+        throw new Error('EIO: simulated fsync failure');
+      };
+      try {
+        expect(() => fsyncJournal.appendEvent(
+          'ORDER_SUBMITTED',
+          { order_id: 'o-fsync-2' },
+          '2026-10-12T10:00:05.000Z'
+        )).toThrow('E-ERR-024: WAL_FSYNC_FAILED');
+      } finally {
+        (fs as any).fsyncSync = origFsyncSync;
+      }
+      expect(fsyncJournal.getEntryCount()).toBe(1);
+      expect(fsyncJournal.getIsPoisoned()).toBe(true);
+      expect(() => fsyncJournal.appendEvent(
+        'ORDER_SUBMITTED',
+        { order_id: 'o-fsync-3' },
+        '2026-10-12T10:00:06.000Z'
+      )).toThrow('E-ERR-024: JOURNAL_POISONED');
     } finally {
       if (fs.existsSync(walPath)) fs.unlinkSync(walPath);
       if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -880,6 +981,195 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
       })).toThrow('E-ERR-024: CORRUPT_JOURNAL');
     } finally {
       if (fs.existsSync(walPath)) fs.unlinkSync(walPath);
+      if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // --------------------------------------------------------------------------------------
+  // 11. Ambiguous Persistence Recovery & Caller Retry Idempotency
+  // --------------------------------------------------------------------------------------
+  it('M3-WAL-FSYNC-AMBIGUITY-IDEMPOTENCY-016: Full WAL write followed by fsync failure poisons live journal; restart reconciles surviving record, and caller fill retry is idempotent without duplicate economic effect', () => {
+    const tmpDir = path.resolve(process.cwd(), 'tmp_test_wal_ambiguity');
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+
+    const walPath = path.join(tmpDir, `ambiguous_${Date.now()}.wal`);
+    const checkpointPath = path.join(tmpDir, `ambiguous_cp_${Date.now()}.json`);
+
+    try {
+      const initialCash: CanonicalMoney = {
+        currency: 'EUR',
+        amount_subunits: '1000000000', // 100,000.0000 EUR
+        scale: 4
+      };
+
+      const order1: SimulatedOrderRecord = {
+        order_id: 'ord-amb-1',
+        intent_id: 'intent-amb-1',
+        offer_id: 'off-amb-1',
+        product_id: 'DIN3017-W4-CLAMP-001',
+        venue_id: 'SIMULATED-LOCAL',
+        side: 'BUY',
+        order_price: { currency: 'EUR', amount_subunits: '100000', scale: 4 }, // 10.0000 EUR
+        total_quantity: 10,
+        filled_quantity: 10,
+        remaining_quantity: 0,
+        status: 'FILLED',
+        created_at_utc: '2026-10-12T10:00:00.000Z',
+        updated_at_utc: '2026-10-12T10:00:01.000Z',
+        fills: [],
+        events: [],
+        intent_sha256: '1'.repeat(64)
+      };
+
+      const fill1: SimulatedFillEvent = {
+        order_id: order1.order_id,
+        fill_id: 'fill:ambiguous:1',
+        fill_price: { currency: 'EUR', amount_subunits: '100000', scale: 4 },
+        fill_quantity: 10,
+        cumulative_quantity: 10,
+        remaining_quantity: 0,
+        fill_timestamp_utc: '2026-10-12T10:00:01.000Z'
+      };
+
+      const order2: SimulatedOrderRecord = {
+        order_id: 'ord-amb-2',
+        intent_id: 'intent-amb-2',
+        offer_id: 'off-amb-2',
+        product_id: 'DIN3017-W4-CLAMP-001',
+        venue_id: 'SIMULATED-LOCAL',
+        side: 'BUY',
+        order_price: { currency: 'EUR', amount_subunits: '120000', scale: 4 }, // 12.0000 EUR
+        total_quantity: 20,
+        filled_quantity: 20,
+        remaining_quantity: 0,
+        status: 'FILLED',
+        created_at_utc: '2026-10-12T10:00:02.000Z',
+        updated_at_utc: '2026-10-12T10:00:03.000Z',
+        fills: [],
+        events: [],
+        intent_sha256: '2'.repeat(64)
+      };
+
+      const fill2: SimulatedFillEvent = {
+        order_id: order2.order_id,
+        fill_id: 'fill:ambiguous:2',
+        fill_price: { currency: 'EUR', amount_subunits: '120000', scale: 4 },
+        fill_quantity: 20,
+        cumulative_quantity: 20,
+        remaining_quantity: 0,
+        fill_timestamp_utc: '2026-10-12T10:00:03.000Z'
+      };
+
+      // 1. Process Fill 1 cleanly: persisted to WAL, applied to portfolio, checkpoint saved
+      const liveJournal = new FileBackedDurableRecoveryJournal(walPath);
+      const livePortfolio = new SimulationPortfolio({ initialCash, allowShort: false });
+
+      liveJournal.appendEvent('FILL_RECORDED', { fill: fill1, order: order1 }, '2026-10-12T10:00:01.000Z');
+      livePortfolio.processFill(fill1, order1, '2026-10-12T10:00:01.000Z');
+      liveJournal.appendEvent('PORTFOLIO_APPLIED', { fill_id: fill1.fill_id, order_id: order1.order_id }, '2026-10-12T10:00:01.000Z');
+      DurablePortfolioCheckpointStore.saveCheckpoint(checkpointPath, livePortfolio);
+
+      expect(liveJournal.getEntryCount()).toBe(2);
+      expect(livePortfolio.getSnapshot().available_cash.amount_subunits).toBe('999000000'); // 100,000 - 100 = 99,900 EUR
+      expect(livePortfolio.getPosition('DIN3017-W4-CLAMP-001')?.net_quantity).toBe(10);
+
+      // 2. Fault Injection: Full WAL record written to disk, BUT fsync throws simulated I/O error
+      const origFsyncSync = fs.fsyncSync;
+      let fsyncFailureTriggered = false;
+      (fs as any).fsyncSync = (fd: number) => {
+        fsyncFailureTriggered = true;
+        throw new Error('EIO: simulated physical disk fsync failure');
+      };
+
+      try {
+        expect(() => {
+          liveJournal.appendEvent('FILL_RECORDED', { fill: fill2, order: order2 }, '2026-10-12T10:00:03.000Z');
+        }).toThrow('E-ERR-024: WAL_FSYNC_FAILED');
+      } finally {
+        fs.fsyncSync = origFsyncSync;
+      }
+
+      expect(fsyncFailureTriggered).toBe(true);
+
+      // Verify live state poisoning: in-memory state did NOT advance, live journal is poisoned fail-closed
+      expect(liveJournal.getEntryCount()).toBe(2);
+      expect(liveJournal.getIsPoisoned()).toBe(true);
+      expect(() => {
+        liveJournal.appendEvent('ORDER_SUBMITTED', { order_id: 'ord-fail' }, '2026-10-12T10:00:04.000Z');
+      }).toThrow('E-ERR-024: JOURNAL_POISONED');
+
+      // The live portfolio in this process never received Fill 2 (mutation was blocked)
+      expect(livePortfolio.isFillProcessed(fill2.fill_id)).toBe(false);
+      expect(livePortfolio.getPosition('DIN3017-W4-CLAMP-001')?.net_quantity).toBe(10);
+
+      // Live process exits / restarts
+      liveJournal.close();
+
+      // 3. Process Restart & Reconciliation:
+      // The disk file actually received the bytes of Fill 2 before fsync threw.
+      // Re-opening the file discovers the survived valid record on disk.
+      const restartJournal = new FileBackedDurableRecoveryJournal(walPath);
+      expect(restartJournal.getEntryCount()).toBe(3); // Fill 1 recorded, Fill 1 applied, Fill 2 recorded
+      expect(restartJournal.verifyIntegrity().isValid).toBe(true);
+
+      // Reload portfolio from checkpoint (at Fill 1)
+      const restartPortfolio = DurablePortfolioCheckpointStore.loadCheckpoint(checkpointPath);
+      expect(restartPortfolio.isFillProcessed(fill2.fill_id)).toBe(false);
+
+      // Execute crash recovery
+      const recoveryResult = CrashRecoveryEngine.recoverDurable(
+        restartJournal,
+        restartPortfolio,
+        '2026-10-12T10:00:05.000Z'
+      );
+
+      // Recovery discovered surviving Fill 2 in journal and applied it exactly once
+      expect(recoveryResult.recovered_fills_count).toBe(1);
+      expect(recoveryResult.skipped_duplicate_fills_count).toBe(1); // Fill 1 was already applied and skipped idempotently
+      expect(restartPortfolio.isFillProcessed(fill2.fill_id)).toBe(true);
+
+      const recoveredSnap = restartPortfolio.getSnapshot();
+      // Cash: 100,000 - 100 (Fill 1) - 240 (Fill 2: 20 @ 12 EUR) = 99,660.0000 EUR (996600000 subunits)
+      expect(recoveredSnap.available_cash.amount_subunits).toBe('996600000');
+      const recoveredPos = restartPortfolio.getPosition('DIN3017-W4-CLAMP-001')!;
+      expect(recoveredPos.net_quantity).toBe(30); // 10 + 20
+      expect(recoveredPos.aggregate_cost_subunits).toBe('3400000'); // 100 + 240 = 340 EUR
+
+      // 4. Invariant: Caller Fill Retry Idempotency & Reconciliation Ownership
+      // The caller (who earlier received WAL_FSYNC_FAILED) now retries the exact same Fill 2 against the recovered portfolio.
+      // Portfolio layer reconciles via processedFillFingerprints: returns unchanged snapshot without duplicate economic mutation.
+      const retrySnap = restartPortfolio.processFill(fill2, order2, '2026-10-12T10:00:06.000Z');
+
+      expect(retrySnap.available_cash.amount_subunits).toBe('996600000'); // Cash unchanged
+      expect(restartPortfolio.getPosition('DIN3017-W4-CLAMP-001')?.net_quantity).toBe(30); // Quantity unchanged
+      expect(retrySnap).toEqual(recoveredSnap);
+      expect(canonicalizeJCS(retrySnap)).toBe(canonicalizeJCS(recoveredSnap));
+
+      // 5. Conflicting Fill Retry Rejection:
+      // If the caller retries Fill 2 with conflicting quantity/price, portfolio rejects fail-closed with E-ERR-046
+      const conflictingFill2: SimulatedFillEvent = {
+        ...fill2,
+        fill_quantity: 50 // Altered quantity
+      };
+      expect(() => {
+        restartPortfolio.processFill(conflictingFill2, order2, '2026-10-12T10:00:07.000Z');
+      }).toThrow('E-ERR-046: FILL_IDEMPOTENCY_CONFLICT');
+
+      // 6. Repeated Recovery Idempotency:
+      // Running recoverDurable again on the already-recovered state results in 0 applied fills and bit-identical state
+      const repeatRecoveryResult = CrashRecoveryEngine.recoverDurable(
+        restartJournal,
+        restartPortfolio,
+        '2026-10-12T10:00:08.000Z'
+      );
+      expect(repeatRecoveryResult.recovered_fills_count).toBe(0);
+      expect(repeatRecoveryResult.skipped_duplicate_fills_count).toBe(2); // Both Fill 1 and Fill 2 skipped
+      expect(canonicalizeJCS(restartPortfolio.getSnapshot())).toBe(canonicalizeJCS(recoveredSnap));
+
+      restartJournal.close();
+    } finally {
+      if (fs.existsSync(walPath)) fs.unlinkSync(walPath);
+      if (fs.existsSync(checkpointPath)) fs.unlinkSync(checkpointPath);
       if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });

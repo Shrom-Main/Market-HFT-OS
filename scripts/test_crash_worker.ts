@@ -101,6 +101,8 @@ if (args.mode === 'BENCHMARK') {
   portfolio.processFill(fill2, order2, '2026-10-12T10:00:02.000Z');
   journal.appendEvent('PORTFOLIO_APPLIED', { fill_id: fill2.fill_id, order_id: fill2.order_id }, '2026-10-12T10:00:02.000Z');
 
+  const benchEntries = journal.getEntries();
+  const benchLastEntrySha256 = journal.getLastEntrySha256();
   DurablePortfolioCheckpointStore.saveCheckpoint(args.checkpointPath, portfolio);
   journal.close();
 
@@ -108,7 +110,8 @@ if (args.mode === 'BENCHMARK') {
     fs.writeFileSync(args.outputPath, JSON.stringify({
       snapshot: portfolio.getSnapshot(),
       checkpoint: portfolio.exportCheckpoint(),
-      journalEntries: journal.getEntries()
+      journalEntries: benchEntries,
+      lastEntrySha256: benchLastEntrySha256
     }, null, 2), 'utf8');
   }
   process.exit(0);
@@ -140,6 +143,9 @@ if (args.mode === 'BENCHMARK') {
 
   const recoveryResult = CrashRecoveryEngine.recoverDurable(journal, portfolio, '2026-10-12T10:00:05.000Z');
 
+  const recoveredEntries = journal.getEntries();
+  const recoveredLastEntrySha256 = journal.getLastEntrySha256();
+
   // Save recovered checkpoint
   DurablePortfolioCheckpointStore.saveCheckpoint(args.checkpointPath, portfolio);
   journal.close();
@@ -149,7 +155,8 @@ if (args.mode === 'BENCHMARK') {
       snapshot: portfolio.getSnapshot(),
       recoveryResult,
       checkpoint: portfolio.exportCheckpoint(),
-      journalEntries: journal.getEntries()
+      journalEntries: recoveredEntries,
+      lastEntrySha256: recoveredLastEntrySha256
     }, null, 2), 'utf8');
   }
   process.exit(0);

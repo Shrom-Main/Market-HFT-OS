@@ -115,6 +115,10 @@ export class DurableRecoveryJournal {
     return this.entries.length;
   }
 
+  public getLastEntrySha256(): string {
+    return this.lastEntrySha256;
+  }
+
   public verifyIntegrity(): { isValid: boolean; brokenSequence?: number } {
     let prevHash = '0'.repeat(64);
     for (let i = 0; i < this.entries.length; i++) {
@@ -297,7 +301,20 @@ export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
       if (this.fileDescriptor === null) {
         throw new Error('File descriptor is closed');
       }
-      fs.writeSync(this.fileDescriptor, line);
+      const recordBuffer = Buffer.from(line, 'utf8');
+      let bytesWritten = 0;
+      while (bytesWritten < recordBuffer.length) {
+        const written = fs.writeSync(
+          this.fileDescriptor,
+          recordBuffer,
+          bytesWritten,
+          recordBuffer.length - bytesWritten
+        );
+        if (written <= 0) {
+          throw new Error(`Short write while appending WAL record: ${written} bytes written`);
+        }
+        bytesWritten += written;
+      }
       fs.fsyncSync(this.fileDescriptor);
     } catch (err: any) {
       // Disk flush failure: poison live journal immediately, in-memory state NEVER advances!

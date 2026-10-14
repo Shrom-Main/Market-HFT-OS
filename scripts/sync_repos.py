@@ -61,14 +61,25 @@ def redact(text: str, token: str) -> str:
     return text.replace(token, "[REDACTED_PAT]")
 
 
+ASKPASS_BAT = r"D:\Market HFT OS\scripts\git_askpass.bat"
+
+
 def run_git(args: list[str], cwd: str, token: str, timeout: int = 30) -> tuple[int, str, str]:
-    """Execute git command safely, redacting token from output."""
+    """Execute git command safely using GIT_ASKPASS without token in argv, redacting token from output."""
     try:
+        env = os.environ.copy()
+        if os.path.exists(ASKPASS_BAT):
+            env["GIT_ASKPASS"] = ASKPASS_BAT
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        if token:
+            env["GIT_PAT_SECRET"] = token
+
         proc = subprocess.run(
             ["git", "-C", cwd] + args,
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
         stdout = redact(proc.stdout.strip(), token)
         stderr = redact(proc.stderr.strip(), token)
@@ -111,8 +122,6 @@ def sync_repository(repo: dict, token: str, push_only: bool = False, force: bool
     repo_path = repo["path"]
     remote_repo = repo["remote_repo"]
     branch = repo["branch"]
-    authenticated_remote = f"https://{token}@github.com/{remote_repo}"
-
     if not os.path.exists(repo_path):
         print(f"[{datetime.datetime.now().isoformat()}] [{repo_name}] Path does not exist: {repo_path}")
         return False
@@ -154,18 +163,18 @@ def sync_repository(repo: dict, token: str, push_only: bool = False, force: bool
             print(f"[{now_str}] [{repo_name}] Committed: {commit_msg}")
         needs_push = True
 
-    # 2. Push to GitHub using PAT
+    # 2. Push to GitHub using GIT_ASKPASS (zero tokens in argv)
     if needs_push or force:
-        print(f"[{now_str}] [{repo_name}] Pushing to https://github.com/{remote_repo} ({branch})...")
-        push_args = ["push", authenticated_remote, f"HEAD:refs/heads/{branch}"]
+        print(f"[{now_str}] [{repo_name}] Pushing to origin/{branch} (via GIT_ASKPASS)...")
+        push_args = ["push", "origin", f"HEAD:refs/heads/{branch}"]
         code, stdout, stderr = run_git(push_args, repo_path, token, timeout=60)
         if code != 0:
             print(f"[{now_str}] [{repo_name}] Git push failed:\nStdout: {stdout}\nStderr: {stderr}")
             return False
-        print(f"[{now_str}] [{repo_name}] Successfully synced and pushed to GitHub!")
+        print(f"[{now_str}] [{repo_name}] Successfully synced and pushed to GitHub via GIT_ASKPASS!")
 
         # Update local tracking ref so git status remains clean
-        run_git(["fetch", authenticated_remote, f"{branch}:refs/remotes/origin/{branch}"], repo_path, token, timeout=30)
+        run_git(["fetch", "origin", f"{branch}:refs/remotes/origin/{branch}"], repo_path, token, timeout=30)
 
     return True
 
