@@ -122,4 +122,47 @@ describe('SUITE-17: Gate M3 — Real PostgreSQL Persistence & Concurrency Integr
       expect(verifyHead.sequence_number).toBe('0'); // uninitialized default, staged seq 1 was dropped
     });
   });
+
+  it('M3-REAL-POSTGRES-AMBIGUOUS-COMMIT-004: Real PostgreSQL ambiguous commit reconciliation recovers committed stream head', async () => {
+    const testOfferId = `live-off-ambiguous-${Date.now()}`;
+    const attemptedSeq = '1';
+    const assessmentBytes = Buffer.from('canonical_real_postgres_assessment_bytes', 'utf8');
+    const assessmentSha = sha256(assessmentBytes);
+
+    // Commit promotion transaction to real PostgreSQL
+    await session.executeTransaction(async (tx) => {
+      await tx.getOfferStreamHeadForUpdate(testOfferId);
+      await tx.putAssessment(assessmentSha, assessmentBytes, new Date().toISOString());
+      const payload: any = {
+        offer_id: testOfferId,
+        assessment_sha256: assessmentSha,
+        assigned_offer_status: 'VERIFIED_EXECUTABLE_OFFER',
+        resulting_sequence: attemptedSeq
+      };
+      const eventJson = canonicalizeJCS(payload);
+      const eventSha = sha256(Buffer.from(eventJson, 'utf8'));
+      await tx.appendOfferStreamEvent({
+        stream_id: `stream:offer:${testOfferId}`,
+        sequence_number: parseCanonicalStreamSequence(attemptedSeq),
+        payload_kind: 'OFFER_STATUS_TRANSITION',
+        payload,
+        event_sha256: eventSha
+      });
+      await tx.updateOfferStreamHead(testOfferId, parseCanonicalStreamSequence(attemptedSeq), 'VERIFIED_EXECUTABLE_OFFER', new Date().toISOString());
+    });
+
+    // Reconcile as if caller disconnected before receiving commit ACK
+    const reconciliation = await reconcileAmbiguousPromotionCommit(
+      session,
+      testOfferId,
+      '0',
+      attemptedSeq,
+      assessmentSha
+    );
+
+    expect(reconciliation.outcome).toBe('COMMITTED');
+    expect(reconciliation.stream_sequence).toBe('1');
+    expect(reconciliation.promotion_event?.offer_id).toBe(testOfferId);
+  });
 });
+
