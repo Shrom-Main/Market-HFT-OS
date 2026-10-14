@@ -114,7 +114,7 @@ describe('SUITE-07: Financial Engine & Recovery Durations', () => {
     expect(manager.total_committed_capital).toBe(80000);
   });
 
-  it('PROD-NORM-001: normalizeProductIdentityCore normalizes HSN, units, and preserves MPN casing', () => {
+  it('PROD-NORM-NFC-HSN-025: normalizeProductIdentityCore normalizes HSN, units, and preserves MPN casing', () => {
     const raw = {
       category_hsn: '7326 90 99',
       unit_of_measure: 'PACK' as const,
@@ -136,7 +136,7 @@ describe('SUITE-07: Financial Engine & Recovery Durations', () => {
     expect(normUpper.manufacturer_part_number).toBe('BPC-3017-16-25-A');
   });
 
-  it('PROD-NORM-002: normalizeProductIdentityCore rejects control characters and duplicate dimension keys', () => {
+  it('HSN-LEGAL-ASSIGNMENT-SYNTAX-032 & PROD-NORM-SAFE-003: Rejects control characters, invalid HSN, and duplicate dimension keys', () => {
     expect(() => normalizeProductIdentityCore({
       category_hsn: '7326\u000090',
       unit_of_measure: 'PIECE',
@@ -152,7 +152,7 @@ describe('SUITE-07: Financial Engine & Recovery Durations', () => {
     })).toThrow(/E-ERR-024: DUPLICATE_DIMENSION_KEY/);
   });
 
-  it('PROD-CANON-003: generateCanonicalProductId generates deterministic prod: SHA-256', () => {
+  it('PROD-NORM-DETERMINISTIC-004 & PROD-COLL-001: generateCanonicalProductId generates deterministic prod: SHA-256 with collision resistance', () => {
     const core = {
       category_hsn: '73269099',
       unit_of_measure: 'PACK' as const,
@@ -173,7 +173,7 @@ describe('SUITE-07: Financial Engine & Recovery Durations', () => {
     expect(() => createPhysicalDimensions(300, 200, 100, 0, 1000)).toThrow(/E-ERR-021: DIMENSION_BOUNDS_EXCEEDED/);
   });
 
-  it('INV-QTY-001: validateInventoryQuantity checks non-negative safe integer within 10^9', () => {
+  it('INV-QTY-BOUND-002: validateInventoryQuantity checks non-negative safe integer within 10^9 bound', () => {
     expect(() => validateInventoryQuantity(500)).not.toThrow();
     expect(() => validateInventoryQuantity(0)).not.toThrow();
     expect(() => validateInventoryQuantity(-1)).toThrow(/E-ERR-034: INVALID_INVENTORY_QUANTITY/);
@@ -181,7 +181,7 @@ describe('SUITE-07: Financial Engine & Recovery Durations', () => {
     expect(() => validateInventoryQuantity(1000000001)).toThrow(/E-ERR-034: INVALID_INVENTORY_QUANTITY/);
   });
 
-  it('FIN-METRIC-001: computeRoPF, computeCoC, and computeHPR evaluate correctly', () => {
+  it('FIN-ROPF-PEAK-007 & FIN-CONV-HPR-008: computeRoPF, computeCoC, and computeHPR evaluate correctly', () => {
     const t0 = '2026-10-01T00:00:00Z';
     const flows = [
       { entry_timestamp_utc: '2026-10-01T12:00:00Z', sequence_number: 1, amount: -1000, flow_kind: 'PROCUREMENT_OUTLAY' as const },
@@ -222,7 +222,7 @@ describe('SUITE-07: Financial Engine & Recovery Durations', () => {
     expect(solveXIRR(allPos).status).toBe('INVALID_CASH_FLOWS');
   });
 
-  it('FIN-TWO-TIER-001: TwoTierGrossClearingLedger tracks clearing vs bank balances', () => {
+  it('FIN-GROSS-CLEARING-TIER-037: TwoTierGrossClearingLedger tracks clearing vs bank balances', () => {
     const ledger = new TwoTierGrossClearingLedger();
     ledger.recordGrossProceeds(10000);
     expect(ledger.getBalances().b_clearing).toBe(10000);

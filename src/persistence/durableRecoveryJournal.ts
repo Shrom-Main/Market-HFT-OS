@@ -211,14 +211,19 @@ export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
       let encounteredTornTail = false;
 
       for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
+        let line = lines[i];
         const isTerminalLine = i === lines.length - 1;
+        const hasCR = line.endsWith('\r');
+        if (hasCR) {
+          line = line.slice(0, -1);
+        }
+        const delimiterLength = hasCR ? 2 : 1;
 
         if (isTerminalLine && line.trim().length === 0) {
           continue; // Normal trailing blank line after final newline
         }
         if (line.trim().length === 0) {
-          validBytesLength += Buffer.byteLength(line, 'utf8') + 1;
+          validBytesLength += Buffer.byteLength(line, 'utf8') + delimiterLength;
           continue;
         }
 
@@ -232,7 +237,7 @@ export class FileBackedDurableRecoveryJournal extends DurableRecoveryJournal {
             validBytesLength += Buffer.byteLength(line, 'utf8');
             needsNormalization = true;
           } else {
-            validBytesLength += Buffer.byteLength(line, 'utf8') + 1; // line + \n
+            validBytesLength += Buffer.byteLength(line, 'utf8') + delimiterLength;
           }
         } catch (err: any) {
           const isLastNonEmptyLine =

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, it, expect } from 'vitest';
@@ -1331,6 +1332,61 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
     } finally {
       if (fs.existsSync(walPath)) fs.unlinkSync(walPath);
       if (fs.existsSync(failWalPath)) fs.unlinkSync(failWalPath);
+      if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('M3-WAL-CRLF-DELIMITER-NORMALIZATION-018: Accurately handles CRLF delimiters, blank lines and unterminated records', () => {
+    const tmpDir = path.join(os.tmpdir(), `wal_crlf_test_${Date.now()}`);
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const crlfWalPath = path.join(tmpDir, 'crlf_test.wal');
+
+    try {
+      // Create initial journal and append 1 event
+      const j1 = new FileBackedDurableRecoveryJournal(crlfWalPath);
+      j1.appendEvent('ORDER_SUBMITTED', { order_id: 'o-crlf-1' }, '2026-10-12T10:00:00.000Z');
+      j1.close();
+
+      // Read raw bytes, convert to CRLF with an interior blank CRLF line, and append unterminated second record
+      const rawBytes = fs.readFileSync(crlfWalPath, 'utf8');
+      const lines = rawBytes.trim().split('\n');
+      const entry1 = lines[0].replace(/\r?$/, '');
+
+      // Simulate a valid second record written with CRLF delimiter on line 1, interior blank line \r\n, and line 2 without trailing newline
+      const jcs2 = canonicalizeJCS({
+        entry_id: 'rec:ent:2',
+        event_type: 'PORTFOLIO_APPLIED',
+        payload_sha256: sha256(Buffer.from(canonicalizeJCS({ fill_id: 'f-crlf-2' }), 'utf8')),
+        prev_entry_sha256: JSON.parse(entry1).entry_sha256,
+        sequence_number: 2,
+        timestamp_utc: '2026-10-12T10:00:01.000Z'
+      });
+      const entry2Sha = sha256(Buffer.from(jcs2, 'utf8'));
+      const fullEntry2 = { ...JSON.parse(jcs2), entry_sha256: entry2Sha, payload: { fill_id: 'f-crlf-2' } };
+
+      const crlfContent = entry1 + '\r\n\r\n' + JSON.stringify(fullEntry2); // No trailing newline
+      fs.writeFileSync(crlfWalPath, crlfContent, 'utf8');
+
+      // Reopen journal - should detect CRLF, blank lines, and unterminated terminal record
+      const j2 = new FileBackedDurableRecoveryJournal(crlfWalPath);
+      expect(j2.getEntryCount()).toBe(2);
+      expect(j2.verifyIntegrity().isValid).toBe(true);
+
+      // Append 3rd event: triggers normalizeTrailingNewline() and appends
+      const entry3 = j2.appendEvent('FILL_RECORDED', { fill_id: 'f-crlf-3' }, '2026-10-12T10:00:02.000Z');
+      expect(entry3.sequence_number).toBe(3);
+      expect(entry3.prev_entry_sha256).toBe(entry2Sha);
+      expect(j2.getEntryCount()).toBe(3);
+      expect(j2.verifyIntegrity().isValid).toBe(true);
+      j2.close();
+
+      // Reopen 3rd time: all 3 entries intact
+      const j3 = new FileBackedDurableRecoveryJournal(crlfWalPath);
+      expect(j3.getEntryCount()).toBe(3);
+      expect(j3.verifyIntegrity().isValid).toBe(true);
+      j3.close();
+    } finally {
+      if (fs.existsSync(crlfWalPath)) fs.unlinkSync(crlfWalPath);
       if (fs.existsSync(tmpDir)) fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
