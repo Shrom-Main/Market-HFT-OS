@@ -6,7 +6,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 [![Vitest](https://img.shields.io/badge/Vitest-4.1.12-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.8-blue.svg)](https://www.postgresql.org/)
-[![Status](https://img.shields.io/badge/Pre_M4_Conformance-Passing_(161_Tests_/_19_Suites)-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Gate_M4_Conformance-Passing_(169_Tests_/_20_Suites)-brightgreen.svg)]()
 
 ---
 
@@ -16,6 +16,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 - **Quarantine Isolation**: All legacy code (`_salvage/AIStudio/`, `_salvage/external/`) is strictly quarantined and git-ignored. Zero imports or execution of legacy salvage code exist in `src/` or `tests/`.
 - **Three-State Conformance Model**: All requirements are strictly tracked as `Specified — Pending Verification`, `Design Reviewed`, or `Verified — Test Evidence Recorded`.
 - **Epistemic & Operational Boundary**: Gate M3 integrates durable persistence, crash recovery, multi-stream integration, and live PostgreSQL 16.8 concurrency. Market feeds utilize local loopback WebSocket networking (`ws://127.0.0.1`) with fail-closed provenance (`is_authenticated_source_feed: false`). Order execution is simulated via `SimulatedExecutionGateway`. Dual-ledger protection (`ActualsGuard`) strictly isolates simulations from production actuals. Zero live exchange access, real order routing, or actual money movement is permitted or enabled.
+- **Gate M4 Research & Capital-Allocation Gate**: Evaluates physical commodity arbitrage vertical slices (DIN 3017 W4 SS304 worm-drive hose clamp) with cryptographic provenance envelopes, exact rational/integer subunit financial and tax arithmetic (GST, TCS, TDS), 7-bucket inventory conservation, working-capital hurdle rate gating, and deterministic edge-decay detection.
 
 ---
 
@@ -31,6 +32,7 @@ src/
 ├── ledger/             # Dual-ledger isolation guard (ActualsGuard, tickets, nonces)
 ├── persistence/        # File-backed WAL, crash recovery engine, PostgreSQL adapter, locks
 ├── portfolio/          # Simulation portfolio, anchored cumulative COGS, positions
+├── research/           # SS304 physical vertical slice research & capital-allocation engine
 ├── simulation/         # End-to-end simulation pipeline coordinator
 └── verification/       # 4-claim verification gate, attester auth, commercial reconciliation
 ```
@@ -78,17 +80,17 @@ npm run typecheck
 # Standard run (skips live PostgreSQL tests cleanly if DATABASE_URL is unset)
 npm test
 
-# Full run with live PostgreSQL 16.8 (runs all 161 tests across 19 suites)
+# Full run with live PostgreSQL 16.8 (runs all 169 tests across 20 suites)
 $env:DATABASE_URL = "postgresql://postgres@localhost:5432/market_hft_test"
 npm test
 ```
-*Expected output: 19 test files passed, 161 tests passed (Exit code 0).*
+*Expected output: 20 test files passed, 169 tests passed (Exit code 0).*
 
 ### Step 4: Generate Machine-Readable Audit Report
 ```bash
 npm run test:json
 ```
-*Generates `test-results.json` recording 19 passed test files and 161 passed tests.*
+*Generates `test-results.json` recording 20 passed test files and 169 passed tests.*
 
 ---
 
@@ -152,3 +154,12 @@ npm run test:json
   - Exact 300,000ms ticket validity lifetime enforcement and expiry rejection with `E-ERR-026` (`ACTUALS-AUTH-EXACT-004`).
   - Atomic transaction rollback on actuals write failure (`ACTUALS-TX-ATOMIC-005`).
   - Single-use ticket nonce replay prevention with `E-ERR-023` (`TEST-CONCURRENCY-NONCE-01`).
+- **`suite20_m4_ss304_vertical_slice.test.ts` (8 tests)**: Gate M4 end-to-end SS304 physical commodity research and capital-allocation simulation engine:
+  - Viable opportunity capital allocation in `PAPER_SIMULATION` mode with exact landed cost ₹38.2100 (`M4-SCENARIO-A-001`).
+  - Economic deterioration, fee creep, and return spike edge-decay detection emitting `DO_NOT_ALLOCATE_CAPITAL` (`M4-SCENARIO-B-002`).
+  - Cryptographic attestation and unverified signature fail-closed quarantine (`M4-SCENARIO-C1-003`).
+  - Stale evidence TTL expiration fail-closed quarantine (`M4-SCENARIO-C2-004`).
+  - Missing mandatory evidence fail-closed rejection without silent fallbacks (`M4-SCENARIO-C3-005`).
+  - Forward clock skew fail-closed rejection enforcing FUZZ-CLOCK-001 (`M4-SCENARIO-C4-006`).
+  - 7-bucket inventory transition audit bitwise conservation (`M4-INVENTORY-CONSERV-007`).
+  - Deterministic bit-for-bit decision reproducibility under RFC 8785 JCS (`M4-REPRODUCIBLE-JCS-008`).
