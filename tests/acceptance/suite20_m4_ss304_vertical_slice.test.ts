@@ -10,6 +10,7 @@ import {
   ProvenanceEnvelope
 } from '../../src/research/m4VerticalSlice.js';
 import { FormulaRegistry, computeFormulaJcsHash } from '../../src/research/formulaRegistry.js';
+import { GroqFormulaAdvisor, loadGroqKeyFromEnv } from '../../src/research/llmFormulaAdvisor.js';
 import { canonicalizeJCS } from '../../src/canonical/jcs.js';
 
 describe('SUITE-20: Gate M4 End-to-End SS304 Vertical Slice & Capital-Allocation Engine', () => {
@@ -369,4 +370,116 @@ describe('SUITE-20: Gate M4 End-to-End SS304 Vertical Slice & Capital-Allocation
     expect(promoted.tier).toBe('PROMOTED_NORMATIVE');
     expect(registry.getFormula('FIN-CANDIDATE-CUSTOMS-SURCHARGE-001')?.tier).toBe('PROMOTED_NORMATIVE');
   });
+
+  it('M4-GROQ-CREDENTIALS-012: Groq API credentials loaded and verified from Groq_Key.env with fallback support', () => {
+    // 1. Verify key loading from environment or default Groq_Key.env path
+    const key = loadGroqKeyFromEnv();
+    expect(key).not.toBeNull();
+    expect(typeof key).toBe('string');
+    expect(key!.length).toBeGreaterThanOrEqual(20);
+    expect(key!.startsWith('gsk_')).toBe(true);
+
+    // 2. Non-existent path returns null safely
+    const nullKey = loadGroqKeyFromEnv('D:/non_existent_key.env');
+    expect(nullKey).toBeNull();
+
+    // 3. GroqFormulaAdvisor initializes with key and configured or default model
+    const advisor = new GroqFormulaAdvisor();
+    expect(advisor.getApiKey()).toBe(key);
+    expect(advisor.getModel()).toBeDefined();
+  });
+
+  it(
+    'M4-GROQ-ADVISOR-PROPOSAL-013: LLM candidate proposal generation produces schema-compliant FormulaCard with deterministic fallback',
+    async () => {
+      // 1. Verify offline/deterministic simulated proposal generator
+      const simAdvisor = new GroqFormulaAdvisor({ forceSimulated: true });
+      const simShrinkage = await simAdvisor.proposeFormulaRefinement(
+        'Warehouse inventory shrinkage drag for SS304 clamps'
+      );
+      expect(simShrinkage.formula_id).toBe('FIN-CANDIDATE-SHRINKAGE-001');
+      expect(simShrinkage.domain).toBe('PHYSICAL_ARBITRAGE');
+      expect(simShrinkage.symbolic_expression).toContain('Unit_Cost');
+      expect(simShrinkage.canonical_test_vector.expected_output).toBe(10000);
+
+      const simCustoms = await simAdvisor.proposeFormulaRefinement(
+        'Customs anti-dumping duty surcharge on imported SS304 strip'
+      );
+      expect(simCustoms.formula_id).toBe('FIN-CANDIDATE-CUSTOMS-ADD-001');
+      expect(simCustoms.domain).toBe('TAX_STATUTORY');
+      expect(simCustoms.symbolic_expression).toContain('AntiDumpingDuty');
+
+      const registry = new FormulaRegistry();
+      const existing = registry.getFormula('FIN-LANDED-COST-001')!;
+      const simRefined = await simAdvisor.proposeFormulaRefinement(
+        'Refine landed cost with safety margin buffer',
+        existing
+      );
+      expect(simRefined.formula_id).toContain('FIN-LANDED-COST-001');
+
+      // 2. Verify live or fallback advisor produces valid schema-compliant proposal
+      const liveAdvisor = new GroqFormulaAdvisor({ offlineFallback: true });
+      const proposal = await liveAdvisor.proposeFormulaRefinement(
+        'Warehouse inventory shrinkage drag for SS304 clamps'
+      );
+      expect(proposal.formula_id).toMatch(/^FIN-CANDIDATE-/);
+      expect(proposal.symbolic_expression).toBeDefined();
+      expect(proposal.input_variables.length).toBeGreaterThanOrEqual(2);
+      expect(proposal.canonical_test_vector.inputs).toBeDefined();
+      expect(proposal.canonical_test_vector.expected_output).toBeDefined();
+    },
+    25000
+  );
+
+  it(
+    'M4-GROQ-ADVISOR-EVAL-ISOLATION-014: LLM candidate evaluation registers card, validates test vector, and governance firewall prohibits unpromoted execution in production',
+    async () => {
+      const registry = new FormulaRegistry();
+      const advisor = new GroqFormulaAdvisor({ offlineFallback: true });
+
+      // 1. Propose and evaluate LLM candidate
+      const candidateInput = await advisor.proposeFormulaRefinement(
+        'Warehouse inventory shrinkage drag for SS304 clamps'
+      );
+      const evalResult = await advisor.evaluateLlmCandidate(candidateInput, registry);
+
+      // 2. Verify registration tier is sandboxed CANDIDATE_UI_MODEL
+      expect(evalResult.registered_card.tier).toBe('CANDIDATE_UI_MODEL');
+      expect(evalResult.registered_card.formula_id).toBe(candidateInput.formula_id);
+      expect(registry.verifyFormulaIntegrity(evalResult.registered_card.formula_id)).toBe(true);
+
+      // 3. Verify deterministic test vector execution passed
+      expect(evalResult.test_vector_passed).toBe(true);
+      expect(evalResult.computed_output).toBe(BigInt(candidateInput.canonical_test_vector.expected_output));
+
+      // 4. Verify candidate is indexed and retrievable via BM25 RAG
+      const ragMatches = registry.retrieveFormulas('Warehouse inventory shrinkage drag');
+      expect(ragMatches.length).toBeGreaterThanOrEqual(1);
+      expect(ragMatches.some((m) => m.formula.formula_id === candidateInput.formula_id)).toBe(true);
+
+      // 5. Governance Firewall: candidate formula CANNOT execute in production without owner promotion
+      expect(() => {
+        registry.evaluateFormula(
+          evalResult.registered_card.formula_id,
+          candidateInput.canonical_test_vector.inputs as Record<string, number>
+        );
+      }).toThrow('E-ERR-GOV-001: CANDIDATE_UI_MODEL formulas cannot execute in production without owner promotion');
+
+      // 6. Owner promotion promotes formula to PROMOTED_NORMATIVE
+      const promoted = registry.promoteCandidateFormula(
+        evalResult.registered_card.formula_id,
+        'GOVERNED_RATIFICATION_OD-07'
+      );
+      expect(promoted.tier).toBe('PROMOTED_NORMATIVE');
+
+      // 7. After promotion, execution succeeds in production mode
+      const prodResult = registry.evaluateFormula(
+        evalResult.registered_card.formula_id,
+        candidateInput.canonical_test_vector.inputs as Record<string, number>
+      );
+      expect(prodResult).toBe(BigInt(candidateInput.canonical_test_vector.expected_output));
+    },
+    25000
+  );
 });
+

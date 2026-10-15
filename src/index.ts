@@ -22,4 +22,5 @@ export * from './canonical/deterministic.js';
 export * from './persistence/durableRecoveryJournal.js';
 export * from './research/m4VerticalSlice.js';
 export * from './research/formulaRegistry.js';
+export * from './research/llmFormulaAdvisor.js';
 

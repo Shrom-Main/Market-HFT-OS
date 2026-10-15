@@ -70,10 +70,119 @@ export interface FormulaRegistrySearchOptions {
   topK?: number;
 }
 
+export type FormulaCardInput = Omit<FormulaCard, 'jcs_hash' | 'tier'> & {
+  jcs_hash?: string;
+  tier?: FormulaTier;
+};
+
+export type FormulaEvaluatorFn = (inputs: Record<string, bigint | number>) => bigint;
+
 export function computeFormulaJcsHash(card: Omit<FormulaCard, 'jcs_hash'>): string {
   const canonical = canonicalizeJCS(card);
   return createHash('sha256').update(canonical).digest('hex');
 }
+
+/**
+ * Deterministically evaluates a basic symbolic algebraic expression using BigInt arithmetic.
+ */
+export function evaluateSymbolicExpression(
+  expression: string,
+  inputs: Record<string, bigint | number>
+): bigint {
+  let rhs = expression.includes('=') ? expression.split('=')[1] : expression;
+  rhs = rhs
+    .replace(/\\lfloor|\\rfloor/g, '')
+    .replace(/\\times/g, '*')
+    .replace(/\\cdot/g, '*');
+
+  const tokens: string[] = [];
+  const regex = /\s*([A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|[()+\-*/])\s*/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(rhs)) !== null) {
+    tokens.push(match[1]);
+  }
+
+  if (tokens.length === 0) {
+    throw new Error('Empty symbolic expression');
+  }
+
+  const normalizedInputs: Record<string, number> = {};
+  for (const [k, v] of Object.entries(inputs)) {
+    normalizedInputs[k.toLowerCase()] = Number(v);
+  }
+
+  let pos = 0;
+  function peek(): string | undefined {
+    return tokens[pos];
+  }
+  function consume(): string {
+    return tokens[pos++];
+  }
+
+  function parsePrimary(): number {
+    const t = consume();
+    if (!t) throw new Error('Unexpected end of expression');
+    if (t === '(') {
+      const val = parseExpr();
+      if (consume() !== ')') throw new Error('Missing closing parenthesis');
+      return val;
+    }
+    if (/^\d+(?:\.\d+)?$/.test(t)) {
+      return Number(t);
+    }
+    const lower = t.toLowerCase();
+    if (lower in normalizedInputs) {
+      return normalizedInputs[lower];
+    }
+    throw new Error(`Unknown variable: ${t}`);
+  }
+
+  function parseFactor(): number {
+    if (peek() === '-') {
+      consume();
+      return -parsePrimary();
+    }
+    if (peek() === '+') {
+      consume();
+    }
+    return parsePrimary();
+  }
+
+  function parseTerm(): number {
+    let left = parseFactor();
+    while (peek() === '*' || peek() === '/') {
+      const op = consume();
+      const right = parseFactor();
+      if (op === '*') {
+        left = left * right;
+      } else {
+        left = right === 0 ? 0 : left / right;
+      }
+    }
+    return left;
+  }
+
+  function parseExpr(): number {
+    let left = parseTerm();
+    while (peek() === '+' || peek() === '-') {
+      const op = consume();
+      const right = parseTerm();
+      if (op === '+') {
+        left = left + right;
+      } else {
+        left = left - right;
+      }
+    }
+    return left;
+  }
+
+  const result = parseExpr();
+  if (pos < tokens.length) {
+    throw new Error(`Extra tokens remaining: ${tokens.slice(pos).join(' ')}`);
+  }
+  return BigInt(Math.round(result));
+}
+
 
 /**
  * Tokenize string into alphanumeric search tokens.
@@ -88,6 +197,7 @@ function tokenize(text: string): string[] {
 
 export class FormulaRegistry {
   private readonly formulas = new Map<string, FormulaCard>();
+  private readonly customEvaluators = new Map<string, FormulaEvaluatorFn>();
 
   constructor() {
     this.bootstrapCanonicalFormulas();
@@ -286,12 +396,32 @@ export class FormulaRegistry {
     return jcs_hash === expected;
   }
 
+  public registerFormulaEvaluator(formulaId: string, evaluator: FormulaEvaluatorFn): void {
+    if (!this.formulas.has(formulaId)) {
+      throw new Error(
+        `E-ERR-GOV-004: FORMULA_NOT_FOUND: Cannot register evaluator for non-existent formula ${formulaId}`
+      );
+    }
+    this.customEvaluators.set(formulaId, evaluator);
+  }
+
+  public hasEvaluator(formulaId: string): boolean {
+    if (this.customEvaluators.has(formulaId)) return true;
+    return [
+      'FIN-LANDED-COST-001',
+      'FIN-MKT-FEES-GST-002',
+      'FIN-STATUTORY-TCS-TDS-003',
+      'FIN-RETURN-ATTRITION-004',
+      'FIN-CCC-ROWC-005'
+    ].includes(formulaId);
+  }
+
   /**
    * Register a new formula proposed by UI or LLM intelligence in the sandboxed CANDIDATE_UI_MODEL tier.
    * Prohibits overriding an existing PROMOTED_NORMATIVE formula without explicit owner promotion.
    */
   public registerCandidateFormula(
-    cardInput: Omit<FormulaCard, 'jcs_hash' | 'tier'> & { jcs_hash?: string; tier?: FormulaTier }
+    cardInput: FormulaCardInput
   ): FormulaCard {
     const existing = this.formulas.get(cardInput.formula_id);
     if (existing && existing.tier === 'PROMOTED_NORMATIVE') {
@@ -457,6 +587,11 @@ export class FormulaRegistry {
       );
     }
 
+    const custom = this.customEvaluators.get(formulaId);
+    if (custom) {
+      return custom(inputs);
+    }
+
     switch (formulaId) {
       case 'FIN-LANDED-COST-001': {
         const p = BigInt(inputs.raw_material_purchase_subunits);
@@ -501,8 +636,13 @@ export class FormulaRegistry {
         const ccc = Math.max(1, lead + dwell + settlement - terms);
         return BigInt(Math.floor((marginBps * 365) / ccc));
       }
-      default:
-        throw new Error(`E-ERR-GOV-005: NO_EVALUATOR_IMPLEMENTED: Formula ${formulaId} does not have a compiled evaluator`);
+      default: {
+        try {
+          return evaluateSymbolicExpression(card.symbolic_expression, inputs);
+        } catch {
+          throw new Error(`E-ERR-GOV-005: NO_EVALUATOR_IMPLEMENTED: Formula ${formulaId} does not have a compiled evaluator`);
+        }
+      }
     }
   }
 }
