@@ -3,7 +3,7 @@
 High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Foundation, Gate M2 Execution Engine & Gate M3 Persistence / Crash Recovery (Simulation Milestone).
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4.5-blue.svg)](https://www.typescriptlang.org/)
-[![Vitest](https://img.shields.io/badge/Vitest-1.6.0-green.svg)](https://vitest.dev/)
+[![Vitest](https://img.shields.io/badge/Vitest-4.1.12-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.8-blue.svg)](https://www.postgresql.org/)
 [![Status](https://img.shields.io/badge/Gate_M3_Conformance-Passing_(158_Tests_/_19_Suites)-brightgreen.svg)]()
@@ -44,10 +44,10 @@ All dependencies are strictly pinned with zero semver range operators (`^` or `~
 | Package | Version | Exact Integrity Hash (SHA-512) / Reference | Purpose |
 |---|---|---|---|
 | `json-canonicalize` | `3.0.1` | `sha512-xEzkTucfHhDooWOSMOvrlll9oTk6/mXZIerF2DFWA2chHZsnc2zrmAKjVOyDbSYHr0e3Djx9F89nZ3U2Bn+lSw==` | RFC 8785 JSON Canonicalization Scheme (JCS) |
-| `ws` | `8.19.0` | Pinned in lockfile | High-performance local loopback WebSocket transport |
+| `ws` | `8.22.0` | Pinned in lockfile | High-performance local loopback WebSocket transport |
 | `pg` | `8.23.1` | Pinned in lockfile | PostgreSQL 16.8 ACID persistence and row locking |
 | `typescript` | `5.4.5` | Pinned in lockfile | Static typechecker |
-| `vitest` | `1.6.0` | Pinned in lockfile | Deterministic test runner |
+| `vitest` | `4.1.12` | Pinned in lockfile | Deterministic test runner |
 | `@types/node` | `20.12.7` | Pinned in lockfile | Node.js typings |
 | `@types/pg` | `8.23.1` | Pinned in lockfile | PostgreSQL typings |
 | `@types/ws` | `8.18.2` | Pinned in lockfile | WebSocket typings |
