@@ -9,6 +9,7 @@ import {
   OperationalEconomicsParameters,
   ProvenanceEnvelope
 } from '../../src/research/m4VerticalSlice.js';
+import { FormulaRegistry, computeFormulaJcsHash } from '../../src/research/formulaRegistry.js';
 import { canonicalizeJCS } from '../../src/canonical/jcs.js';
 
 describe('SUITE-20: Gate M4 End-to-End SS304 Vertical Slice & Capital-Allocation Engine', () => {
@@ -43,7 +44,7 @@ describe('SUITE-20: Gate M4 End-to-End SS304 Vertical Slice & Capital-Allocation
         product_id: 'prod:din3017:ss304:pack-10',
         raw_material_purchase_subunits: 250000n, // ₹25.0000
         moq: 500,
-        payment_terms_days: 15,
+        payment_terms_days: 0, // Advance EXW payment on MOQ procurement -> CCC = 35 days (MATH-04)
         incoterms: 'EXW'
       }
     };
@@ -117,7 +118,14 @@ describe('SUITE-20: Gate M4 End-to-End SS304 Vertical Slice & Capital-Allocation
       expect(result.allocation_parameters.unit_landed_cost_inr).toBe('38.2100');
       expect(result.allocation_parameters.cash_conversion_cycle_days).toBe(35);
       expect(result.allocation_parameters.annualized_rowc_bps).toBeGreaterThanOrEqual(1500); // Exceeds 15.00% hurdle
+      expect(result.allocation_parameters.annualized_rowc_bps).toBe(39941); // 399.41% exact (MATH-04)
+      expect(result.allocation_parameters.expected_net_margin_bps).toBe(3830); // 38.30%
+      expect(result.allocation_parameters.unit_net_contribution_inr).toBe('14.6377');
+      expect(result.allocation_parameters.break_even_price_inr).toBe('88.5827');
       expect(result.allocation_parameters.committed_capital_inr).toBe('19105.0000'); // 500 * ₹38.21
+      expect(result.allocation_parameters.marketplace_fee_gst_inr).toBe('7.1550'); // 18% fee GST (MATH-01)
+      expect(result.allocation_parameters.net_statutory_settlement_inr).toBe('2.1435'); // Net GSTR-3B settlement (MATH-03)
+      expect(result.allocation_parameters.income_tax_tds_holdback_inr).toBe('0.8898'); // Sec 194-O TDS on ex-GST base (MATH-02)
     }
   });
 
@@ -242,5 +250,123 @@ describe('SUITE-20: Gate M4 End-to-End SS304 Vertical Slice & Capital-Allocation
 
     expect(jcs1).toBe(jcs2);
     expect(res1.decision).toBe(res2.decision);
+  });
+
+  it('M4-STATUTORY-MATH-009: Verified statutory and cash-conversion cycle sensitivity (MATH-01 to MATH-04)', () => {
+    const inputs = createValidInputs();
+
+    // Baseline: payment_terms_days = 0 (Advance EXW)
+    const baseResult = engine.evaluateOpportunity(inputs);
+    expect(baseResult.allocation_parameters?.cash_conversion_cycle_days).toBe(35);
+    expect(baseResult.allocation_parameters?.annualized_rowc_bps).toBe(39941); // 399.41%
+
+    // MATH-04 Sensitivity: 15-day supplier credit terms (DPO = 15)
+    // CCC = 7 + 14 + 14 - 15 = 20 days -> RoWC = (3830 * 365) / 20 = 69897 bps (698.97%)
+    inputs.supplier_quote!.payload.payment_terms_days = 15;
+    const creditResult = engine.evaluateOpportunity(inputs);
+    expect(creditResult.allocation_parameters?.cash_conversion_cycle_days).toBe(20);
+    expect(creditResult.allocation_parameters?.annualized_rowc_bps).toBe(69897);
+    expect(creditResult.allocation_parameters!.annualized_rowc_bps).toBeGreaterThan(
+      baseResult.allocation_parameters!.annualized_rowc_bps
+    );
+
+    // MATH-01 & MATH-02: Ex-GST tax base and 18% fee GST verification
+    expect(creditResult.allocation_parameters?.marketplace_fee_gst_inr).toBe('7.1550');
+    expect(creditResult.allocation_parameters?.income_tax_tds_holdback_inr).toBe('0.8898');
+    expect(creditResult.allocation_parameters?.net_statutory_settlement_inr).toBe('2.1435');
+  });
+
+  it('M4-FORMULA-REGISTRY-RAG-010: Formula Registry BM25 retrieval, JCS cryptographic integrity, and test vector execution', () => {
+    const registry = new FormulaRegistry();
+
+    // 1. Verify JCS cryptographic integrity of all 5 canonical formulas
+    const canonicalIds = [
+      'FIN-LANDED-COST-001',
+      'FIN-MKT-FEES-GST-002',
+      'FIN-STATUTORY-TCS-TDS-003',
+      'FIN-RETURN-ATTRITION-004',
+      'FIN-CCC-ROWC-005'
+    ];
+
+    for (const id of canonicalIds) {
+      expect(registry.verifyFormulaIntegrity(id)).toBe(true);
+      const card = registry.getFormula(id);
+      expect(card).toBeDefined();
+      expect(card!.tier).toBe('PROMOTED_NORMATIVE');
+
+      // 2. Execute canonical test vector
+      const vector = card!.canonical_test_vector;
+      const computed = registry.evaluateFormula(id, vector.inputs as Record<string, number>);
+      expect(computed).toBe(BigInt(vector.expected_output));
+    }
+
+    // 3. RAG BM25 retrieval accuracy
+    const matches = registry.retrieveFormulas('Section 194-O TDS GST offset');
+    expect(matches.length).toBeGreaterThanOrEqual(1);
+    expect(matches[0].formula.formula_id).toBe('FIN-STATUTORY-TCS-TDS-003');
+    expect(matches[0].relevance_score).toBeGreaterThan(0);
+    expect(matches[0].matched_terms).toContain('194-o');
+    expect(matches[0].matched_terms).toContain('tds');
+  });
+
+  it('M4-FORMULA-GOVERNANCE-ISOLATION-011: CANDIDATE_UI_MODEL sandboxing prevents unpromoted execution in production', () => {
+    const registry = new FormulaRegistry();
+
+    // 1. Register sandboxed candidate formula proposed via UI / intelligence
+    const candidateCard = registry.registerCandidateFormula({
+      formula_id: 'FIN-CANDIDATE-CUSTOMS-SURCHARGE-001',
+      title: 'Imported SS304 Strip Anti-Dumping & Customs Surcharge Model',
+      domain: 'TAX_STATUTORY',
+      statutory_or_economic_citations: ['Customs Tariff Act 1975 Sec 9A'],
+      symbolic_expression: 'Surcharge = BasicCustomsDuty + AntiDumpingDuty',
+      input_variables: [
+        { name: 'basic_customs_duty_subunits', unit: 'SUBUNITS_INR', description: 'Basic customs duty' },
+        { name: 'anti_dumping_duty_subunits', unit: 'SUBUNITS_INR', description: 'Anti-dumping duty' }
+      ],
+      output_variable: { name: 'surcharge_subunits', unit: 'SUBUNITS_INR' },
+      rationale_and_invariants: 'Sandboxed formula for testing imported strip duty impacts.',
+      canonical_test_vector: {
+        inputs: { basic_customs_duty_subunits: 10000, anti_dumping_duty_subunits: 15000 },
+        expected_output: 25000
+      }
+    });
+
+    expect(candidateCard.tier).toBe('CANDIDATE_UI_MODEL');
+    expect(registry.verifyFormulaIntegrity('FIN-CANDIDATE-CUSTOMS-SURCHARGE-001')).toBe(true);
+
+    // 2. Candidate formula is retrievable via BM25
+    const retrieved = registry.retrieveFormulas('Customs Surcharge Anti-Dumping');
+    expect(retrieved.some((r) => r.formula.formula_id === 'FIN-CANDIDATE-CUSTOMS-SURCHARGE-001')).toBe(true);
+
+    // 3. Candidate formula fails closed if attempted to execute in production mode without promotion
+    expect(() => {
+      registry.evaluateFormula('FIN-CANDIDATE-CUSTOMS-SURCHARGE-001', {
+        basic_customs_duty_subunits: 10000,
+        anti_dumping_duty_subunits: 15000
+      });
+    }).toThrow('E-ERR-GOV-001: CANDIDATE_UI_MODEL formulas cannot execute in production without owner promotion');
+
+    // 4. Prohibit candidate registration from overwriting PROMOTED_NORMATIVE formula
+    expect(() => {
+      registry.registerCandidateFormula({
+        formula_id: 'FIN-LANDED-COST-001',
+        title: 'Tampered Landed Cost',
+        domain: 'PHYSICAL_ARBITRAGE',
+        statutory_or_economic_citations: [],
+        symbolic_expression: 'LandedCost = 0',
+        input_variables: [],
+        output_variable: { name: 'landed_cost_subunits', unit: 'SUBUNITS_INR' },
+        rationale_and_invariants: 'Tampered',
+        canonical_test_vector: { inputs: {}, expected_output: 0 }
+      });
+    }).toThrow('E-ERR-GOV-002: CANNOT_OVERWRITE_NORMATIVE_FORMULA');
+
+    // 5. Authorized owner promotion promotes formula to PROMOTED_NORMATIVE
+    const promoted = registry.promoteCandidateFormula(
+      'FIN-CANDIDATE-CUSTOMS-SURCHARGE-001',
+      'GOVERNED_RATIFICATION_OD-06'
+    );
+    expect(promoted.tier).toBe('PROMOTED_NORMATIVE');
+    expect(registry.getFormula('FIN-CANDIDATE-CUSTOMS-SURCHARGE-001')?.tier).toBe('PROMOTED_NORMATIVE');
   });
 });

@@ -21,4 +21,5 @@ export * from './simulation/simulationPipeline.js';
 export * from './canonical/deterministic.js';
 export * from './persistence/durableRecoveryJournal.js';
 export * from './research/m4VerticalSlice.js';
+export * from './research/formulaRegistry.js';
 

@@ -99,6 +99,9 @@ export interface CapitalAllocationDecisionResult {
     break_even_price_inr: string;
     unit_landed_cost_inr: string;
     unit_net_contribution_inr: string;
+    marketplace_fee_gst_inr?: string;
+    net_statutory_settlement_inr?: string;
+    income_tax_tds_holdback_inr?: string;
   };
   rejection_reasons?: string[];
   quarantine_recommended: boolean;
@@ -235,25 +238,44 @@ export class M4ResearchAllocationEngine {
     const fbaFeeSubunits = mkt.fba_weight_handling_subunits + (mkt.storage_fee_subunits || 0n);
     const totalMarketplaceFeesSubunits = referralFeeSubunits + closingFeeSubunits + fbaFeeSubunits;
 
-    // 5. Statutory Tax Holdbacks & Netting (Section 52 CGST TCS 1% + Section 194-O TDS 1%)
-    const tcsSubunits = (mkt.gross_selling_price_subunits * ops.tcs_rate_bps) / 10000n;
-    const tdsSubunits = (mkt.gross_selling_price_subunits * ops.tds_rate_bps) / 10000n;
-    const netMarketplaceDisbursementSubunits =
-      mkt.gross_selling_price_subunits - totalMarketplaceFeesSubunits - tcsSubunits - tdsSubunits;
+    // MATH-01: 18% GST on Marketplace Fees (deducted by marketplace from disbursements, eligible for ITC)
+    const marketplaceFeeGstSubunits =
+      (totalMarketplaceFeesSubunits * ops.gst_rate_bps) / 10000n;
 
-    // GST Netting (18% inclusive output GST less 100% ITC on procurement & logistics)
-    // Output GST = GrossPrice * 18 / 118
-    const outputGstSubunits =
-      mkt.gross_selling_price_subunits -
+    // MATH-02: Ex-GST Taxable Base for Sec 52 CGST TCS & Sec 194-O Income Tax TDS
+    const exGstRevenueSubunits =
       (mkt.gross_selling_price_subunits * 10000n) / (10000n + ops.gst_rate_bps);
-    // ITC on purchase & logistics = LandedCost * 18 / 118
-    const itcSubunits =
+    const tcsSubunits = (exGstRevenueSubunits * ops.tcs_rate_bps) / 10000n;
+    const tdsSubunits = (exGstRevenueSubunits * ops.tds_rate_bps) / 10000n;
+
+    // Net Marketplace Disbursement: Gross less fees, fee GST, TCS, and TDS
+    const netMarketplaceDisbursementSubunits =
+      mkt.gross_selling_price_subunits -
+      totalMarketplaceFeesSubunits -
+      marketplaceFeeGstSubunits -
+      tcsSubunits -
+      tdsSubunits;
+
+    // GST Netting & Input Tax Credit (ITC)
+    // Output GST = GrossPrice - ExGstRevenue
+    const outputGstSubunits = mkt.gross_selling_price_subunits - exGstRevenueSubunits;
+    // ITC on procurement & inbound logistics (18% inclusive)
+    const procurementItcSubunits =
       landedCostSubunits - (landedCostSubunits * 10000n) / (10000n + ops.gst_rate_bps);
-    const netGstCashLiability = outputGstSubunits > itcSubunits ? outputGstSubunits - itcSubunits : 0n;
-    // TCS & TDS refundable withholding credit offsets against statutory liability
-    const tcsTdsCreditOffset = tcsSubunits + tdsSubunits;
-    const netStatutorySettlementSubunits =
-      netGstCashLiability > tcsTdsCreditOffset ? netGstCashLiability - tcsTdsCreditOffset : 0n;
+    // ITC on marketplace fees
+    const feeGstItcSubunits =
+      (marketplaceFeeGstSubunits * ops.itc_eligible_fraction_bps) / 10000n;
+    const totalItcSubunits = procurementItcSubunits + feeGstItcSubunits;
+
+    const netGstCashLiability =
+      outputGstSubunits > totalItcSubunits ? outputGstSubunits - totalItcSubunits : 0n;
+
+    // MATH-03: Strict non-fungibility between GST and Income Tax
+    // Section 52 CGST TCS in GST Electronic Cash Ledger offsets Output GST;
+    // Section 194-O Income Tax TDS is non-fungible with GST and is held back separately
+    const netGstSettlementSubunits =
+      netGstCashLiability > tcsSubunits ? netGstCashLiability - tcsSubunits : 0n;
+    const netStatutorySettlementSubunits = netGstSettlementSubunits;
 
     // 6. Asymmetric Return & Quarantined Inventory Drag Modeling
     // Returned items absorb forward FBA fee + reverse logistics fee + 100% loss of landed cost on quarantine
@@ -275,11 +297,14 @@ export class M4ResearchAllocationEngine {
         ? Number((unitNetContributionSubunits * 10000n) / landedCostSubunits)
         : -10000;
 
-    // 8. Cash-Conversion Cycle & Annualized RoWC
-    const cccDays =
+    // MATH-04: Cash-Conversion Cycle explicitly incorporates supplier payment terms
+    const cccDays = Math.max(
+      1,
       ops.procurement_lead_time_days +
-      ops.warehouse_dwell_days +
-      ops.marketplace_settlement_delay_days;
+        ops.warehouse_dwell_days +
+        ops.marketplace_settlement_delay_days -
+        sq.payment_terms_days
+    );
 
     const annualizedRowcBps =
       cccDays > 0 ? Math.floor((cashMarginBps * 365) / cccDays) : 0;
@@ -288,6 +313,7 @@ export class M4ResearchAllocationEngine {
     const breakEvenPriceSubunits =
       landedCostSubunits +
       totalMarketplaceFeesSubunits +
+      marketplaceFeeGstSubunits +
       netStatutorySettlementSubunits +
       returnDragSubunits;
     const downsideBufferBps =
@@ -401,7 +427,10 @@ export class M4ResearchAllocationEngine {
         downside_price_buffer_bps: downsideBufferBps,
         break_even_price_inr: breakEvenPriceInr,
         unit_landed_cost_inr: unitLandedCostInr,
-        unit_net_contribution_inr: unitNetContributionInr
+        unit_net_contribution_inr: unitNetContributionInr,
+        marketplace_fee_gst_inr: (Number(marketplaceFeeGstSubunits) / 10000).toFixed(4),
+        net_statutory_settlement_inr: (Number(netStatutorySettlementSubunits) / 10000).toFixed(4),
+        income_tax_tds_holdback_inr: (Number(tdsSubunits) / 10000).toFixed(4)
       },
       quarantine_recommended: false,
       edge_decay_detected: false,
