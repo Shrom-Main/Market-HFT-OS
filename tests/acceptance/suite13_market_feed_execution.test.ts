@@ -297,6 +297,32 @@ describe('SUITE-13: Gate M2 Market Feed Normalization, Streaming Adapter & Simul
     expect(res.reason).toContain('E-ERR-023: CLOCK_SKEW_EXCEEDED');
   });
 
+  it('FUZZ-CLOCK-001: Injects real-time capture with +600s clock skew and asserts that E-ERR-007: CLOCK_SKEW_EXCEEDED is thrown', () => {
+    const handler = new MarketFeedHandler({ clockSkewToleranceMs: 5000 });
+    handler.registerSymbolMapping(venueId, rawSymbol, canonicalProductId);
+
+    const future600sMsg: RawMarketDataMessage = {
+      message_id: 'msg-fuzz-skew-600s',
+      venue_id: venueId,
+      raw_symbol: rawSymbol,
+      sequence: 1,
+      timestamp_utc: '2026-10-11T12:10:00Z', // +600s in future relative to 12:00:00Z
+      bid_price: '115.00',
+      bid_quantity: 10,
+      ask_price: '116.00',
+      ask_quantity: 10
+    };
+
+    // 1. Ingestion rejects real-time capture with E-ERR-007: CLOCK_SKEW_EXCEEDED
+    const res = handler.ingestRawMessage(future600sMsg, '2026-10-11T12:00:00Z');
+    expect(res.outcome).toBe('INVALID_FORMAT');
+    expect(res.reason).toContain('E-ERR-007: CLOCK_SKEW_EXCEEDED');
+
+    // 2. Strict capture validation asserts that E-ERR-007: CLOCK_SKEW_EXCEEDED is thrown (satisfying Spec §8.2 FUZZ-CLOCK-001)
+    expect(() => handler.validateCaptureTimestamp(future600sMsg.timestamp_utc, '2026-10-11T12:00:00Z'))
+      .toThrow(/E-ERR-007: CLOCK_SKEW_EXCEEDED/);
+  });
+
   it('M2-EXEC-VERIF-CONTRADICTION-008: Rejects contradictory offer where verification_status is not VERIFIED', () => {
     const engine = new DryRunExecutionEngine();
     const handler = new MarketFeedHandler();

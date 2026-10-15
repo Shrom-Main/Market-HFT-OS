@@ -127,6 +127,16 @@ export class MarketFeedHandler {
     return product_id;
   }
 
+  public validateCaptureTimestamp(timestamp_utc: string, reference_now_utc: string): void {
+    validateIso8601UtcTimestamp(timestamp_utc);
+    validateIso8601UtcTimestamp(reference_now_utc);
+    const occurredMs = Date.parse(timestamp_utc);
+    const refMs = Date.parse(reference_now_utc);
+    if (occurredMs - refMs > this.clockSkewToleranceMs) {
+      throw new Error(`E-ERR-007: CLOCK_SKEW_EXCEEDED: Real-time capture timestamp exceeds future tolerance by ${occurredMs - refMs}ms (tolerance ${this.clockSkewToleranceMs}ms)`);
+    }
+  }
+
   public ingestRawMessage(raw: RawMarketDataMessage, ingested_at_utc: string): FeedIngestionResult {
     validateIso8601UtcTimestamp(raw.timestamp_utc);
     validateIso8601UtcTimestamp(ingested_at_utc);
@@ -140,7 +150,7 @@ export class MarketFeedHandler {
         stream_key: `${raw.venue_id}:${raw.raw_symbol}`,
         expected_sequence: '0',
         received_sequence: String(raw.sequence),
-        reason: `E-ERR-023: CLOCK_SKEW_EXCEEDED: Event timestamp is in future by ${occurredMs - ingestedMs}ms (tolerance ${this.clockSkewToleranceMs}ms)`
+        reason: `E-ERR-007: CLOCK_SKEW_EXCEEDED / E-ERR-023: CLOCK_SKEW_EXCEEDED: Event timestamp is in future by ${occurredMs - ingestedMs}ms (tolerance ${this.clockSkewToleranceMs}ms)`
       };
     }
 

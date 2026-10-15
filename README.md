@@ -6,7 +6,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 [![Vitest](https://img.shields.io/badge/Vitest-1.6.0-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.8-blue.svg)](https://www.postgresql.org/)
-[![Status](https://img.shields.io/badge/Gate_M3_Conformance-Passing_(157_Tests_/_19_Suites)-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Gate_M3_Conformance-Passing_(158_Tests_/_19_Suites)-brightgreen.svg)]()
 
 ---
 
@@ -78,17 +78,17 @@ npm run typecheck
 # Standard run (skips live PostgreSQL tests cleanly if DATABASE_URL is unset)
 npm test
 
-# Full run with live PostgreSQL 16.8 (runs all 157 tests across 19 suites)
+# Full run with live PostgreSQL 16.8 (runs all 158 tests across 19 suites)
 $env:DATABASE_URL = "postgresql://postgres@localhost:5432/market_hft_test"
 npm test
 ```
-*Expected output: 19 test files passed, 157 tests passed (Exit code 0).*
+*Expected output: 19 test files passed, 158 tests passed (Exit code 0).*
 
 ### Step 4: Generate Machine-Readable Audit Report
 ```bash
 npm run test:json
 ```
-*Generates `test-results.json` recording 19 passed test files and 157 passed tests.*
+*Generates `test-results.json` recording 19 passed test files and 158 passed tests.*
 
 ---
 
@@ -106,7 +106,7 @@ npm run test:json
 - **`suite10_checkpoint_anchor.test.ts` (3 tests)**: Stream checkpoint trust anchor verification with operational vs historical modes.
 - **`suite11_cross_currency.test.ts` (2 tests)**: Cross-currency summation prohibition (`E-ERR-008`), signed oracle FX conversion receipt verification.
 - **`suite12_durable_persistence.test.ts` (11 tests)**: PostgreSQL DDL schema validation, exclusive row-locking on first-time stream head initialization (`SELECT ... FOR UPDATE` re-read after `INSERT ON CONFLICT DO NOTHING`), serialized concurrency CAS conflict handling (`E-ERR-037`), 6-path ambiguous commit reconciliation, and stream event `previous_event_hash` hash-chaining verification (`PERSIST-STREAM-HASH-CHAIN-008`).
-- **`suite13_market_feed_execution.test.ts` (21 tests)**: Market feed normalization, exact decimal price parsing to integer subunits (`parseDecimalPriceToSubunits` without precision truncation), monotonic sequence enforcement, duplicate rejection, sequence gap buffering & replay, commercial spread dry-run execution, MOQ/expiration gating, and dual-ledger quarantine guard.
+- **`suite13_market_feed_execution.test.ts` (22 tests)**: Market feed normalization, exact decimal price parsing to integer subunits (`parseDecimalPriceToSubunits` without precision truncation), monotonic sequence enforcement, duplicate rejection, sequence gap buffering & replay, clock skew bounds (`FUZZ-CLOCK-001`, `M2-FEED-SKEW-BOUND-007`), commercial spread dry-run execution, MOQ/expiration gating, and dual-ledger quarantine guard.
 - **`suite14_websocket_portfolio.test.ts` (19 tests)**: Local loopback WebSocket streaming transport, exponential backoff, sequence gap recovery, immutable order lifecycle journal (`SimulatedOrderTransitionEvent`), two-step cancellation with fill-cancel race invariance ($Q_{\text{filled}} + Q_{\text{remaining}} \equiv Q_{\text{total}}$), intent idempotency conflict prevention (`E-ERR-039`), and simulation portfolio ledger.
 - **`suite15_e2e_simulation_pipeline.test.ts` (13 tests)**: End-to-end simulation coordinator (`SimulationPipeline`), exact aggregate cost basis, anchored cumulative COGS allocation ($A(s) = \operatorname{divideHalfEven}(C_0 \cdot s, Q_0)$) proving strict fill-partition invariance across arbitrary order splits, interleaved purchase epoch transitions, unsupported short-position prohibition (`E-ERR-044`), cumulative quantity overflow guards (`E-ERR-045`), byte-accurate WebSocket payload limits (`Buffer.byteLength`), connection stabilization window preventing endless reconnect retry loops, reproducible event replay producing bit-identical state digests, continuous capital and quantity invariant verification, fault injection recovery, and dual-ledger safety isolation.
 - **`suite16_crash_recovery_persistence.test.ts` (18 tests)**: Gate M3 crash recovery and persistence:
