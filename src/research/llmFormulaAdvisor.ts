@@ -82,6 +82,34 @@ export interface GroqFormulaAdvisorOptions {
   forceSimulated?: boolean;
 }
 
+export type FormulaResolutionPath =
+  | 'RAG_CACHE_HIT'
+  | 'DETERMINISTIC_APPEND'
+  | 'LLM_RAG_REFINED_SYNTHESIS';
+
+export interface FormulaResolutionRequest {
+  query: string;
+  required_variables?: string[];
+  deterministic_card_input?: FormulaCardInput;
+  min_bm25_score?: number;
+}
+
+export interface FormulaResolutionResult {
+  resolution_path: FormulaResolutionPath;
+  llm_called: boolean;
+  card: FormulaCard;
+  rag_context_cards_used: string[];
+  refined_prompt_preview?: string;
+}
+
+export interface AdvisorTelemetry {
+  total_requests: number;
+  rag_cache_hits: number;
+  deterministic_appends: number;
+  llm_calls_invoked: number;
+  llm_dependency_ratio_bps: number;
+}
+
 export interface LlmCandidateEvaluationResult {
   registered_card: FormulaCard;
   test_vector_passed: boolean;
@@ -96,6 +124,14 @@ export class GroqFormulaAdvisor {
   private readonly endpoint: string;
   private readonly offlineFallback: boolean;
   private readonly forceSimulated: boolean;
+
+  private telemetry: AdvisorTelemetry = {
+    total_requests: 0,
+    rag_cache_hits: 0,
+    deterministic_appends: 0,
+    llm_calls_invoked: 0,
+    llm_dependency_ratio_bps: 0
+  };
 
   constructor(options?: GroqFormulaAdvisorOptions) {
     this.apiKey = options?.apiKey ?? loadGroqKeyFromEnv();
@@ -113,6 +149,30 @@ export class GroqFormulaAdvisor {
     return this.model;
   }
 
+  public getTelemetry(): AdvisorTelemetry {
+    return { ...this.telemetry };
+  }
+
+  public resetTelemetry(): void {
+    this.telemetry = {
+      total_requests: 0,
+      rag_cache_hits: 0,
+      deterministic_appends: 0,
+      llm_calls_invoked: 0,
+      llm_dependency_ratio_bps: 0
+    };
+  }
+
+  private updateDependencyRatio(): void {
+    if (this.telemetry.total_requests === 0) {
+      this.telemetry.llm_dependency_ratio_bps = 0;
+    } else {
+      this.telemetry.llm_dependency_ratio_bps = Math.round(
+        (this.telemetry.llm_calls_invoked / this.telemetry.total_requests) * 10000
+      );
+    }
+  }
+
   /**
    * Generates a deterministic simulated formula card for testing or offline environments.
    */
@@ -120,7 +180,8 @@ export class GroqFormulaAdvisor {
     promptContext: string,
     existingFormula?: FormulaCard
   ): FormulaCardInput {
-    const ctx = promptContext.toLowerCase();
+    const reqMatch = promptContext.match(/Requirement Query:\s*([^\n]+)/i);
+    const ctx = reqMatch ? reqMatch[1].toLowerCase() : promptContext.toLowerCase();
 
     if (ctx.includes('shrinkage') || ctx.includes('inventory loss') || ctx.includes('warehouse')) {
       return {
@@ -436,5 +497,121 @@ Do not include any markdown wrappers or commentary, only the raw JSON object.`;
         error: err?.message || String(err)
       };
     }
+  }
+
+  /**
+   * 3-Tier "RAG-First, LLM-Last" Orchestrator:
+   * Tier 1: Local BM25 RAG Cache Hit (llm_called: false)
+   * Tier 2: Deterministic Append (llm_called: false)
+   * Tier 3: LLM RAG-Refined Synthesis with neighbor card injection (llm_called: true)
+   */
+  public async resolveOrSynthesizeFormula(
+    request: FormulaResolutionRequest,
+    registry: FormulaRegistry
+  ): Promise<FormulaResolutionResult> {
+    const minScore = request.min_bm25_score ?? 1.5;
+    const topMatches = registry.retrieveFormulas(request.query, { topK: 3 });
+
+    // Tier 1 (RAG_CACHE_HIT — llm_called: false)
+    if (topMatches.length > 0 && topMatches[0].relevance_score >= minScore) {
+      const topCard = topMatches[0].formula;
+      let coversRequiredVars = true;
+
+      const requiredVars = request.required_variables ?? (
+        request.deterministic_card_input
+          ? request.deterministic_card_input.input_variables.map((v) => v.name)
+          : undefined
+      );
+
+      if (requiredVars && requiredVars.length > 0) {
+        const cardVars = new Set<string>();
+        for (const iv of topCard.input_variables) {
+          cardVars.add(iv.name.toLowerCase());
+        }
+        if (topCard.output_variable) {
+          cardVars.add(topCard.output_variable.name.toLowerCase());
+        }
+        for (const reqVar of requiredVars) {
+          if (!cardVars.has(reqVar.toLowerCase())) {
+            coversRequiredVars = false;
+            break;
+          }
+        }
+      }
+
+      if (coversRequiredVars) {
+        this.telemetry.total_requests++;
+        this.telemetry.rag_cache_hits++;
+        this.updateDependencyRatio();
+        return {
+          resolution_path: 'RAG_CACHE_HIT',
+          llm_called: false,
+          card: topCard,
+          rag_context_cards_used: [topCard.formula_id]
+        };
+      }
+    }
+
+    // Tier 2 (DETERMINISTIC_APPEND — llm_called: false)
+    if (request.deterministic_card_input) {
+      const card = registry.appendDeterministicFormula(request.deterministic_card_input);
+      this.telemetry.total_requests++;
+      this.telemetry.deterministic_appends++;
+      this.updateDependencyRatio();
+      return {
+        resolution_path: 'DETERMINISTIC_APPEND',
+        llm_called: false,
+        card,
+        rag_context_cards_used: []
+      };
+    }
+
+    // Tier 3 (LLM_RAG_REFINED_SYNTHESIS — llm_called: true)
+    const neighborCards = topMatches.length > 0
+      ? topMatches.map((m) => m.formula)
+      : registry.listFormulas().slice(0, 3);
+    const rag_context_cards_used = neighborCards.map((c) => c.formula_id);
+
+    const neighborContext = neighborCards
+      .map(
+        (c, idx) => `[Neighbor ${idx + 1}] Formula ID: ${c.formula_id}
+Title: ${c.title}
+Citations: ${c.statutory_or_economic_citations.join('; ')}
+Expression: ${c.symbolic_expression}
+Inputs: ${c.input_variables.map((v) => `${v.name} (${v.unit}: ${v.description})`).join(', ')}
+Output: ${c.output_variable.name} (${c.output_variable.unit})
+Test Vector: ${JSON.stringify(c.canonical_test_vector)}`
+      )
+      .join('\n\n');
+
+    const refinedPrompt = `Requirement Query: ${request.query}
+${request.required_variables && request.required_variables.length > 0 ? `Required Variables: ${request.required_variables.join(', ')}` : ''}
+
+Local RAG Corpus Top-${neighborCards.length} Neighbors (Structural & Domain Context):
+${neighborContext}
+
+Instructions:
+1. Reuse canonical variable naming and scaling conventions (SUBUNITS_INR scale 4, BPS 10000 = 100%, DAYS, UNITS).
+2. Synthesize ONLY the missing mathematical delta for the required metric.
+3. Formulate a complete, mathematically closed symbolic expression and canonical test vector in pure integer/subunits arithmetic.`;
+
+    const candidateInput = await this.proposeFormulaRefinement(
+      refinedPrompt,
+      neighborCards[0]
+    );
+
+    const evalResult = await this.evaluateLlmCandidate(candidateInput, registry);
+
+    this.telemetry.total_requests++;
+    this.telemetry.llm_calls_invoked++;
+    this.updateDependencyRatio();
+
+    return {
+      resolution_path: 'LLM_RAG_REFINED_SYNTHESIS',
+      llm_called: true,
+      card: evalResult.registered_card,
+      rag_context_cards_used,
+      refined_prompt_preview: refinedPrompt
+    };
   }
 }

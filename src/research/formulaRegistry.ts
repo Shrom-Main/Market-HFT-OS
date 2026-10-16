@@ -14,6 +14,8 @@
  *   and invariant descriptions.
  */
 
+import fs from 'fs';
+import path from 'path';
 import { createHash } from 'crypto';
 import { canonicalizeJCS } from '../canonical/jcs.js';
 
@@ -83,13 +85,105 @@ export function computeFormulaJcsHash(card: Omit<FormulaCard, 'jcs_hash'>): stri
 }
 
 /**
- * Deterministically evaluates a basic symbolic algebraic expression using BigInt arithmetic.
+ * Exact BigInt Rational representation for deterministic AST evaluation.
+ */
+export interface Rational {
+  num: bigint;
+  den: bigint;
+}
+
+function gcd(a: bigint, b: bigint): bigint {
+  let x = a < 0n ? -a : a;
+  let y = b < 0n ? -b : b;
+  while (y !== 0n) {
+    const t = y;
+    y = x % y;
+    x = t;
+  }
+  return x;
+}
+
+export function makeRational(num: bigint, den: bigint = 1n): Rational {
+  if (den === 0n) {
+    throw new Error('E-ERR-MATH-001: DIVISION_BY_ZERO: Division by zero in symbolic expression');
+  }
+  if (den < 0n) {
+    num = -num;
+    den = -den;
+  }
+  const g = gcd(num, den);
+  return { num: num / g, den: den / g };
+}
+
+export function addRational(a: Rational, b: Rational): Rational {
+  return makeRational(a.num * b.den + b.num * a.den, a.den * b.den);
+}
+
+export function subRational(a: Rational, b: Rational): Rational {
+  return makeRational(a.num * b.den - b.num * a.den, a.den * b.den);
+}
+
+export function mulRational(a: Rational, b: Rational): Rational {
+  return makeRational(a.num * b.num, a.den * b.den);
+}
+
+export function divRational(a: Rational, b: Rational): Rational {
+  if (b.num === 0n) {
+    throw new Error('E-ERR-MATH-001: DIVISION_BY_ZERO: Division by zero in symbolic expression');
+  }
+  return makeRational(a.num * b.den, a.den * b.num);
+}
+
+export function parseStringToRational(s: string): Rational {
+  const trimmed = s.trim();
+  if (trimmed.includes('.')) {
+    const parts = trimmed.split('.');
+    const intPartStr = parts[0] === '' || parts[0] === '-' ? `${parts[0]}0` : parts[0];
+    const fracPartStr = parts[1] || '0';
+    const isNeg = intPartStr.startsWith('-');
+    const cleanInt = BigInt(isNeg ? intPartStr.slice(1) : intPartStr);
+    const den = 10n ** BigInt(fracPartStr.length);
+    const cleanFrac = BigInt(fracPartStr);
+    const num = cleanInt * den + cleanFrac;
+    return makeRational(isNeg ? -num : num, den);
+  }
+  return makeRational(BigInt(trimmed), 1n);
+}
+
+export function parseInputToRational(v: bigint | number | string): Rational {
+  if (typeof v === 'bigint') {
+    return makeRational(v, 1n);
+  }
+  return parseStringToRational(String(v));
+}
+
+export function roundRationalAtRoot(r: Rational): bigint {
+  const { num, den } = r;
+  if (den === 1n) return num;
+  if (num >= 0n) {
+    return (num + den / 2n) / den;
+  } else {
+    return (num - den / 2n) / den;
+  }
+}
+
+/**
+ * Deterministically evaluates a basic symbolic algebraic expression using pure BigInt rational arithmetic.
+ * Eliminates IEEE-754 precision drift and premature integer truncation.
  */
 export function evaluateSymbolicExpression(
   expression: string,
-  inputs: Record<string, bigint | number>
+  inputs: Record<string, bigint | number | string>
 ): bigint {
-  let rhs = expression.includes('=') ? expression.split('=')[1] : expression;
+  let rhs = expression;
+  if (expression.includes(';')) {
+    const parts = expression.split(';').map((p) => p.trim()).filter((p) => p.length > 0);
+    rhs = parts[parts.length - 1];
+  }
+  if (rhs.includes('=')) {
+    rhs = rhs.split('=')[1];
+  }
+
   rhs = rhs
     .replace(/\\lfloor|\\rfloor/g, '')
     .replace(/\\times/g, '*')
@@ -106,9 +200,9 @@ export function evaluateSymbolicExpression(
     throw new Error('Empty symbolic expression');
   }
 
-  const normalizedInputs: Record<string, number> = {};
+  const normalizedInputs: Record<string, Rational> = {};
   for (const [k, v] of Object.entries(inputs)) {
-    normalizedInputs[k.toLowerCase()] = Number(v);
+    normalizedInputs[k.toLowerCase()] = parseInputToRational(v);
   }
 
   let pos = 0;
@@ -119,7 +213,7 @@ export function evaluateSymbolicExpression(
     return tokens[pos++];
   }
 
-  function parsePrimary(): number {
+  function parsePrimary(): Rational {
     const t = consume();
     if (!t) throw new Error('Unexpected end of expression');
     if (t === '(') {
@@ -128,7 +222,7 @@ export function evaluateSymbolicExpression(
       return val;
     }
     if (/^\d+(?:\.\d+)?$/.test(t)) {
-      return Number(t);
+      return parseStringToRational(t);
     }
     const lower = t.toLowerCase();
     if (lower in normalizedInputs) {
@@ -137,10 +231,11 @@ export function evaluateSymbolicExpression(
     throw new Error(`Unknown variable: ${t}`);
   }
 
-  function parseFactor(): number {
+  function parseFactor(): Rational {
     if (peek() === '-') {
       consume();
-      return -parsePrimary();
+      const p = parsePrimary();
+      return makeRational(-p.num, p.den);
     }
     if (peek() === '+') {
       consume();
@@ -148,29 +243,29 @@ export function evaluateSymbolicExpression(
     return parsePrimary();
   }
 
-  function parseTerm(): number {
+  function parseTerm(): Rational {
     let left = parseFactor();
     while (peek() === '*' || peek() === '/') {
       const op = consume();
       const right = parseFactor();
       if (op === '*') {
-        left = left * right;
+        left = mulRational(left, right);
       } else {
-        left = right === 0 ? 0 : left / right;
+        left = divRational(left, right);
       }
     }
     return left;
   }
 
-  function parseExpr(): number {
+  function parseExpr(): Rational {
     let left = parseTerm();
     while (peek() === '+' || peek() === '-') {
       const op = consume();
       const right = parseTerm();
       if (op === '+') {
-        left = left + right;
+        left = addRational(left, right);
       } else {
-        left = left - right;
+        left = subRational(left, right);
       }
     }
     return left;
@@ -180,7 +275,7 @@ export function evaluateSymbolicExpression(
   if (pos < tokens.length) {
     throw new Error(`Extra tokens remaining: ${tokens.slice(pos).join(' ')}`);
   }
-  return BigInt(Math.round(result));
+  return roundRationalAtRoot(result);
 }
 
 
@@ -199,8 +294,11 @@ export class FormulaRegistry {
   private readonly formulas = new Map<string, FormulaCard>();
   private readonly customEvaluators = new Map<string, FormulaEvaluatorFn>();
 
-  constructor() {
+  constructor(options?: { corpusFilePath?: string }) {
     this.bootstrapCanonicalFormulas();
+    if (options?.corpusFilePath && fs.existsSync(options.corpusFilePath)) {
+      this.loadCorpusFromFile(options.corpusFilePath);
+    }
   }
 
   private bootstrapCanonicalFormulas(): void {
@@ -482,6 +580,89 @@ export class FormulaRegistry {
   }
 
   /**
+   * Registers a deterministic formula extension with zero LLM involvement.
+   * Immediately validates the card's canonical_test_vector via the pure BigInt rational evaluator
+   * and indexes it into the BM25 corpus.
+   */
+  public appendDeterministicFormula(
+    cardInput: FormulaCardInput,
+    options?: { autoPromoteWithToken?: string }
+  ): FormulaCard {
+    const expected = BigInt(cardInput.canonical_test_vector.expected_output);
+    const computed = evaluateSymbolicExpression(
+      cardInput.symbolic_expression,
+      cardInput.canonical_test_vector.inputs
+    );
+    if (computed !== expected) {
+      throw new Error(
+        `E-ERR-MATH-002: TEST_VECTOR_MISMATCH: Formula ${cardInput.formula_id} test vector failed. Expected ${expected}, computed ${computed}`
+      );
+    }
+
+    if (options?.autoPromoteWithToken) {
+      if (!options.autoPromoteWithToken.startsWith('GOVERNED_RATIFICATION_')) {
+        throw new Error(
+          `E-ERR-GOV-003: INVALID_PROMOTION_TOKEN: Authorization token rejected for formula promotion`
+        );
+      }
+      const cardWithoutHash: Omit<FormulaCard, 'jcs_hash'> = {
+        formula_id: cardInput.formula_id,
+        title: cardInput.title,
+        domain: cardInput.domain,
+        tier: 'PROMOTED_NORMATIVE',
+        statutory_or_economic_citations: [...cardInput.statutory_or_economic_citations],
+        symbolic_expression: cardInput.symbolic_expression,
+        input_variables: [...cardInput.input_variables],
+        output_variable: { ...cardInput.output_variable },
+        rationale_and_invariants: cardInput.rationale_and_invariants,
+        canonical_test_vector: { ...cardInput.canonical_test_vector }
+      };
+      const jcs_hash = computeFormulaJcsHash(cardWithoutHash);
+      const promotedCard: FormulaCard = { ...cardWithoutHash, jcs_hash };
+      this.formulas.set(promotedCard.formula_id, promotedCard);
+      return promotedCard;
+    }
+
+    return this.registerCandidateFormula(cardInput);
+  }
+
+  /**
+   * Persists all currently indexed formulas to a JSON file.
+   */
+  public saveCorpusToFile(filePath: string): void {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const cards = Array.from(this.formulas.values());
+    fs.writeFileSync(filePath, JSON.stringify(cards, null, 2), 'utf8');
+  }
+
+  /**
+   * Loads and validates formulas from a JSON file, verifying RFC 8785 JCS hashes.
+   */
+  public loadCorpusFromFile(filePath: string): number {
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`E-ERR-GOV-006: CORPUS_FILE_NOT_FOUND: Cannot load formula corpus from ${filePath}`);
+    }
+    const content = fs.readFileSync(filePath, 'utf8');
+    const cards = JSON.parse(content) as FormulaCard[];
+    let loadedCount = 0;
+    for (const card of cards) {
+      const { jcs_hash, ...rest } = card;
+      const computedHash = computeFormulaJcsHash(rest);
+      if (jcs_hash !== computedHash) {
+        throw new Error(
+          `E-ERR-022: JCS_HASH_MISMATCH: Formula ${card.formula_id} in corpus file has invalid hash ${jcs_hash} (expected ${computedHash})`
+        );
+      }
+      this.formulas.set(card.formula_id, card);
+      loadedCount++;
+    }
+    return loadedCount;
+  }
+
+  /**
    * Deterministic BM25-style keyword search over formula metadata.
    */
   public retrieveFormulas(
@@ -628,13 +809,14 @@ export class FormulaRegistry {
         return (base * returnRate) / 10000n;
       }
       case 'FIN-CCC-ROWC-005': {
-        const lead = Number(inputs.procurement_lead_time_days);
-        const dwell = Number(inputs.warehouse_dwell_days);
-        const settlement = Number(inputs.marketplace_settlement_delay_days);
-        const terms = Number(inputs.payment_terms_days);
-        const marginBps = Number(inputs.cash_margin_bps);
-        const ccc = Math.max(1, lead + dwell + settlement - terms);
-        return BigInt(Math.floor((marginBps * 365) / ccc));
+        const lead = BigInt(inputs.procurement_lead_time_days);
+        const dwell = BigInt(inputs.warehouse_dwell_days);
+        const settlement = BigInt(inputs.marketplace_settlement_delay_days);
+        const terms = BigInt(inputs.payment_terms_days);
+        const marginBps = BigInt(inputs.cash_margin_bps);
+        const sum = lead + dwell + settlement - terms;
+        const ccc = sum > 1n ? sum : 1n;
+        return (marginBps * 365n) / ccc;
       }
       default: {
         try {

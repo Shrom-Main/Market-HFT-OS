@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { describe, it, expect } from 'vitest';
 import {
   M4ResearchAllocationEngine,
@@ -9,7 +11,12 @@ import {
   OperationalEconomicsParameters,
   ProvenanceEnvelope
 } from '../../src/research/m4VerticalSlice.js';
-import { FormulaRegistry, computeFormulaJcsHash } from '../../src/research/formulaRegistry.js';
+import {
+  FormulaRegistry,
+  computeFormulaJcsHash,
+  evaluateSymbolicExpression,
+  FormulaCardInput
+} from '../../src/research/formulaRegistry.js';
 import { GroqFormulaAdvisor, loadGroqKeyFromEnv } from '../../src/research/llmFormulaAdvisor.js';
 import { canonicalizeJCS } from '../../src/canonical/jcs.js';
 
@@ -481,5 +488,203 @@ describe('SUITE-20: Gate M4 End-to-End SS304 Vertical Slice & Capital-Allocation
     },
     25000
   );
+
+  it('M4-PURE-BIGINT-RATIONAL-AST-015: evaluateSymbolicExpression computes fractional bps expressions in pure BigInt rational arithmetic without IEEE-754 precision loss on large subunit values', () => {
+    // 1. Large subunit value exceeding Number.MAX_SAFE_INTEGER (9007199254740991n)
+    const largeInventoryValue = 9007199254740993500n;
+    expect(largeInventoryValue).toBeGreaterThan(BigInt(Number.MAX_SAFE_INTEGER));
+
+    // Confirm that converting this value to IEEE-754 Number loses integer precision
+    const floatCoerced = BigInt(Number(largeInventoryValue));
+    expect(floatCoerced).not.toBe(largeInventoryValue);
+
+    // 2. Expression with fractional basis points: (Shrinkage_Rate / 10000)
+    // In naive BigInt integer division: 200n / 10000n = 0n (premature truncation).
+    // In IEEE-754 double: loses precision on largeInventoryValue.
+    // In pure BigInt Rational AST: exact rational calculation (largeInventoryValue * 200) / 10000.
+    const expr1 = 'Loss = Inventory_Value * (Shrinkage_Rate / 10000)';
+    const inputs1 = {
+      Inventory_Value: largeInventoryValue,
+      Shrinkage_Rate: 200n // 200 bps = 2.00%
+    };
+
+    const computedLoss1 = evaluateSymbolicExpression(expr1, inputs1);
+    const expectedLoss1 = (largeInventoryValue * 200n) / 10000n;
+    expect(computedLoss1).toBe(180143985094819870n);
+    expect(computedLoss1).toBe(expectedLoss1);
+
+    // 3. Complex multi-step fractional AST expression with average and unit cost
+    // ((Opening + Closing) / 2) * (Shrinkage_Rate / 10000) * Unit_Cost
+    const expr2 =
+      'Shrinkage_Drag = ((Opening_Inventory + Closing_Inventory) / 2) * (Shrinkage_Rate / 10000) * Unit_Cost';
+    const inputs2 = {
+      Opening_Inventory: 1000n,
+      Closing_Inventory: 950n,
+      Shrinkage_Rate: 50n, // 50 bps = 0.50%
+      Unit_Cost: 500n // ₹0.0500 per unit in subunits
+    };
+    // Average inventory = 975. Shrinkage = 975 * 0.005 = 4.875 units. Loss = 4.875 * 500 = 2437.5.
+    // Half-up rounding at root: 2438n.
+    const computedLoss2 = evaluateSymbolicExpression(expr2, inputs2);
+    expect(computedLoss2).toBe(2438n);
+
+    // 4. Zero division deterministic failure
+    expect(() => {
+      evaluateSymbolicExpression('Bad = A / Zero', { A: 1000n, Zero: 0n });
+    }).toThrow('E-ERR-MATH-001: DIVISION_BY_ZERO: Division by zero in symbolic expression');
+  });
+
+  it('M4-RAG-FIRST-SUFFICIENCY-GATE-016: Local RAG sufficiency gate resolves existing statutory/economic concepts via RAG_CACHE_HIT and deterministic rules via DETERMINISTIC_APPEND with zero LLM calls', async () => {
+    const registry = new FormulaRegistry();
+    const advisor = new GroqFormulaAdvisor({ forceSimulated: true });
+    advisor.resetTelemetry();
+
+    // 1. Query existing statutory TCS/TDS concept
+    const res1 = await advisor.resolveOrSynthesizeFormula(
+      { query: 'Section 194-O TDS and Section 52 TCS on ex-GST revenue' },
+      registry
+    );
+    expect(res1.resolution_path).toBe('RAG_CACHE_HIT');
+    expect(res1.llm_called).toBe(false);
+    expect(res1.card.formula_id).toBe('FIN-STATUTORY-TCS-TDS-003');
+    expect(res1.rag_context_cards_used).toContain('FIN-STATUTORY-TCS-TDS-003');
+
+    // 2. Query existing SS304 EXW landed cost concept
+    const res2 = await advisor.resolveOrSynthesizeFormula(
+      { query: 'SS304 landed cost EXW' },
+      registry
+    );
+    expect(res2.resolution_path).toBe('RAG_CACHE_HIT');
+    expect(res2.llm_called).toBe(false);
+    expect(res2.card.formula_id).toBe('FIN-LANDED-COST-001');
+
+    // 3. Deterministic rule addition resolves via DETERMINISTIC_APPEND with zero LLM calls
+    const deterministicInput: FormulaCardInput = {
+      formula_id: 'FIN-DETERMINISTIC-PACK-SURCHARGE-001',
+      title: 'Warehouse SS304 Clamping Pack Surcharge Rule',
+      domain: 'PHYSICAL_ARBITRAGE',
+      statutory_or_economic_citations: ['Packaging Operational Policy 2026'],
+      symbolic_expression: 'PackSurcharge = BaseCost + BulkHandlingFee',
+      input_variables: [
+        { name: 'BaseCost', unit: 'SUBUNITS_INR', description: 'Base pack landed cost' },
+        { name: 'BulkHandlingFee', unit: 'SUBUNITS_INR', description: 'Fixed handling surcharge' }
+      ],
+      output_variable: { name: 'PackSurcharge', unit: 'SUBUNITS_INR' },
+      rationale_and_invariants: 'Deterministic linear fee surcharge addition',
+      canonical_test_vector: {
+        inputs: { BaseCost: 382100, BulkHandlingFee: 15000 },
+        expected_output: 397100
+      }
+    };
+
+    const res3 = await advisor.resolveOrSynthesizeFormula(
+      {
+        query: 'Warehouse SS304 Clamping Pack Surcharge Rule',
+        deterministic_card_input: deterministicInput
+      },
+      registry
+    );
+    expect(res3.resolution_path).toBe('DETERMINISTIC_APPEND');
+    expect(res3.llm_called).toBe(false);
+    expect(res3.card.formula_id).toBe('FIN-DETERMINISTIC-PACK-SURCHARGE-001');
+    expect(registry.getFormula('FIN-DETERMINISTIC-PACK-SURCHARGE-001')).toBeDefined();
+
+    // 4. Verify telemetry: 3 total requests, 2 RAG hits, 1 deterministic append, ZERO LLM calls
+    const tel = advisor.getTelemetry();
+    expect(tel.total_requests).toBe(3);
+    expect(tel.rag_cache_hits).toBe(2);
+    expect(tel.deterministic_appends).toBe(1);
+    expect(tel.llm_calls_invoked).toBe(0);
+    expect(tel.llm_dependency_ratio_bps).toBe(0);
+  });
+
+  it('M4-ASYMPTOTIC-LLM-DECAY-FLYWHEEL-017: Multi-step lifecycle proves asymptotic LLM decay flywheel, RAG-refined prompt injection, and persistent corpus reload', async () => {
+    const registry = new FormulaRegistry();
+    const advisor = new GroqFormulaAdvisor({ forceSimulated: true });
+    advisor.resetTelemetry();
+
+    // Step 1: Request novel metric missing from RAG corpus
+    // Tier 1 misses -> triggers Tier 3 (LLM_RAG_REFINED_SYNTHESIS, llm_called === true)
+    const step1Result = await advisor.resolveOrSynthesizeFormula(
+      {
+        query: 'Customs anti-dumping duty and port demurrage drag',
+        required_variables: ['AntiDumpingDuty']
+      },
+      registry
+    );
+
+    expect(step1Result.resolution_path).toBe('LLM_RAG_REFINED_SYNTHESIS');
+    expect(step1Result.llm_called).toBe(true);
+    expect(step1Result.card.formula_id).toBe('FIN-CANDIDATE-CUSTOMS-ADD-001');
+    expect(step1Result.rag_context_cards_used).toContain('FIN-LANDED-COST-001');
+    expect(step1Result.refined_prompt_preview).toBeDefined();
+    expect(step1Result.refined_prompt_preview).toContain('FIN-LANDED-COST-001');
+    expect(step1Result.refined_prompt_preview).toContain('Customs Tariff Act 1975');
+    expect(registry.getFormula('FIN-CANDIDATE-CUSTOMS-ADD-001')).toBeDefined();
+
+    const t1 = advisor.getTelemetry();
+    expect(t1.total_requests).toBe(1);
+    expect(t1.llm_calls_invoked).toBe(1);
+    expect(t1.llm_dependency_ratio_bps).toBe(10000); // 100.00% initial dependency
+
+    // Step 2: Re-query "Customs anti-dumping duty and port demurrage drag" (and variations) 5 times
+    // All 5 resolve via Tier 1 (RAG_CACHE_HIT, llm_called === false)
+    const variations = [
+      { query: 'Customs anti-dumping duty and port demurrage drag', required_variables: ['AntiDumpingDuty'] },
+      { query: 'Customs anti-dumping duty import surcharge', required_variables: ['AntiDumpingDuty'] },
+      { query: 'Anti-Dumping Duty Customs Surcharge SS304', required_variables: ['AntiDumpingDuty'] },
+      { query: 'Imported SS304 Raw Strip Anti-Dumping & Surcharge Synthesis' },
+      { query: 'Customs ADD duty strip surcharge' }
+    ];
+
+    let lastRatio = t1.llm_dependency_ratio_bps;
+    for (const v of variations) {
+      const hit = await advisor.resolveOrSynthesizeFormula(v, registry);
+      expect(hit.resolution_path).toBe('RAG_CACHE_HIT');
+      expect(hit.llm_called).toBe(false);
+      expect(hit.card.formula_id).toBe('FIN-CANDIDATE-CUSTOMS-ADD-001');
+
+      const currentRatio = advisor.getTelemetry().llm_dependency_ratio_bps;
+      expect(currentRatio).toBeLessThan(lastRatio);
+      lastRatio = currentRatio;
+    }
+
+    const t2 = advisor.getTelemetry();
+    expect(t2.total_requests).toBe(6);
+    expect(t2.llm_calls_invoked).toBe(1); // Frozen at 1!
+    expect(t2.rag_cache_hits).toBe(5);
+    expect(t2.llm_dependency_ratio_bps).toBe(1667); // Decayed from 10,000 bps down to 1,667 bps!
+
+    // Step 3: Persist the grown corpus to disk and reload into a fresh FormulaRegistry instance
+    const testCorpusPath = path.resolve(process.cwd(), 'data/formulas/governed_formula_corpus_test.json');
+    registry.saveCorpusToFile(testCorpusPath);
+    expect(fs.existsSync(testCorpusPath)).toBe(true);
+
+    const freshRegistry = new FormulaRegistry();
+    const countLoaded = freshRegistry.loadCorpusFromFile(testCorpusPath);
+    expect(countLoaded).toBeGreaterThanOrEqual(6);
+    expect(freshRegistry.verifyFormulaIntegrity('FIN-CANDIDATE-CUSTOMS-ADD-001')).toBe(true);
+
+    // Verify fresh registry immediately serves the anti-dumping formula as a RAG_CACHE_HIT with 0 LLM calls
+    const freshAdvisor = new GroqFormulaAdvisor({ forceSimulated: true });
+    freshAdvisor.resetTelemetry();
+
+    const freshHit = await freshAdvisor.resolveOrSynthesizeFormula(
+      {
+        query: 'Customs anti-dumping duty and port demurrage drag',
+        required_variables: ['AntiDumpingDuty']
+      },
+      freshRegistry
+    );
+    expect(freshHit.resolution_path).toBe('RAG_CACHE_HIT');
+    expect(freshHit.llm_called).toBe(false);
+    expect(freshHit.card.formula_id).toBe('FIN-CANDIDATE-CUSTOMS-ADD-001');
+    expect(freshAdvisor.getTelemetry().llm_calls_invoked).toBe(0);
+
+    // Clean up temporary corpus file
+    if (fs.existsSync(testCorpusPath)) {
+      fs.unlinkSync(testCorpusPath);
+    }
+  });
 });
 

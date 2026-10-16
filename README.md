@@ -6,7 +6,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 [![Vitest](https://img.shields.io/badge/Vitest-4.1.12-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.8-blue.svg)](https://www.postgresql.org/)
-[![Status](https://img.shields.io/badge/Gate_M4_Conformance-Passing_(169_Tests_/_20_Suites)-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Gate_M4.3_Conformance-Passing_(178_Tests_/_20_Suites)-brightgreen.svg)]()
 
 ---
 
@@ -80,17 +80,17 @@ npm run typecheck
 # Standard run (skips live PostgreSQL tests cleanly if DATABASE_URL is unset)
 npm test
 
-# Full run with live PostgreSQL 16.8 (runs all 169 tests across 20 suites)
+# Full run with live PostgreSQL 16.8 (runs all 178 tests across 20 suites)
 $env:DATABASE_URL = "postgresql://postgres@localhost:5432/market_hft_test"
 npm test
 ```
-*Expected output: 20 test files passed, 169 tests passed (Exit code 0).*
+*Expected output: 20 test files passed, 178 tests passed (Exit code 0).*
 
 ### Step 4: Generate Machine-Readable Audit Report
 ```bash
 npm run test:json
 ```
-*Generates `test-results.json` recording 20 passed test files and 169 passed tests.*
+*Generates `test-results.json` recording 20 passed test files and 178 passed tests.*
 
 ---
 
@@ -154,7 +154,7 @@ npm run test:json
   - Exact 300,000ms ticket validity lifetime enforcement and expiry rejection with `E-ERR-026` (`ACTUALS-AUTH-EXACT-004`).
   - Atomic transaction rollback on actuals write failure (`ACTUALS-TX-ATOMIC-005`).
   - Single-use ticket nonce replay prevention with `E-ERR-023` (`TEST-CONCURRENCY-NONCE-01`).
-- **`suite20_m4_ss304_vertical_slice.test.ts` (8 tests)**: Gate M4 end-to-end SS304 physical commodity research and capital-allocation simulation engine:
+- **`suite20_m4_ss304_vertical_slice.test.ts` (17 tests)**: Gate M4 end-to-end SS304 physical commodity research and capital-allocation simulation engine:
   - Viable opportunity capital allocation in `PAPER_SIMULATION` mode with exact landed cost ₹38.2100 (`M4-SCENARIO-A-001`).
   - Economic deterioration, fee creep, and return spike edge-decay detection emitting `DO_NOT_ALLOCATE_CAPITAL` (`M4-SCENARIO-B-002`).
   - Cryptographic attestation and unverified signature fail-closed quarantine (`M4-SCENARIO-C1-003`).
@@ -163,3 +163,12 @@ npm run test:json
   - Forward clock skew fail-closed rejection enforcing FUZZ-CLOCK-001 (`M4-SCENARIO-C4-006`).
   - 7-bucket inventory transition audit bitwise conservation (`M4-INVENTORY-CONSERV-007`).
   - Deterministic bit-for-bit decision reproducibility under RFC 8785 JCS (`M4-REPRODUCIBLE-JCS-008`).
+  - Verified statutory and cash-conversion cycle sensitivity with MATH-01 to MATH-04 remediation (`M4-STATUTORY-MATH-009`).
+  - Formula Registry BM25 retrieval, JCS cryptographic integrity, and test vector execution (`M4-FORMULA-REGISTRY-RAG-010`).
+  - CANDIDATE_UI_MODEL sandboxing prevents unpromoted execution in production (`M4-FORMULA-GOVERNANCE-ISOLATION-011`).
+  - Groq API credentials loaded and verified from Groq_Key.env with fallback support (`M4-GROQ-CREDENTIALS-012`).
+  - LLM candidate proposal generation produces schema-compliant FormulaCard with deterministic fallback (`M4-GROQ-ADVISOR-PROPOSAL-013`).
+  - LLM candidate evaluation registers card, validates test vector, and governance firewall prohibits unpromoted execution in production (`M4-GROQ-ADVISOR-EVAL-ISOLATION-014`).
+  - Pure BigInt rational AST evaluation computes fractional bps without IEEE-754 precision loss on values > MAX_SAFE_INTEGER (`M4-PURE-BIGINT-RATIONAL-AST-015`).
+  - Local RAG sufficiency gate resolves existing statutory/economic concepts via RAG_CACHE_HIT and deterministic rules via DETERMINISTIC_APPEND with zero LLM calls (`M4-RAG-FIRST-SUFFICIENCY-GATE-016`).
+  - Multi-step lifecycle proves asymptotic LLM decay flywheel, RAG-refined prompt injection, and persistent corpus reload (`M4-ASYMPTOTIC-LLM-DECAY-FLYWHEEL-017`).
