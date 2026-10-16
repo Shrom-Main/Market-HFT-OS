@@ -85,6 +85,13 @@ describe('SUITE-14: Gate M2 Increment 3 — WebSocket Transport, Order Lifecycle
   let activeServer: MockLocalWebSocketFeedServer | null = null;
   let activeAdapter: WebSocketStreamingFeedAdapter | null = null;
 
+  async function waitUntil(predicate: () => boolean, timeoutMs = 2500, intervalMs = 15): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!predicate() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+
   afterEach(async () => {
     if (activeAdapter) {
       await activeAdapter.disconnect();
@@ -331,7 +338,7 @@ describe('SUITE-14: Gate M2 Increment 3 — WebSocket Transport, Order Lifecycle
     });
 
     // Await asynchronous message processing
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitUntil(() => receivedTicks.length >= 1, 2000, 10);
 
     expect(receivedTicks.length).toBe(1);
     expect(receivedTicks[0].outcome).toBe('ACCEPTED');
@@ -362,7 +369,7 @@ describe('SUITE-14: Gate M2 Increment 3 — WebSocket Transport, Order Lifecycle
     activeServer.simulateDropConnection();
 
     // Give adapter time to detect drop, transition to RECONNECTING, and reconnect
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await waitUntil(() => activeAdapter?.getConnectionState() === 'CONNECTED', 3500, 15);
 
     expect(activeAdapter.getConnectionState()).toBe('CONNECTED');
     expect(activeAdapter.getReconnectAttempts()).toBe(0); // reset upon successful reconnect
@@ -420,14 +427,14 @@ describe('SUITE-14: Gate M2 Increment 3 — WebSocket Transport, Order Lifecycle
 
     // Client receives tick 1
     activeServer.publishTick(tick1);
-    await new Promise((r) => setTimeout(r, 40));
+    await waitUntil(() => handler.getExpectedSequence(venueId, canonicalProductId) === '2', 2000, 10);
     expect(handler.getExpectedSequence(venueId, canonicalProductId)).toBe('2');
 
     // Server has tick 2 in history, and sends tick 3 over socket
     activeServer.publishTick(tick2); // recorded in server history
     activeServer.publishTick(tick3); // recorded in history and broadcasted
 
-    await new Promise((r) => setTimeout(r, 80));
+    await waitUntil(() => handler.getExpectedSequence(venueId, canonicalProductId) === '4', 2000, 10);
 
     // After automatic replay request and response, expected sequence should advance to 4
     expect(handler.getExpectedSequence(venueId, canonicalProductId)).toBe('4');
@@ -465,7 +472,7 @@ describe('SUITE-14: Gate M2 Increment 3 — WebSocket Transport, Order Lifecycle
       ask_price: '116.00',
       ask_quantity: 50
     });
-    await new Promise((r) => setTimeout(r, 30));
+    await waitUntil(() => handler.getExpectedSequence(venueId, canonicalProductId) === '2', 2000, 10);
 
     // Publish tick 10 with retainInHistory: false, simulating missing server journal entries
     activeServer.publishTick({
@@ -480,7 +487,7 @@ describe('SUITE-14: Gate M2 Increment 3 — WebSocket Transport, Order Lifecycle
       ask_quantity: 50
     }, false);
 
-    await new Promise((r) => setTimeout(r, 60));
+    await waitUntil(() => reportedGap !== null, 2000, 10);
 
     expect(reportedGap).not.toBeNull();
     const gap = reportedGap as unknown as UnrecoverableGapReport;
@@ -525,7 +532,7 @@ describe('SUITE-14: Gate M2 Increment 3 — WebSocket Transport, Order Lifecycle
       is_authenticated_source_feed: true
     });
 
-    await new Promise((r) => setTimeout(r, 40));
+    await waitUntil(() => normalizedEvent !== null, 2000, 10);
 
     expect(normalizedEvent).toBeDefined();
     expect(normalizedEvent.provenance.is_authenticated_source_feed).toBe(false);

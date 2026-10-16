@@ -6,7 +6,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 [![Vitest](https://img.shields.io/badge/Vitest-4.1.12-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.8-blue.svg)](https://www.postgresql.org/)
-[![Status](https://img.shields.io/badge/Gate_M4.3_Conformance-Passing_(178_Tests_/_20_Suites)-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Gate_M5_Conformance-Passing_(182_Tests_/_21_Suites)-brightgreen.svg)]()
 
 ---
 
@@ -17,6 +17,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 - **Three-State Conformance Model**: All requirements are strictly tracked as `Specified — Pending Verification`, `Design Reviewed`, or `Verified — Test Evidence Recorded`.
 - **Epistemic & Operational Boundary**: Gate M3 integrates durable persistence, crash recovery, multi-stream integration, and live PostgreSQL 16.8 concurrency. Market feeds utilize local loopback WebSocket networking (`ws://127.0.0.1`) with fail-closed provenance (`is_authenticated_source_feed: false`). Order execution is simulated via `SimulatedExecutionGateway`. Dual-ledger protection (`ActualsGuard`) strictly isolates simulations from production actuals. Zero live exchange access, real order routing, or actual money movement is permitted or enabled.
 - **Gate M4 Research & Capital-Allocation Gate**: Evaluates physical commodity arbitrage vertical slices (DIN 3017 W4 SS304 worm-drive hose clamp) with cryptographic provenance envelopes, exact rational/integer subunit financial and tax arithmetic (GST, TCS, TDS), 7-bucket inventory conservation, working-capital hurdle rate gating, and deterministic edge-decay detection.
+- **Gate M5 Portfolio Capital Rationing Gate**: Multi-opportunity portfolio capital rationing across competing arbitrage candidates under hard treasury working-capital budgets (₹50,000.0000), discrete integer MOQ sizing, single-SKU concentration caps, 91-day sovereign T-Bill cash sweep, and dual-pass FormulaRegistry bridge with isolated shadow what-if sandbox comparison.
 
 ---
 
@@ -80,17 +81,17 @@ npm run typecheck
 # Standard run (skips live PostgreSQL tests cleanly if DATABASE_URL is unset)
 npm test
 
-# Full run with live PostgreSQL 16.8 (runs all 178 tests across 20 suites)
+# Full run with live PostgreSQL 16.8 (runs all 182 tests across 21 suites)
 $env:DATABASE_URL = "postgresql://postgres@localhost:5432/market_hft_test"
 npm test
 ```
-*Expected output: 20 test files passed, 178 tests passed (Exit code 0).*
+*Expected output: 21 test files passed, 182 tests passed (Exit code 0).*
 
 ### Step 4: Generate Machine-Readable Audit Report
 ```bash
 npm run test:json
 ```
-*Generates `test-results.json` recording 20 passed test files and 178 passed tests.*
+*Generates `test-results.json` recording 21 passed test files and 182 passed tests.*
 
 ---
 
@@ -172,3 +173,8 @@ npm run test:json
   - Pure BigInt rational AST evaluation computes fractional bps without IEEE-754 precision loss on values > MAX_SAFE_INTEGER (`M4-PURE-BIGINT-RATIONAL-AST-015`).
   - Local RAG sufficiency gate resolves existing statutory/economic concepts via RAG_CACHE_HIT and deterministic rules via DETERMINISTIC_APPEND with zero LLM calls (`M4-RAG-FIRST-SUFFICIENCY-GATE-016`).
   - Multi-step lifecycle proves asymptotic LLM decay flywheel, RAG-refined prompt injection, and persistent corpus reload (`M4-ASYMPTOTIC-LLM-DECAY-FLYWHEEL-017`).
+- **`suite21_m5_portfolio_capital_rationing.test.ts` (4 tests)**: Gate M5 multi-opportunity portfolio capital rationing, Formula RAG bridge, and shadow what-if sandbox:
+  - Budget conservation, discrete MOQ sizing, concentration cap, and sovereign T-Bill cash sweep (`M5-PORTFOLIO-RATIONING-001`).
+  - Rejection of viable candidate due to budget exhaustion and fail-closed quarantine of unverified candidate (`M5-OPPORTUNITY-REJECTION-RIGOR-002`).
+  - FormulaRegistry bridge + GroqFormulaAdvisor shadow what-if sandbox comparison quantifying rank and decision flips without mutating authoritative allocation (`M5-SHADOW-SANDBOX-FORMULA-DELTA-003`).
+  - Bit-for-bit RFC 8785 JCS canonical serialization and SHA-256 reproducibility (`M5-PORTFOLIO-JCS-DETERMINISM-004`).
