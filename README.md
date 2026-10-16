@@ -6,7 +6,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 [![Vitest](https://img.shields.io/badge/Vitest-4.1.12-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.8-blue.svg)](https://www.postgresql.org/)
-[![Status](https://img.shields.io/badge/Gate_M5_Conformance-Passing_(182_Tests_/_21_Suites)-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Gate_M5_Conformance-Passing_(185_Tests_/_21_Suites)-brightgreen.svg)]()
 
 ---
 
@@ -17,7 +17,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 - **Three-State Conformance Model**: All requirements are strictly tracked as `Specified — Pending Verification`, `Design Reviewed`, or `Verified — Test Evidence Recorded`.
 - **Epistemic & Operational Boundary**: Gate M3 integrates durable persistence, crash recovery, multi-stream integration, and live PostgreSQL 16.8 concurrency. Market feeds utilize local loopback WebSocket networking (`ws://127.0.0.1`) with fail-closed provenance (`is_authenticated_source_feed: false`). Order execution is simulated via `SimulatedExecutionGateway`. Dual-ledger protection (`ActualsGuard`) strictly isolates simulations from production actuals. Zero live exchange access, real order routing, or actual money movement is permitted or enabled.
 - **Gate M4 Research & Capital-Allocation Gate**: Evaluates physical commodity arbitrage vertical slices (DIN 3017 W4 SS304 worm-drive hose clamp) with cryptographic provenance envelopes, exact rational/integer subunit financial and tax arithmetic (GST, TCS, TDS), 7-bucket inventory conservation, working-capital hurdle rate gating, and deterministic edge-decay detection.
-- **Gate M5 Portfolio Capital Rationing Gate**: Multi-opportunity portfolio capital rationing across competing arbitrage candidates under hard treasury working-capital budgets (₹50,000.0000), discrete integer MOQ sizing, single-SKU concentration caps, 91-day sovereign T-Bill cash sweep, and dual-pass FormulaRegistry bridge with isolated shadow what-if sandbox comparison.
+- **Gate M5 Signal Bus, 4D Evidence & Group Strategy Simulator Gate**: 6-channel continuous signal bus (`NEWS_TRADE_PRESS`, `YOUTUBE_VIDEO_TRANSCRIPT`, `SOCIAL_FORUM_CHATTER`, `MACROECONOMIC_INDICATOR`, `LATERAL_FINANCIAL_MARKET`, `GOVERNMENT_SCHEME_POLICY`), 4 orthogonal evidence dimensions with fail-closed promotion firewall, 9-stage Deep Research DAG contract, 6-status return vocabulary, and Silo vs. Simultaneous Group Strategy Simulator across the SS304 DIN 3017 matrix (4 sizes x 2 packs) under ₹50,000 treasury budget, correlated LME steel shocks, concentration limits, Conviction vs Allocation separation firewall, and T-Bill sweep.
 
 ---
 
@@ -81,17 +81,17 @@ npm run typecheck
 # Standard run (skips live PostgreSQL tests cleanly if DATABASE_URL is unset)
 npm test
 
-# Full run with live PostgreSQL 16.8 (runs all 182 tests across 21 suites)
+# Full run with live PostgreSQL 16.8 (runs all 185 tests across 21 suites)
 $env:DATABASE_URL = "postgresql://postgres@localhost:5432/market_hft_test"
 npm test
 ```
-*Expected output: 21 test files passed, 182 tests passed (Exit code 0).*
+*Expected output: 21 test files passed, 185 tests passed (Exit code 0).*
 
 ### Step 4: Generate Machine-Readable Audit Report
 ```bash
 npm run test:json
 ```
-*Generates `test-results.json` recording 21 passed test files and 182 passed tests.*
+*Generates `test-results.json` recording 21 passed test files and 185 passed tests.*
 
 ---
 
@@ -173,8 +173,11 @@ npm run test:json
   - Pure BigInt rational AST evaluation computes fractional bps without IEEE-754 precision loss on values > MAX_SAFE_INTEGER (`M4-PURE-BIGINT-RATIONAL-AST-015`).
   - Local RAG sufficiency gate resolves existing statutory/economic concepts via RAG_CACHE_HIT and deterministic rules via DETERMINISTIC_APPEND with zero LLM calls (`M4-RAG-FIRST-SUFFICIENCY-GATE-016`).
   - Multi-step lifecycle proves asymptotic LLM decay flywheel, RAG-refined prompt injection, and persistent corpus reload (`M4-ASYMPTOTIC-LLM-DECAY-FLYWHEEL-017`).
-- **`suite21_m5_portfolio_capital_rationing.test.ts` (4 tests)**: Gate M5 multi-opportunity portfolio capital rationing, Formula RAG bridge, and shadow what-if sandbox:
-  - Budget conservation, discrete MOQ sizing, concentration cap, and sovereign T-Bill cash sweep (`M5-PORTFOLIO-RATIONING-001`).
-  - Rejection of viable candidate due to budget exhaustion and fail-closed quarantine of unverified candidate (`M5-OPPORTUNITY-REJECTION-RIGOR-002`).
-  - FormulaRegistry bridge + GroqFormulaAdvisor shadow what-if sandbox comparison quantifying rank and decision flips without mutating authoritative allocation (`M5-SHADOW-SANDBOX-FORMULA-DELTA-003`).
-  - Bit-for-bit RFC 8785 JCS canonical serialization and SHA-256 reproducibility (`M5-PORTFOLIO-JCS-DETERMINISM-004`).
+- **`suite21_m5_silo_group_and_signals.test.ts` (7 tests)**: Gate M5 6-channel signal bus, 4D evidence architecture, and Silo vs. Simultaneous Group Strategy Simulator:
+  - 4D evidence dimensions and fail-closed promotion firewall blocking illegal promotion to verified offer without cryptographic attestation or corroboration (`M5-4D-EVIDENCE-ORTHOGONALITY-001`).
+  - Normalization of testable signals across all 6 operational channels into typed economic factor shocks with JCS integrity and 9-stage DAG pipeline contract (`M5-SIX-CHANNEL-SIGNAL-INGEST-002`).
+  - 6-status return vocabulary distinguishing incomplete and unrecovered lifecycles rather than collapsing to 0% return (`M5-SIX-STATUS-VOCABULARY-003`).
+  - SS304 DIN 3017 matrix evaluation across 4 diameters and 2 pack hypotheses with price/breakeven bands, J-curve cash-flow series, and Arbitrage Greeks (`M5-SILO-PACK-SIZE-MATRIX-004`).
+  - Simultaneous group simulation under ₹50,000 treasury budget, correlated LME steel shock, concentration limits, discrete MOQ lot-sizing, and sovereign T-Bill cash sweep (`M5-SIMULTANEOUS-GROUP-CORRELATION-005`).
+  - Conviction-allocation firewall strictly allocating ₹0 capital to unverified advertised listings while funding verified offers (`M5-CONVICTION-VS-ALLOCATION-SEPARATION-006`).
+  - Bit-for-bit RFC 8785 JCS determinism and SHA-256 digest reproducibility across simulation runs (`M5-TRADING-CHART-JCS-DETERMINISM-007`).
