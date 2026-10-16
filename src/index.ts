@@ -23,6 +23,6 @@ export * from './persistence/durableRecoveryJournal.js';
 export * from './research/m4VerticalSlice.js';
 export * from './research/formulaRegistry.js';
 export * from './research/llmFormulaAdvisor.js';
-export * from './research/m5PortfolioAllocator.js';
 export * from './research/m5SignalAndEvidenceEngine.js';
 export * from './research/m5SiloAndGroupSimulator.js';
+export * from './agents/m6AgentFramework.js';

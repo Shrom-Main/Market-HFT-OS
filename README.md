@@ -6,7 +6,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 [![Vitest](https://img.shields.io/badge/Vitest-4.1.12-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.8-blue.svg)](https://www.postgresql.org/)
-[![Status](https://img.shields.io/badge/Gate_M5_Conformance-Passing_(185_Tests_/_21_Suites)-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Gate_M6_Conformance-Passing_(192_Tests_/_22_Suites)-brightgreen.svg)]()
 
 ---
 
@@ -18,6 +18,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 - **Epistemic & Operational Boundary**: Gate M3 integrates durable persistence, crash recovery, multi-stream integration, and live PostgreSQL 16.8 concurrency. Market feeds utilize local loopback WebSocket networking (`ws://127.0.0.1`) with fail-closed provenance (`is_authenticated_source_feed: false`). Order execution is simulated via `SimulatedExecutionGateway`. Dual-ledger protection (`ActualsGuard`) strictly isolates simulations from production actuals. Zero live exchange access, real order routing, or actual money movement is permitted or enabled.
 - **Gate M4 Research & Capital-Allocation Gate**: Evaluates physical commodity arbitrage vertical slices (DIN 3017 W4 SS304 worm-drive hose clamp) with cryptographic provenance envelopes, exact rational/integer subunit financial and tax arithmetic (GST, TCS, TDS), 7-bucket inventory conservation, working-capital hurdle rate gating, and deterministic edge-decay detection.
 - **Gate M5 Signal Bus, 4D Evidence & Group Strategy Simulator Gate**: 6-channel continuous signal bus (`NEWS_TRADE_PRESS`, `YOUTUBE_VIDEO_TRANSCRIPT`, `SOCIAL_FORUM_CHATTER`, `MACROECONOMIC_INDICATOR`, `LATERAL_FINANCIAL_MARKET`, `GOVERNMENT_SCHEME_POLICY`), 4 orthogonal evidence dimensions with fail-closed promotion firewall, 9-stage Deep Research DAG contract, 6-status return vocabulary, and Silo vs. Simultaneous Group Strategy Simulator across the SS304 DIN 3017 matrix (4 sizes x 2 packs) under ₹50,000 treasury budget, correlated LME steel shocks, concentration limits, Conviction vs Allocation separation firewall, and T-Bill sweep.
+- **Gate M6 Multi-Agent Research Swarm & Bitemporal Replay Gate**: Governed multi-agent research swarm with strict operational boundary firewall (`AgentSecurityFirewall` prohibiting financial calculations, ledger writes, and unvetted URLs), `TinyFishScopedBrowserAgent` executing scoped read-only web extractions, 4 specialist sub-agents (`MediaAndChatterSubAgent`, `MacroAndLateralMarketSubAgent`, `GovtSchemeAndTaxSubAgent`, `RedTeamReviewerSubAgent`), 9-stage DAG coordinator (`ResearchSchedulerAndManager`) with graceful degraded-mode partial-failure handling, and `BitemporalRestatementEngine` providing immutable $t_0$ decision state reconstruction and non-destructive retrospective restatements under RFC 8785 JCS determinism.
 
 ---
 
@@ -81,17 +82,17 @@ npm run typecheck
 # Standard run (skips live PostgreSQL tests cleanly if DATABASE_URL is unset)
 npm test
 
-# Full run with live PostgreSQL 16.8 (runs all 185 tests across 21 suites)
+# Full run with live PostgreSQL 16.8 (runs all 192 tests across 22 suites)
 $env:DATABASE_URL = "postgresql://postgres@localhost:5432/market_hft_test"
 npm test
 ```
-*Expected output: 21 test files passed, 185 tests passed (Exit code 0).*
+*Expected output: 22 test files passed, 192 tests passed (Exit code 0).*
 
 ### Step 4: Generate Machine-Readable Audit Report
 ```bash
 npm run test:json
 ```
-*Generates `test-results.json` recording 21 passed test files and 185 passed tests.*
+*Generates `test-results.json` recording 22 passed test files and 192 passed tests.*
 
 ---
 
@@ -181,3 +182,11 @@ npm run test:json
   - Simultaneous group simulation under ₹50,000 treasury budget, correlated LME steel shock, concentration limits, discrete MOQ lot-sizing, and sovereign T-Bill cash sweep (`M5-SIMULTANEOUS-GROUP-CORRELATION-005`).
   - Conviction-allocation firewall strictly allocating ₹0 capital to unverified advertised listings while funding verified offers (`M5-CONVICTION-VS-ALLOCATION-SEPARATION-006`).
   - Bit-for-bit RFC 8785 JCS determinism and SHA-256 digest reproducibility across simulation runs (`M5-TRADING-CHART-JCS-DETERMINISM-007`).
+- **`suite22_m6_agent_swarm_and_bitemporal.test.ts` (7 tests)**: Gate M6 governed multi-agent research framework, scoped browser extraction, and bitemporal replay:
+  - Scoped TinyFish browser agent extracts structured market data while blocking unapproved domains, non-GET methods, and execution attempts (`M6-TINYFISH-SCOPED-BROWSER-001`).
+  - Agent security firewall strictly blocks financial math hallucination, code generation, ledger writes, and production promotion attempts (`M6-AGENT-SECURITY-FIREWALL-002`).
+  - Specialist sub-agent swarm processes multi-channel inputs and red-teams unverified signals into typed factor shocks with JCS hashing (`M6-SPECIALIST-SWARM-COLLABORATION-003`).
+  - Degraded-mode resilience allows research DAG completion and capital preservation when individual sub-agents timeout or fail (`M6-DEGRADED-MODE-RESILIENCE-004`).
+  - Red-team reviewer sub-agent identifies false-positive arbitrage, unverified suppliers, and seasonal demand traps with mandatory human review flags (`M6-RED-TEAM-ADVERSARIAL-SCRUTINY-005`).
+  - Bitemporal restatement engine reproduces $t_0$ decision state and computes retrospective restatement deltas without mutating historical records (`M6-BITEMPORAL-REPLAY-AND-RESTATEMENT-006`).
+  - End-to-end multi-agent research tick produces bit-for-bit identical telemetry, signal hashes, and decision digests under RFC 8785 JCS (`M6-END-TO-END-POLISH-AND-PRESENT-JCS-007`).
