@@ -296,6 +296,8 @@ describe('SUITE-26: Gate M6.4 Stage 4 MacroAndLateralMarketWorker & Dynamic Regi
     expect(evaluation.formula_id_used).toBe('MACRO-CAPEX-TRANSFER-001');
     // Modeled impact: (800 * 15000) / 10000 = 1200 bps
     expect(evaluation.modeled_impact_subunits_or_bps).toBe(1200n);
+    // Driver elasticity: 150 bps impact per 100 bps factor change (1.5x elasticity)
+    expect(evaluation.driver_elasticity_bps).toBe(150n);
   });
 
   // ==========================================================================

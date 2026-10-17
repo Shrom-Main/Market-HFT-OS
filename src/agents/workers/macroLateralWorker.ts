@@ -686,6 +686,7 @@ export interface DynamicDriverEvaluation {
   readonly tactical_execution_viable: boolean;
   readonly blocking_reason?: string;
   readonly modeled_impact_subunits_or_bps: bigint;
+  readonly driver_elasticity_bps: bigint;
   readonly formula_id_used: string;
   readonly formula_expression: string;
 }
@@ -870,6 +871,8 @@ export function evaluateDynamicGrowthDriver(
   }
 
   const modeledImpact = evaluateSymbolicExpression(formulaCard.symbolic_expression, inputs);
+  const driverElasticityBps =
+    absNetChangeBps > 0n ? (modeledImpact * 100n) / absNetChangeBps : 100n;
 
   return deepFreeze({
     factor_id: window.factor_id,
@@ -881,6 +884,7 @@ export function evaluateDynamicGrowthDriver(
     tactical_execution_viable: tacticalViable,
     blocking_reason: blockingReason,
     modeled_impact_subunits_or_bps: modeledImpact,
+    driver_elasticity_bps: driverElasticityBps,
     formula_id_used: formulaCard.formula_id,
     formula_expression: formulaCard.symbolic_expression
   });
