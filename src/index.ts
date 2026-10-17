@@ -32,3 +32,6 @@ export * from './agents/workers/mediaChatterWorker.js';
 export * from './agents/workers/macroLateralWorker.js';
 export * from './mcp/contracts/govtStatutoryContract.js';
 export * from './agents/workers/govtStatutoryWorker.js';
+export * from './mcp/contracts/redTeamContract.js';
+export * from './agents/workers/redTeamWorker.js';
+export * from './agents/scheduler/contextRoutingStateMachine.js';
