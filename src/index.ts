@@ -29,3 +29,4 @@ export * from './agents/m6AgentFramework.js';
 export * from './mcp/mcpSubstrate.js';
 export * from './agents/workers/sourceCaptureWorker.js';
 export * from './agents/workers/mediaChatterWorker.js';
+export * from './agents/workers/macroLateralWorker.js';

@@ -22,7 +22,6 @@
  *    - evaluateChatterSupplementTrigger: COMPLEMENTARY_GAP_FILL vs SUPPLEMENTARY_ANOMALY_CHECK vs NONE
  */
 
-import { randomBytes } from 'crypto';
 import { sha256 } from '../../canonical/crypto.js';
 import { canonicalizeJCS } from '../../canonical/jcs.js';
 import { sanitizeForJcs } from '../m6AgentFramework.js';
@@ -293,6 +292,13 @@ export function evaluateChatterSupplementTrigger(
     quoteSubunits = BigInt(grossPrice.normalized_value);
   } else if (rawMaterial && rawMaterial.status === 'EXTRACTED' && rawMaterial.normalized_value) {
     quoteSubunits = BigInt(rawMaterial.normalized_value);
+  } else if (captureResponse.extracted_fields) {
+    for (const field of Object.values(captureResponse.extracted_fields)) {
+      if (field && field.status === 'EXTRACTED' && field.unit === 'SUBUNITS_INR' && field.normalized_value) {
+        quoteSubunits = BigInt(field.normalized_value);
+        break;
+      }
+    }
   }
 
   if (quoteSubunits !== null && lmeScrapFloorSubunits > 0n) {
@@ -659,7 +665,7 @@ export function registerMediaChatterTool(server: McpServerAdapter): void {
 
         // Validate each citation span against sanitized transcript
         for (const citation of candidate.citations) {
-          verifyVerbatimCitationSpan(sanitizedText, citation);
+          verifyVerbatimCitationSpan(sanitizedText, citation, sanitizedSha256);
         }
 
         const defectRateBps = Math.floor((candidate.observed_defect_mention_count * 10000) / totalSampled);
