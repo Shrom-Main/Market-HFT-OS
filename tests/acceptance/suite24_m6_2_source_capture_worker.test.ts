@@ -26,7 +26,12 @@
  * 7. MCP-SCW-UNICODE-HOMOGRAPH-007:
  *    - Verifies Layer 5 strips zero-width characters (₹3\u200B8.21 -> 382100) and rejects
  *      confusable fullwidth/Cyrillic homograph digits (E-SCW-HOMOGRAPH-DETECTED).
- * 8. MCP-SCW-REPRODUCIBLE-JCS-008:
+ * 8. MCP-SCW-INDIAMART-TIERED-MOQ-008:
+ *    - Tests IndiaMART B2B tiered quantity-slab pricing (100-249 @ ₹31.00, 250-499 @ ₹28.50, 500+ @ ₹25.00).
+ *    - Proves target 500 selects '250000', target 300 selects '285000', target 50 fails closed with
+ *      DATA_REQUIRED (E-SCW-BELOW-MINIMUM-TIER-MOQ), and overlapping slabs fail closed with
+ *      PARSE_REJECTED (E-SCW-AMBIGUOUS-TIER-BRACKET).
+ * 9. MCP-SCW-REPRODUCIBLE-JCS-009:
  *    - Verifies bit-for-bit identical SourceCaptureMcpResponse and RFC 8785 JCS SHA-256 digest
  *      across repeated runs and verifies all calls are hash-chained in McpRunLedger.
  */
@@ -48,6 +53,7 @@ import {
   sanitizeHtmlDomSieve,
   InjectionCanaryGuard,
   parseInrToSubunits,
+  resolveTieredMoqPrice,
   SourceCaptureFixtureRegistry,
   SourceCaptureMcpRequest
 } from '../../src/agents/workers/sourceCaptureWorker.js';
@@ -475,9 +481,158 @@ describe('SUITE-24: Gate M6.2 Stage 2 SourceCaptureWorker Acceptance', () => {
   });
 
   // ==========================================================================
-  // Test 8: Bit-for-Bit Reproducible JCS Digest & Monotonic McpRunLedger
+  // Test 8: IndiaMART Deterministic Tiered MOQ Bracket Resolver
   // ==========================================================================
-  it('MCP-SCW-REPRODUCIBLE-JCS-008: Bit-for-bit identical SourceCaptureMcpResponse and RFC 8785 JCS SHA-256 digest across repeated runs with McpRunLedger hash chaining', async () => {
+  it('MCP-SCW-INDIAMART-TIERED-MOQ-008: Resolves exact bracket price for target quantity and fails closed on below-MOQ and overlapping slabs', async () => {
+    const tieredHtml = `<table id="indiamart-tier-pricing" data-sku="DIN3017-SS304-16-25-P10">
+  <tr class="price-tier-row" data-min-qty="100" data-max-qty="249">
+    <td class="tier-range">100 - 249 Packs</td>
+    <td class="tier-price">₹ 31.00 / Pack</td>
+  </tr>
+  <tr class="price-tier-row" data-min-qty="250" data-max-qty="499">
+    <td class="tier-range">250 - 499 Packs</td>
+    <td class="tier-price">₹ 28.50 / Pack</td>
+  </tr>
+  <tr class="price-tier-row" data-min-qty="500" data-max-qty="">
+    <td class="tier-range">500+ Packs</td>
+    <td class="tier-price">₹ 25.00 / Pack</td>
+  </tr>
+</table>`;
+
+    const tieredRules = [
+      {
+        field_name: 'tiered_unit_price_inr',
+        selector: '#indiamart-tier-pricing, .price-tier-row',
+        expected_type: 'TIERED_SUBUNITS_INR' as const,
+        is_mandatory: true
+      }
+    ];
+
+    // Case 1: Exact Bracket Match (500+ MOQ -> target 500)
+    const req500: SourceCaptureMcpRequest = {
+      task_id: 'task:tiered:500',
+      worker_id: SourceCaptureWorker.WORKER_ID,
+      target_url: 'https://dir.indiamart.com/supplier/ss304-bracket',
+      source_profile: 'INDIAMART_SUPPLIER_LISTING',
+      execution_mode: 'RECORDED_FIXTURE_REPLAY',
+      raw_html_payload: tieredHtml,
+      target_batch_quantity: 500,
+      extraction_rules: tieredRules,
+      requested_at_utc: FIXED_TIME
+    };
+
+    const res500 = await worker.captureAndExtract(req500);
+    const field500 = res500.extracted_fields['tiered_unit_price_inr'];
+    expect(field500.status).toBe('EXTRACTED');
+    if (field500.status === 'EXTRACTED') {
+      expect(field500.normalized_value).toBe('250000'); // ₹25.0000
+      expect(field500.unit).toBe('SUBUNITS_INR');
+      expect(field500.matched_tier).toEqual({
+        min_qty: 500,
+        max_qty: null,
+        unit_price_subunits: '250000'
+      });
+      expect(field500.observed_tiers).toHaveLength(3);
+    }
+
+    // Case 2: Mid-Tier Bracket Match (250-499 Packs -> target 300)
+    const req300: SourceCaptureMcpRequest = {
+      task_id: 'task:tiered:300',
+      worker_id: SourceCaptureWorker.WORKER_ID,
+      target_url: 'https://dir.indiamart.com/supplier/ss304-bracket',
+      source_profile: 'INDIAMART_SUPPLIER_LISTING',
+      execution_mode: 'RECORDED_FIXTURE_REPLAY',
+      raw_html_payload: tieredHtml,
+      target_batch_quantity: 300,
+      extraction_rules: tieredRules,
+      requested_at_utc: FIXED_TIME
+    };
+
+    const res300 = await worker.captureAndExtract(req300);
+    const field300 = res300.extracted_fields['tiered_unit_price_inr'];
+    expect(field300.status).toBe('EXTRACTED');
+    if (field300.status === 'EXTRACTED') {
+      expect(field300.normalized_value).toBe('285000'); // ₹28.5000
+      expect(field300.unit).toBe('SUBUNITS_INR');
+      expect(field300.matched_tier).toEqual({
+        min_qty: 250,
+        max_qty: 499,
+        unit_price_subunits: '285000'
+      });
+    }
+
+    // Case 3: Below Minimum Supplier MOQ (target 50 < 100) -> fail-closed with DATA_REQUIRED
+    const req50: SourceCaptureMcpRequest = {
+      task_id: 'task:tiered:50',
+      worker_id: SourceCaptureWorker.WORKER_ID,
+      target_url: 'https://dir.indiamart.com/supplier/ss304-bracket',
+      source_profile: 'INDIAMART_SUPPLIER_LISTING',
+      execution_mode: 'RECORDED_FIXTURE_REPLAY',
+      raw_html_payload: tieredHtml,
+      target_batch_quantity: 50,
+      extraction_rules: tieredRules,
+      requested_at_utc: FIXED_TIME
+    };
+
+    const res50 = await worker.captureAndExtract(req50);
+    const field50 = res50.extracted_fields['tiered_unit_price_inr'];
+    expect(field50.status).toBe('DATA_REQUIRED');
+    if (field50.status === 'DATA_REQUIRED') {
+      expect(field50.error_code).toBe('E-SCW-BELOW-MINIMUM-TIER-MOQ');
+      expect(field50.reason).toContain('zero or extrapolation forbidden');
+    }
+
+    // Case 4: Overlapping / Ambiguous Slabs (100-500 @ 28.50 and 500+ @ 25.00 with target 500) -> fail-closed with PARSE_REJECTED
+    const overlappingHtml = `<table id="indiamart-tier-pricing" data-sku="DIN3017-SS304-16-25-P10">
+  <tr class="price-tier-row" data-min-qty="100" data-max-qty="500">
+    <td class="tier-range">100 - 500 Packs</td>
+    <td class="tier-price">₹ 28.50 / Pack</td>
+  </tr>
+  <tr class="price-tier-row" data-min-qty="500" data-max-qty="">
+    <td class="tier-range">500+ Packs</td>
+    <td class="tier-price">₹ 25.00 / Pack</td>
+  </tr>
+</table>`;
+
+    const reqOverlap: SourceCaptureMcpRequest = {
+      task_id: 'task:tiered:overlap',
+      worker_id: SourceCaptureWorker.WORKER_ID,
+      target_url: 'https://dir.indiamart.com/supplier/ss304-bracket',
+      source_profile: 'INDIAMART_SUPPLIER_LISTING',
+      execution_mode: 'RECORDED_FIXTURE_REPLAY',
+      raw_html_payload: overlappingHtml,
+      target_batch_quantity: 500,
+      extraction_rules: tieredRules,
+      requested_at_utc: FIXED_TIME
+    };
+
+    const resOverlap = await worker.captureAndExtract(reqOverlap);
+    const fieldOverlap = resOverlap.extracted_fields['tiered_unit_price_inr'];
+    expect(fieldOverlap.status).toBe('PARSE_REJECTED');
+    if (fieldOverlap.status === 'PARSE_REJECTED') {
+      expect(fieldOverlap.error_code).toBe('E-SCW-AMBIGUOUS-TIER-BRACKET');
+      expect(fieldOverlap.reason).toContain('ambiguous/overlapping');
+    }
+
+    // Direct resolver invocation verification
+    const direct500 = resolveTieredMoqPrice(tieredHtml, '#indiamart-tier-pricing', 500);
+    expect(direct500.status).toBe('EXTRACTED');
+    if (direct500.status === 'EXTRACTED') {
+      expect(direct500.normalized_value).toBe('250000');
+    }
+
+    // Missing target quantity check
+    const directNoQty = resolveTieredMoqPrice(tieredHtml, '#indiamart-tier-pricing', undefined);
+    expect(directNoQty.status).toBe('PARSE_REJECTED');
+    if (directNoQty.status === 'PARSE_REJECTED') {
+      expect(directNoQty.error_code).toBe('E-SCW-MISSING-TARGET-QUANTITY');
+    }
+  });
+
+  // ==========================================================================
+  // Test 9: Bit-for-Bit Reproducible JCS Digest & Monotonic McpRunLedger
+  // ==========================================================================
+  it('MCP-SCW-REPRODUCIBLE-JCS-009: Bit-for-bit identical SourceCaptureMcpResponse and RFC 8785 JCS SHA-256 digest across repeated runs with McpRunLedger hash chaining', async () => {
     const rawHtml = `<div class="product-item" data-asin="B09XYZ1234">
   <span class="unit-price" data-price="105.00">₹105.00</span>
   <span class="pack-quantity" data-pack="10">Pack of 10</span>

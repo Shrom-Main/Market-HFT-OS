@@ -85,8 +85,15 @@ export type CaptureExecutionMode =
   | 'RECORDED_FIXTURE_REPLAY'
   | 'APPROVED_LIVE_HTTPS_GET';
 
+export interface PriceBracketTier {
+  readonly min_qty: number;
+  readonly max_qty: number | null; // null represents open-ended '500+' bracket
+  readonly unit_price_subunits: string; // Canonical BigInt string (e.g., '250000' = ₹25.0000)
+}
+
 export type ExpectedFieldType =
   | 'SUBUNITS_INR'
+  | 'TIERED_SUBUNITS_INR'
   | 'POSITIVE_INT'
   | 'ENUM_STRING'
   | 'HSN_CODE';
@@ -104,6 +111,7 @@ export interface SourceCaptureMcpRequest {
   readonly target_url: string;
   readonly source_profile: SourceProfileId;
   readonly execution_mode: CaptureExecutionMode;
+  readonly target_batch_quantity?: number; // Required when extracting TIERED_SUBUNITS_INR
   readonly fixture_id?: string;
   readonly raw_html_payload?: string;
   readonly extraction_rules?: readonly ExtractionSelectorRule[];
@@ -118,6 +126,8 @@ export type FieldExtractionOutcome =
       readonly normalized_value: string;
       readonly unit: 'SUBUNITS_INR' | 'UNITS' | 'DAYS' | 'STRING';
       readonly matched_selector: string;
+      readonly matched_tier?: PriceBracketTier;
+      readonly observed_tiers?: readonly PriceBracketTier[];
     }
   | {
       readonly status: 'DATA_REQUIRED' | 'DATA_INSUFFICIENT' | 'PARSE_REJECTED';
@@ -183,6 +193,8 @@ const ALLOWED_ATTRIBUTES = new Set([
   'data-sku',
   'data-price',
   'data-moq',
+  'data-min-qty',
+  'data-max-qty',
   'itemprop',
   'href'
 ]);
@@ -670,6 +682,287 @@ export function extractBySelector(
   return null;
 }
 
+/**
+ * Deterministic Tiered MOQ Bracket Resolver for IndiaMART / B2B quantity-slab pricing.
+ * Parses quantity-slab rows and selects the exact bracket for target_batch_quantity.
+ * Fails closed if quantity is below supplier MOQ or if brackets are ambiguous/overlapping.
+ */
+export function resolveTieredMoqPrice(
+  html: string,
+  selectorOrQty?: string | number,
+  targetBatchQuantity?: number,
+  options?: { throwOnError?: boolean }
+): FieldExtractionOutcome {
+  let selector = '.price-tier-row, [data-min-qty], table';
+  let targetQty: number | undefined;
+
+  if (typeof selectorOrQty === 'number') {
+    targetQty = selectorOrQty;
+  } else if (typeof selectorOrQty === 'string') {
+    selector = selectorOrQty;
+    targetQty = targetBatchQuantity;
+  } else {
+    targetQty = targetBatchQuantity;
+  }
+
+  // Fail-closed: target quantity must be supplied
+  if (targetQty === undefined || targetQty === null || typeof targetQty !== 'number' || Number.isNaN(targetQty)) {
+    const outcome: FieldExtractionOutcome = {
+      status: 'PARSE_REJECTED',
+      error_code: 'E-SCW-MISSING-TARGET-QUANTITY',
+      reason: 'target_batch_quantity is required for TIERED_SUBUNITS_INR extraction.'
+    };
+    if (options?.throwOnError) {
+      throw new Error(`${outcome.error_code}: ${outcome.reason}`);
+    }
+    return outcome;
+  }
+
+  if (targetQty <= 0 || !Number.isInteger(targetQty)) {
+    const outcome: FieldExtractionOutcome = {
+      status: 'PARSE_REJECTED',
+      error_code: 'E-SCW-INVALID-TARGET-QUANTITY',
+      reason: `target_batch_quantity must be a positive integer, received ${targetQty}.`
+    };
+    if (options?.throwOnError) {
+      throw new Error(`${outcome.error_code}: ${outcome.reason}`);
+    }
+    return outcome;
+  }
+
+  const rawTiers: PriceBracketTier[] = [];
+
+  // Parse HTML elements that contain tier information
+  const openTagRegex = /<([a-zA-Z0-9]+)(\s+[^>]*)?>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = openTagRegex.exec(html)) !== null) {
+    const tagName = match[1].toLowerCase();
+    const rawAttrs = match[2] || '';
+    const tagEndIndex = openTagRegex.lastIndex;
+
+    const attrMap = new Map<string, string>();
+    const attrRegex = /([a-zA-Z0-9_-]+)(?:=(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+    let am: RegExpExecArray | null;
+    while ((am = attrRegex.exec(rawAttrs)) !== null) {
+      attrMap.set(am[1].toLowerCase(), am[2] ?? am[3] ?? am[4] ?? '');
+    }
+
+    const hasTierClass = (attrMap.get('class') || '').split(/\s+/).includes('price-tier-row');
+    const hasMinQty = attrMap.has('data-min-qty');
+
+    if (!hasTierClass && !hasMinQty) {
+      continue;
+    }
+
+    // Extract inner HTML with depth tracking
+    const rest = html.slice(tagEndIndex);
+    let depth = 1;
+    const subRegex = new RegExp(`<\/?${tagName}\\b[^>]*>`, 'gi');
+    let subMatch: RegExpExecArray | null;
+    let innerHtml = '';
+
+    while ((subMatch = subRegex.exec(rest)) !== null) {
+      if (subMatch[0].startsWith('</')) {
+        depth--;
+        if (depth === 0) {
+          innerHtml = rest.slice(0, subMatch.index);
+          break;
+        }
+      } else if (!subMatch[0].endsWith('/>')) {
+        depth++;
+      }
+    }
+
+    // Determine min_qty & max_qty
+    let min_qty: number | undefined;
+    let max_qty: number | null | undefined;
+
+    if (attrMap.has('data-min-qty')) {
+      const s = attrMap.get('data-min-qty')!.trim();
+      if (/^\d+$/.test(s)) {
+        min_qty = parseInt(s, 10);
+      }
+    }
+
+    if (attrMap.has('data-max-qty')) {
+      const s = attrMap.get('data-max-qty')!.trim();
+      if (/^\d+$/.test(s)) {
+        max_qty = parseInt(s, 10);
+      } else {
+        max_qty = null;
+      }
+    }
+
+    const innerText = innerHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
+    if (min_qty === undefined) {
+      const rangeMatch = innerText.match(/(\d+)\s*[-–—to]\s*(\d+)/i);
+      if (rangeMatch) {
+        min_qty = parseInt(rangeMatch[1], 10);
+        if (max_qty === undefined) {
+          max_qty = parseInt(rangeMatch[2], 10);
+        }
+      } else {
+        const plusMatch = innerText.match(/(\d+)\s*\+/);
+        if (plusMatch) {
+          min_qty = parseInt(plusMatch[1], 10);
+          if (max_qty === undefined) {
+            max_qty = null;
+          }
+        }
+      }
+    }
+
+    if (min_qty === undefined) {
+      continue;
+    }
+    if (max_qty === undefined) {
+      max_qty = null;
+    }
+
+    // Extract unit price
+    let unit_price_subunits: string | undefined;
+
+    if (attrMap.has('data-price')) {
+      try {
+        unit_price_subunits = parseInrToSubunits(attrMap.get('data-price')!);
+      } catch {
+        // Fallback
+      }
+    }
+
+    if (!unit_price_subunits) {
+      const dataPriceMatch = innerHtml.match(/data-price\s*=\s*["']([^"']+)["']/i);
+      if (dataPriceMatch) {
+        try {
+          unit_price_subunits = parseInrToSubunits(dataPriceMatch[1]);
+        } catch {
+          // Fallback
+        }
+      }
+    }
+
+    if (!unit_price_subunits) {
+      const priceCellMatch = innerHtml.match(/<[^>]*class\s*=\s*["'][^"']*tier-price[^"']*["'][^>]*>([\s\S]*?)<\/[a-zA-Z0-9]+>/i);
+      const textToSearch = priceCellMatch ? priceCellMatch[1].replace(/<[^>]+>/g, ' ') : innerText;
+      const inrMatch =
+        textToSearch.match(/(?:₹|INR|Rs\.?)\s*([0-9,]+(?:\.[0-9]+)?)/i) ||
+        textToSearch.match(/([0-9,]+(?:\.[0-9]+)?)\s*(?:\/|\s*per)/i);
+      if (inrMatch) {
+        try {
+          unit_price_subunits = parseInrToSubunits(inrMatch[1]);
+        } catch {
+          // Non-numeric
+        }
+      }
+    }
+
+    if (unit_price_subunits) {
+      rawTiers.push({
+        min_qty,
+        max_qty,
+        unit_price_subunits
+      });
+    }
+  }
+
+  // Deduplicate and detect conflicts for identical ranges
+  const tierMap = new Map<string, PriceBracketTier>();
+  for (const t of rawTiers) {
+    const key = `${t.min_qty}:${t.max_qty ?? 'null'}`;
+    const existing = tierMap.get(key);
+    if (existing && existing.unit_price_subunits !== t.unit_price_subunits) {
+      const outcome: FieldExtractionOutcome = {
+        status: 'PARSE_REJECTED',
+        error_code: 'E-SCW-AMBIGUOUS-TIER-BRACKET',
+        reason: `Conflicting prices detected for identical tier range [${t.min_qty}-${t.max_qty ?? '+'}]: ${existing.unit_price_subunits} vs ${t.unit_price_subunits}.`
+      };
+      if (options?.throwOnError) {
+        throw new Error(`${outcome.error_code}: ${outcome.reason}`);
+      }
+      return outcome;
+    }
+    tierMap.set(key, t);
+  }
+
+  const observedTiers = Object.freeze(
+    Array.from(tierMap.values()).sort((a, b) => a.min_qty - b.min_qty)
+  );
+
+  if (observedTiers.length === 0) {
+    const outcome: FieldExtractionOutcome = {
+      status: 'DATA_REQUIRED',
+      error_code: 'E-SCW-MANDATORY-COST-MISSING',
+      reason: `No quantity-slab pricing tiers found in DOM matching selector '${selector}'.`
+    };
+    if (options?.throwOnError) {
+      throw new Error(`${outcome.error_code}: ${outcome.reason}`);
+    }
+    return outcome;
+  }
+
+  const lowestMinQty = Math.min(...observedTiers.map((t) => t.min_qty));
+
+  // Invariant 3: Below minimum supplier tier MOQ -> fail closed with DATA_REQUIRED
+  if (targetQty < lowestMinQty) {
+    const outcome: FieldExtractionOutcome = {
+      status: 'DATA_REQUIRED',
+      error_code: 'E-SCW-BELOW-MINIMUM-TIER-MOQ',
+      reason: `Target batch quantity ${targetQty} is below minimum supplier tier MOQ ${lowestMinQty}; zero or extrapolation forbidden.`
+    };
+    if (options?.throwOnError) {
+      throw new Error(`${outcome.error_code}: ${outcome.reason}`);
+    }
+    return outcome;
+  }
+
+  // Find all matching tiers
+  const matchingTiers = observedTiers.filter(
+    (tier) =>
+      tier.min_qty <= targetQty! &&
+      (tier.max_qty === null || targetQty! <= tier.max_qty)
+  );
+
+  // Invariant 4: Ambiguous / overlapping tiers -> fail closed with PARSE_REJECTED
+  if (matchingTiers.length > 1) {
+    const outcome: FieldExtractionOutcome = {
+      status: 'PARSE_REJECTED',
+      error_code: 'E-SCW-AMBIGUOUS-TIER-BRACKET',
+      reason: `Target batch quantity ${targetQty} matched ${matchingTiers.length} ambiguous/overlapping tiers: [${matchingTiers.map((t) => `${t.min_qty}-${t.max_qty ?? '+'}`).join(', ')}]. Refusing to guess which price applies.`
+    };
+    if (options?.throwOnError) {
+      throw new Error(`${outcome.error_code}: ${outcome.reason}`);
+    }
+    return outcome;
+  }
+
+  // Gap between tiers
+  if (matchingTiers.length === 0) {
+    const outcome: FieldExtractionOutcome = {
+      status: 'DATA_REQUIRED',
+      error_code: 'E-SCW-TIER-BRACKET-GAP',
+      reason: `Target batch quantity ${targetQty} falls into an unquoted gap between supplier pricing tiers.`
+    };
+    if (options?.throwOnError) {
+      throw new Error(`${outcome.error_code}: ${outcome.reason}`);
+    }
+    return outcome;
+  }
+
+  // Invariant 1 & 2: Clean single match (Exact Bracket Match or Mid-Tier Match)
+  const matchedTier = matchingTiers[0];
+  return {
+    status: 'EXTRACTED',
+    raw_sanitized_text: matchedTier.unit_price_subunits,
+    normalized_value: matchedTier.unit_price_subunits,
+    unit: 'SUBUNITS_INR',
+    matched_selector: selector,
+    matched_tier: Object.freeze(matchedTier),
+    observed_tiers: observedTiers
+  };
+}
+
 // ============================================================================
 // 5. RECORDED FIXTURE REGISTRY
 // ============================================================================
@@ -698,6 +991,25 @@ export class SourceCaptureFixtureRegistry {
   <span class="material" data-material="SS304">SS304</span>
   <span class="size-range" data-size="16-25mm">16-25mm</span>
 </div>`
+    );
+
+    // Default IndiaMART Tiered MOQ fixture for DIN 3017 16-25mm Pack of 10
+    SourceCaptureFixtureRegistry.fixtures.set(
+      'indiamart_tiered_moq',
+      `<table id="indiamart-tier-pricing" data-sku="DIN3017-SS304-16-25-P10">
+  <tr class="price-tier-row" data-min-qty="100" data-max-qty="249">
+    <td class="tier-range">100 - 249 Packs</td>
+    <td class="tier-price">₹ 31.00 / Pack</td>
+  </tr>
+  <tr class="price-tier-row" data-min-qty="250" data-max-qty="499">
+    <td class="tier-range">250 - 499 Packs</td>
+    <td class="tier-price">₹ 28.50 / Pack</td>
+  </tr>
+  <tr class="price-tier-row" data-min-qty="500" data-max-qty="">
+    <td class="tier-range">500+ Packs</td>
+    <td class="tier-price">₹ 25.00 / Pack</td>
+  </tr>
+</table>`
     );
   }
 
@@ -841,6 +1153,7 @@ export const SOURCE_CAPTURE_TOOL_DESCRIPTOR: McpToolDescriptor = Object.freeze({
       target_url: { type: 'string' },
       source_profile: { type: 'string' },
       execution_mode: { type: 'string' },
+      target_batch_quantity: { type: 'number' },
       fixture_id: { type: 'string' },
       raw_html_payload: { type: 'string' },
       extraction_rules: { type: 'array' },
@@ -860,6 +1173,10 @@ export function registerSourceCaptureTool(server: McpServerAdapter): void {
     handler: async (args: Record<string, unknown>): Promise<McpToolCallResponse['result']> => {
       const targetUrl = String(args.url || args.target_url);
       const executionMode = (args.execution_mode as CaptureExecutionMode) || 'RECORDED_FIXTURE_REPLAY';
+      const targetBatchQuantity =
+        typeof args.target_batch_quantity === 'number'
+          ? args.target_batch_quantity
+          : undefined;
       const fixtureId = args.fixture_id as string | undefined;
       let rawHtmlPayload = args.raw_html_payload as string | undefined;
       const sourceProfile = (args.source_profile as SourceProfileId) || 'AMAZON_IN_PRODUCT_LISTING';
@@ -920,6 +1237,25 @@ export function registerSourceCaptureTool(server: McpServerAdapter): void {
             error_code: 'E-SCW-PROMPT-INJECTION-DETECTED',
             reason: `Field '${rule.field_name}' quarantined due to prompt injection flags [${promptInjectionFlags.join(', ')}].`
           };
+          continue;
+        }
+
+        // TIERED_SUBUNITS_INR delegation to resolveTieredMoqPrice
+        if (rule.expected_type === 'TIERED_SUBUNITS_INR') {
+          if (targetBatchQuantity === undefined) {
+            extractedFields[rule.field_name] = {
+              status: 'PARSE_REJECTED',
+              error_code: 'E-SCW-MISSING-TARGET-QUANTITY',
+              reason: `Field '${rule.field_name}' requires target_batch_quantity for TIERED_SUBUNITS_INR extraction.`
+            };
+            continue;
+          }
+          const tierOutcome = resolveTieredMoqPrice(
+            sieveResult.sanitized_html,
+            rule.selector,
+            targetBatchQuantity
+          );
+          extractedFields[rule.field_name] = tierOutcome;
           continue;
         }
 
@@ -1140,6 +1476,7 @@ export class SourceCaptureWorker {
           target_url: request.target_url,
           source_profile: request.source_profile,
           execution_mode: request.execution_mode,
+          target_batch_quantity: request.target_batch_quantity,
           fixture_id: request.fixture_id,
           raw_html_payload: request.raw_html_payload,
           extraction_rules: request.extraction_rules,
