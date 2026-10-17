@@ -30,3 +30,5 @@ export * from './mcp/mcpSubstrate.js';
 export * from './agents/workers/sourceCaptureWorker.js';
 export * from './agents/workers/mediaChatterWorker.js';
 export * from './agents/workers/macroLateralWorker.js';
+export * from './mcp/contracts/govtStatutoryContract.js';
+export * from './agents/workers/govtStatutoryWorker.js';

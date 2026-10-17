@@ -6,7 +6,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 [![Vitest](https://img.shields.io/badge/Vitest-4.1.12-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.8-blue.svg)](https://www.postgresql.org/)
-[![Status](https://img.shields.io/badge/Gate_M6.4_Conformance-Passing_(225_Tests_/_26_Suites)-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Gate_M6.5_Conformance-Passing_(233_Tests_/_27_Suites)-brightgreen.svg)]()
 
 ---
 
@@ -23,6 +23,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 - **Gate M6.2 Micro-Agent #1 SourceCaptureWorker & 6-Layer DOM Sieve Gate**: Zero-trust extraction pipeline (`src/agents/workers/sourceCaptureWorker.ts`) invoking `mcp://source-capture/http_get_snapshot` strictly via `McpCapabilityBroker`, 6-Layer DOM Sanitization Sieve (`sanitizeHtmlDomSieve` byte cap, active tag purge, anti-cloaking/invisible element purge, attribute allowlisting with `data-min-qty`/`data-max-qty`, Unicode NFC/homograph normalization, and canonical digest), 4-Layer Prompt-Injection & Canary Defense (`InjectionCanaryGuard` zero-LLM BigInt subunit parsing, IndiaMART Deterministic Tiered MOQ Bracket Resolver `resolveTieredMoqPrice`, canary scanner, hardcoded `UNVERIFIED` / `ADVERTISED_LISTING` ceiling, and cryptographic spotlighting), and deterministic fixture replay & live HTTPS GET.
 - **Gate M6.3 Micro-Agent #2 MediaAndChatterWorker & Tiered Batch Optimization Gate**: Micro-Agent #2 (`src/agents/workers/mediaChatterWorker.ts`) routing read-only requests exclusively through `McpCapabilityBroker` under tool `mcp://media-corpus/fetch_transcript`, mandatory verbatim citation span verification (`verifyVerbatimCitationSpan` substring matching, 10–280 char bounds), empirical defect rate math (`observed_defect_rate_bps`), hardcoded 4D evidence ceiling (`UNVERIFIED` / `NOT_APPLICABLE`), prompt injection defense (`QUARANTINED_INJECTION`), trigger helper (`evaluateChatterSupplementTrigger`), and Tiered MOQ Batch Optimizer (`evaluateOptimalBatchSize` in `src/research/m5SiloAndGroupSimulator.ts`) with statutory subunit arithmetic under treasury budget and concentration caps.
 - **Gate M6.4 Micro-Agent #3 MacroAndLateralMarketWorker & Dynamic Regime Classifier Gate**: Micro-Agent #3 (`src/agents/workers/macroLateralWorker.ts`) routing read-only queries exclusively through `McpCapabilityBroker` under tool `mcp://macro-feeds/query_series`, zero-default series ingestion, pure BigInt FX conversion & physical scrap floor derivation (`derivePhysicalScrapFloor`), Formula-RAG dynamic growth driver evaluation via `FormulaRegistry` pure-BigInt rational AST arithmetic without hardcoding static function calls, Sustained Signal vs Fast Opportunity Regime Classifier (`OpportunityTemporalRegime`, Tactical Horizon Gate `E-MLW-EDGE-DECAYS-BEFORE-CASH-RECOVERY`), and empirical factor efficacy learning ledger (`FactorEfficacyLedger`).
+- **Gate M6.5 Micro-Agent #4 GovtAndStatutoryWorker & Formula Non-Mutation Firewall Gate**: Micro-Agent #4 (`src/agents/workers/govtStatutoryWorker.ts`) routing read-only queries exclusively through `McpCapabilityBroker` under tool `mcp://policy-bulletins/fetch_circular`, immutable statutory citation verification (`verifyStatutoryCitation` with CBIC, CBDT, DGFT, MINISTRY_OF_MSME), zero-default statutory series resolution (`E-GSW-STATUTORY-CIRCULAR-REQUIRED`), MSME Section 43B(h) credit ceiling cross-check (`evaluateMsmePaymentTermLimit`, 45d with agreement / 15d without), FormulaRegistry non-mutation firewall (`proposeStatutoryFormulaCandidate` failing closed with `E-ERR-GOV-002` on normative cards), prompt injection quarantine (`E-GSW-PROMPT-INJECTION-DETECTED`), and deterministic RFC 8785 JCS canonicalization.
 
 
 ---
@@ -233,5 +234,14 @@ npm run test:json
   - Tracks forecast vs realized cycles in `FactorEfficacyLedger`, promoting capex signal and refuting noisy social hype (`MCP-MLW-EMPIRICAL-EFFICACY-LEARNING-006`).
   - Verifies broker policy, prompt injection quarantine (`E-MLW-PROMPT-INJECTION-DETECTED`), status ceiling (`E-MLW-COMMERCIAL-STATUS-FORBIDDEN`), and Stage 3 MCW-01 citation span SHA-256 rejection (`MCP-MLW-BROKER-SECURITY-AND-INJECTION-007`).
   - Verifies bit-for-bit identical RFC 8785 JCS SHA-256 digests and deep immutability (`deepFreeze`) across repeated runs (`MCP-MLW-REPRODUCIBLE-JCS-008`).
+- **`suite27_m6_5_govt_statutory_worker.test.ts` (8 tests)**: Gate M6.5 Micro-Agent #4 GovtAndStatutoryWorker & Formula Non-Mutation Firewall:
+  - Extracts authoritative CBIC HSN 73269099 GST rate (1800 bps = 18%), CBIC Sec 52 TCS (100 bps = 1%), CBDT Sec 194-O TDS (100 bps = 1%), and DGFT Customs BCD (750 bps = 7.5%) with UNVERIFIED status ceiling (`MCP-GSW-CORE-HSN-AND-TCS-TDS-EXTRACTION-001`).
+  - Fails closed with `DATA_REQUIRED` (`E-GSW-STATUTORY-CIRCULAR-REQUIRED`) on unknown circular or missing HSN with zero fabricated default tax rates (`MCP-GSW-ZERO-DEFAULT-POLICY-002`).
+  - Rejects unauthorized statutory authorities, invalid ISO dates, and malformed document hashes with `E-GSW-INVALID-CITATION` (`MCP-GSW-CITATION-COMPLETENESS-AND-TAMPER-DEFENSE-003`).
+  - Proves overwriting normative tax formula `FIN-STATUTORY-TCS-TDS-003` fails closed with `E-ERR-GOV-002: CANNOT_OVERWRITE_NORMATIVE_FORMULA`, while candidate formulas register into sandboxed `CANDIDATE_UI_MODEL` tier (`MCP-GSW-NO-AUTONOMOUS-TAX-FORMULA-MUTATION-004`).
+  - Computes MSME Section 43B(h) credit ceilings (45d with written agreement, 15d without) and emits structured cross-check envelope (`MCP-GSW-MSME-SEC43BH-PAYMENT-TERM-CROSS-CHECK-005`).
+  - Quarantines adversarial circular injection payload via `InjectionCanaryGuard`, returning `QUARANTINED_INJECTION` / `E-GSW-PROMPT-INJECTION-DETECTED` (`MCP-GSW-PROMPT-INJECTION-QUARANTINE-006`).
+  - Enforces MCP Broker host allowlist, commercial status ceiling (`E-GSW-COMMERCIAL-STATUS-FORBIDDEN`), and task grant boundaries (`MCP-GSW-BROKER-SECURITY-AND-AUTHORITY-CEILING-007`).
+  - Guarantees bit-for-bit identical RFC 8785 JCS SHA-256 digests and deep immutability (`deepFreeze`) across repeated runs (`MCP-GSW-DETERMINISTIC-JCS-AND-IMMUTABILITY-008`).
 
 
