@@ -294,16 +294,16 @@ describe('SUITE-23: Gate M6.1 Capability-Aware MCP Substrate & Broker Acceptance
     });
 
     const maliciousTargets = [
-      'http://localhost:8080/secrets',
-      'http://127.0.0.1:5432/postgres',
-      'http://127.0.0.2:8000/internal',
-      'http://10.0.0.1/admin',
-      'http://172.16.0.1/config',
-      'http://172.31.255.255/intranet',
-      'http://192.168.1.1/router-login',
-      'http://169.254.169.254/latest/meta-data/iam/security-credentials/',
-      'http://0.0.0.0:3000/control',
-      'http://[::1]:8080/v1/keys',
+      'https://localhost:8080/secrets',
+      'https://127.0.0.1:5432/postgres',
+      'https://127.0.0.2:8000/internal',
+      'https://10.0.0.1/admin',
+      'https://172.16.0.1/config',
+      'https://172.31.255.255/intranet',
+      'https://192.168.1.1/router-login',
+      'https://169.254.169.254/latest/meta-data/iam/security-credentials/',
+      'https://0.0.0.0:3000/control',
+      'https://[::1]:8080/v1/keys',
       'https://malicious-external-exfiltration.com/leak'
     ];
 
@@ -537,7 +537,7 @@ describe('SUITE-23: Gate M6.1 Capability-Aware MCP Substrate & Broker Acceptance
     expect(resCorroborated).toHaveLength(1);
     expect(resCorroborated[0].status).toBe('CROSS_SOURCE_CORROBORATED');
     expect(resCorroborated[0].agreeing_value).toBe(1050000n);
-    expect(resCorroborated[0].sources).toEqual(['supplier:indiamart:howrah-01', 'supplier:amazon-in:seller-02']);
+    expect(resCorroborated[0].sources).toEqual(['supplier:amazon-in:seller-02', 'supplier:indiamart:howrah-01']);
 
     // 2. Multi-source conflict on raw material cost (₹25.0000 vs ₹32.5000)
     const conflictingClaims: SupplementaryClaim[] = [

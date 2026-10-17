@@ -118,13 +118,55 @@ export class McpServerAdapter {
   }
 
   public validateArguments(descriptor: McpToolDescriptor, args: Record<string, unknown>): void {
-    if (!args || typeof args !== 'object') {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) {
       throw new Error(`E-MCP-INVALID-ARGUMENTS: Tool arguments must be a non-null object.`);
     }
     const required = descriptor.inputSchema.required ?? [];
     for (const reqProp of required) {
       if (args[reqProp] === undefined || args[reqProp] === null) {
         throw new Error(`E-MCP-INVALID-ARGUMENTS: Missing mandatory required argument '${reqProp}'.`);
+      }
+    }
+
+    const properties = descriptor.inputSchema.properties ?? {};
+    for (const [propName, propDef] of Object.entries(properties)) {
+      const val = args[propName];
+      if (val === undefined || val === null) {
+        continue;
+      }
+      const expectedType = (propDef as { type?: string })?.type;
+      if (!expectedType) continue;
+
+      if (expectedType === 'array') {
+        if (!Array.isArray(val)) {
+          throw new Error(
+            `E-MCP-INVALID-ARGUMENTS: Property '${propName}' must be of type 'array', received '${typeof val}'.`
+          );
+        }
+      } else if (expectedType === 'object') {
+        if (typeof val !== 'object' || Array.isArray(val)) {
+          throw new Error(
+            `E-MCP-INVALID-ARGUMENTS: Property '${propName}' must be of type 'object', received '${Array.isArray(val) ? 'array' : typeof val}'.`
+          );
+        }
+      } else if (expectedType === 'number' || expectedType === 'integer') {
+        if (typeof val !== 'number' && typeof val !== 'bigint') {
+          throw new Error(
+            `E-MCP-INVALID-ARGUMENTS: Property '${propName}' must be of type 'number', received '${typeof val}'.`
+          );
+        }
+      } else if (expectedType === 'string') {
+        if (typeof val !== 'string') {
+          throw new Error(
+            `E-MCP-INVALID-ARGUMENTS: Property '${propName}' must be of type 'string', received '${typeof val}'.`
+          );
+        }
+      } else if (expectedType === 'boolean') {
+        if (typeof val !== 'boolean') {
+          throw new Error(
+            `E-MCP-INVALID-ARGUMENTS: Property '${propName}' must be of type 'boolean', received '${typeof val}'.`
+          );
+        }
       }
     }
   }
@@ -203,53 +245,87 @@ export class McpCapabilityBroker {
     try {
       if (urlOrHost.includes('://')) {
         const parsed = new URL(urlOrHost);
+        const protocol = parsed.protocol.toLowerCase();
+        if (protocol !== 'https:' && protocol !== 'mcp:') {
+          throw new Error(
+            `E-MCP-SCHEME-DENIED: Protocol scheme '${parsed.protocol}' is denied. Only https: and mcp: are permitted.`
+          );
+        }
         hostname = parsed.hostname.toLowerCase();
       } else {
         // Strip port or path if provided as host string
         hostname = urlOrHost.split('/')[0].split(':')[0].toLowerCase();
       }
-    } catch {
+    } catch (err: unknown) {
+      if (err instanceof Error && err.message.includes('E-MCP-SCHEME-DENIED')) {
+        throw err;
+      }
       throw new Error(`E-MCP-HOST-OR-SSRF-DENIED: Malformed URL or host '${urlOrHost}'.`);
     }
 
-    // SSRF Filter: Private, loopback, link-local, cloud metadata ranges
-    const isLoopback =
-      hostname === 'localhost' ||
-      hostname === '127.0.0.1' ||
-      hostname.startsWith('127.') ||
-      hostname === '0.0.0.0' ||
-      hostname === '::1' ||
-      hostname === '[::1]';
+    // Strip IPv6 enclosing brackets if present
+    const cleanHost = hostname.replace(/^\[|\]$/g, '').toLowerCase();
 
-    const isPrivateIp =
-      /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
-      /^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
-      /^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname);
+    // SSRF Filter: Private, loopback, link-local, cloud metadata ranges, IPv6 ULA/link-local/mapped
+    const isLoopback =
+      cleanHost === 'localhost' ||
+      cleanHost === '127.0.0.1' ||
+      cleanHost.startsWith('127.') ||
+      cleanHost === '0.0.0.0' ||
+      cleanHost === '::1' ||
+      cleanHost === '::';
+
+    const isPrivateIpv4 =
+      /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(cleanHost) ||
+      /^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(cleanHost) ||
+      /^192\.168\.\d{1,3}\.\d{1,3}$/.test(cleanHost);
 
     const isLinkLocalOrMetadata =
-      hostname === '169.254.169.254' ||
-      hostname.startsWith('169.254.') ||
-      hostname.includes('metadata.google.internal') ||
-      hostname.includes('169.254');
+      cleanHost === '169.254.169.254' ||
+      cleanHost.startsWith('169.254.') ||
+      cleanHost.includes('metadata.google.internal') ||
+      cleanHost.includes('169.254');
 
-    if (isLoopback || isPrivateIp || isLinkLocalOrMetadata) {
+    const isIpv6PrivateOrMapped =
+      cleanHost.includes('::ffff:') ||
+      /^f[cd][0-9a-f]{0,2}:/i.test(cleanHost) ||
+      /^fe80:/i.test(cleanHost);
+
+    if (isLoopback || isPrivateIpv4 || isLinkLocalOrMetadata || isIpv6PrivateOrMapped) {
       throw new Error(
-        `E-MCP-HOST-OR-SSRF-DENIED: Target host '${hostname}' is a private, loopback, or metadata address. Network egress blocked.`
+        `E-MCP-HOST-OR-SSRF-DENIED: Target host '${cleanHost}' is a private, loopback, or metadata address. Network egress blocked.`
       );
+    }
+
+    // Raw IP literal check: IPv4 or IPv6 literals must be explicitly listed in allowed_hosts
+    const isIpv4Literal = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(cleanHost);
+    const isIpv6Literal = cleanHost.includes(':');
+    if (isIpv4Literal || isIpv6Literal) {
+      const explicitIpAllowed = grant.allowed_hosts.some((allowed) => {
+        const cleanAllowed = allowed.toLowerCase().replace(/^\[|\]$/g, '');
+        return cleanAllowed === cleanHost;
+      });
+      if (!explicitIpAllowed) {
+        throw new Error(
+          `E-MCP-HOST-OR-SSRF-DENIED: Raw IP literal '${cleanHost}' is not explicitly permitted in allowed_hosts.`
+        );
+      }
     }
 
     // Allowed hosts check
     const matchesAllowed = grant.allowed_hosts.some((allowed) => {
-      if (allowed.startsWith('*.')) {
-        const root = allowed.slice(2);
-        return hostname === root || hostname.endsWith('.' + root);
+      const cleanAllowed = allowed.toLowerCase().replace(/^\[|\]$/g, '');
+      if (cleanAllowed === '*') return true;
+      if (cleanAllowed.startsWith('*.')) {
+        const root = cleanAllowed.slice(2);
+        return cleanHost === root || cleanHost.endsWith('.' + root);
       }
-      return hostname === allowed;
+      return cleanHost === cleanAllowed;
     });
 
     if (!matchesAllowed) {
       throw new Error(
-        `E-MCP-HOST-OR-SSRF-DENIED: Target host '${hostname}' is not in allowed_hosts [${grant.allowed_hosts.join(', ')}].`
+        `E-MCP-HOST-OR-SSRF-DENIED: Target host '${cleanHost}' is not in allowed_hosts [${grant.allowed_hosts.join(', ')}].`
       );
     }
   }
@@ -300,7 +376,13 @@ export class McpCapabilityBroker {
       }
 
       // 5. Redirect check
-      if (args.allow_redirects === true || (args.max_redirects !== undefined && Number(args.max_redirects) > 0)) {
+      if (
+        args.allow_redirects === true ||
+        (args.max_redirects !== undefined && Number(args.max_redirects) > 0) ||
+        args.redirect === 'follow' ||
+        args.follow_redirects === true ||
+        args.redirect_status === 302
+      ) {
         if (!grant.allow_redirects) {
           throw new Error(
             `E-MCP-REDIRECT-DENIED: CapabilityGrant '${grant.grant_id}' strictly blocks cross-host HTTP redirects.`
@@ -309,7 +391,7 @@ export class McpCapabilityBroker {
       }
 
       // 6. SSRF & Host validation on any target URL/host argument
-      const targetUrlOrHost = (args.url || args.host || args.target || args.endpoint) as string | undefined;
+      const targetUrlOrHost = (args.url || args.target_url || args.host || args.target || args.endpoint) as string | undefined;
       if (targetUrlOrHost) {
         McpCapabilityBroker.validateHostAndSsrf(targetUrlOrHost, grant);
       }
@@ -326,9 +408,10 @@ export class McpCapabilityBroker {
 
       // 8. Execute with latency quota (wall_clock_ms)
       const startMs = Date.now();
+      let timerHandle: ReturnType<typeof setTimeout> | undefined;
 
       const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => {
+        timerHandle = setTimeout(() => {
           reject(
             new Error(
               `E-MCP-LATENCY-TIMEOUT: Execution latency exceeded grant max_latency_ms (${grant.max_latency_ms}ms).`
@@ -338,7 +421,14 @@ export class McpCapabilityBroker {
       });
 
       const execPromise = toolDef.handler(args);
-      const result = await Promise.race([execPromise, timeoutPromise]);
+      let result: McpToolCallResponse['result'];
+      try {
+        result = await Promise.race([execPromise, timeoutPromise]);
+      } finally {
+        if (timerHandle) {
+          clearTimeout(timerHandle);
+        }
+      }
       const durationMs = Date.now() - startMs;
 
       // Check latency post-run
@@ -520,7 +610,7 @@ export interface SupplementaryJoinResult {
   readonly metric_name: string;
   readonly status: SupplementaryJoinStatus;
   readonly agreeing_value?: string | number | bigint;
-  readonly conflicting_values?: Array<{ source_id: string; value: string | number | bigint }>;
+  readonly conflicting_values?: readonly (Readonly<{ source_id: string; value: string | number | bigint }>)[];
   readonly sources: readonly string[];
 }
 
@@ -541,20 +631,23 @@ export function joinSupplementaryClaims(
     groups.get(key)!.push(c);
   }
 
+  const sortedKeys = Array.from(groups.keys()).sort();
   const results: SupplementaryJoinResult[] = [];
 
-  for (const [key, group] of groups.entries()) {
+  for (const key of sortedKeys) {
+    const group = groups.get(key)!;
     const [entity_id, metric_name] = key.split('::');
-    const sources = Array.from(new Set(group.map((g) => g.source_id)));
+    const sources = Array.from(new Set(group.map((g) => g.source_id))).sort();
 
     if (group.length === 1 || sources.length === 1) {
-      results.push({
+      const res: SupplementaryJoinResult = {
         entity_id,
         metric_name,
         status: 'SINGLE_SOURCE',
         agreeing_value: group[0].value,
-        sources
-      });
+        sources: Object.freeze(sources)
+      };
+      results.push(Object.freeze(res));
       continue;
     }
 
@@ -564,24 +657,35 @@ export function joinSupplementaryClaims(
     const allAgree = canonicalValues.every((v) => v === firstVal);
 
     if (allAgree) {
-      results.push({
+      const res: SupplementaryJoinResult = {
         entity_id,
         metric_name,
         status: 'CROSS_SOURCE_CORROBORATED',
         agreeing_value: group[0].value,
-        sources
-      });
+        sources: Object.freeze(sources)
+      };
+      results.push(Object.freeze(res));
     } else {
       // Disagreement: strictly preserve conflict without averaging!
-      results.push({
+      const conflictingValues = group
+        .map((g) => ({ source_id: g.source_id, value: g.value }))
+        .sort((a, b) => {
+          const cmp = a.source_id.localeCompare(b.source_id);
+          if (cmp !== 0) return cmp;
+          return a.value.toString().localeCompare(b.value.toString());
+        })
+        .map((cv) => Object.freeze(cv));
+
+      const res: SupplementaryJoinResult = {
         entity_id,
         metric_name,
         status: 'CONFLICT',
-        conflicting_values: group.map((g) => ({ source_id: g.source_id, value: g.value })),
-        sources
-      });
+        conflicting_values: Object.freeze(conflictingValues),
+        sources: Object.freeze(sources)
+      };
+      results.push(Object.freeze(res));
     }
   }
 
-  return results;
+  return Object.freeze(results) as unknown as SupplementaryJoinResult[];
 }

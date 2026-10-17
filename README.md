@@ -6,7 +6,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 [![Vitest](https://img.shields.io/badge/Vitest-4.1.12-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.8-blue.svg)](https://www.postgresql.org/)
-[![Status](https://img.shields.io/badge/Gate_M6.1_Conformance-Passing_(200_Tests_/_23_Suites)-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Gate_M6.2_Conformance-Passing_(208_Tests_/_24_Suites)-brightgreen.svg)]()
 
 ---
 
@@ -20,6 +20,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 - **Gate M5 Signal Bus, 4D Evidence & Group Strategy Simulator Gate**: 6-channel continuous signal bus (`NEWS_TRADE_PRESS`, `YOUTUBE_VIDEO_TRANSCRIPT`, `SOCIAL_FORUM_CHATTER`, `MACROECONOMIC_INDICATOR`, `LATERAL_FINANCIAL_MARKET`, `GOVERNMENT_SCHEME_POLICY`), 4 orthogonal evidence dimensions with fail-closed promotion firewall, 9-stage Deep Research DAG contract, 6-status return vocabulary, and Silo vs. Simultaneous Group Strategy Simulator across the SS304 DIN 3017 matrix (4 sizes x 2 packs) under ₹50,000 treasury budget, correlated LME steel shocks, concentration limits, Conviction vs Allocation separation firewall, and T-Bill sweep.
 - **Gate M6 Multi-Agent Research Swarm & Bitemporal Replay Gate**: Governed multi-agent research swarm with strict operational boundary firewall (`AgentSecurityFirewall` prohibiting financial calculations, ledger writes, and unvetted URLs), `TinyFishScopedBrowserAgent` executing scoped read-only web extractions, 4 specialist sub-agents (`MediaAndChatterSubAgent`, `MacroAndLateralMarketSubAgent`, `GovtSchemeAndTaxSubAgent`, `RedTeamReviewerSubAgent`), 9-stage DAG coordinator (`ResearchSchedulerAndManager`) with graceful degraded-mode partial-failure handling, and `BitemporalRestatementEngine` providing immutable $t_0$ decision state reconstruction and non-destructive retrospective restatements under RFC 8785 JCS determinism.
 - **Gate M6.1 Capability-Aware MCP Substrate & Broker Gate**: Standardized JSON-RPC 2.0 / MCP tool schema envelopes (`McpToolDescriptor`, `McpToolCallRequest`, `McpToolCallResponse`), `McpServerAdapter` with forbidden capability firewall (shell, SQL, ledger mutation, promotion, order routing, secrets), task-scoped immutable `CapabilityGrant` (`Object.freeze`), `McpCapabilityBroker` enforcing strict SSRF and private/loopback/metadata IP blocking (`127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.169.254`, `localhost`, `0.0.0.0`, `::1`), GET-only methods, redirect blocking, 4-quota enforcement (`requests_made`, `wall_clock_ms`, `payload_bytes`, `tokens_used`), `McpRunLedger` with RFC 8785 JCS hash-chained execution events, conflict-preserving join (`joinSupplementaryClaims`), bitemporal append-only immutability proof with duplicate overwrite prevention (`E-ERR-BITEMPORAL-OVERWRITE`), and genuine subagent wiring.
+- **Gate M6.2 Micro-Agent #1 SourceCaptureWorker & 6-Layer DOM Sieve Gate**: Zero-trust extraction pipeline (`src/agents/workers/sourceCaptureWorker.ts`) invoking `mcp://source-capture/http_get_snapshot` strictly via `McpCapabilityBroker`, 6-Layer DOM Sanitization Sieve (`sanitizeHtmlDomSieve` byte cap, active tag purge, anti-cloaking/invisible element purge, attribute allowlisting, Unicode NFC/homograph normalization, and canonical digest), 4-Layer Prompt-Injection & Canary Defense (`InjectionCanaryGuard` zero-LLM BigInt subunit parsing, canary scanner, hardcoded `UNVERIFIED` / `ADVERTISED_LISTING` ceiling, and cryptographic spotlighting), and deterministic fixture replay & live HTTPS GET.
 
 
 ---
@@ -84,17 +85,17 @@ npm run typecheck
 # Standard run (skips live PostgreSQL tests cleanly if DATABASE_URL is unset)
 npm test
 
-# Full run with live PostgreSQL 16.8 (runs all 200 tests across 23 suites)
+# Full run with live PostgreSQL 16.8 (runs all 208 tests across 24 suites)
 $env:DATABASE_URL = "postgresql://postgres@localhost:5432/market_hft_test"
 npm test
 ```
-*Expected output: 23 test files passed, 200 tests passed (Exit code 0).*
+*Expected output: 24 test files passed, 208 tests passed (Exit code 0).*
 
 ### Step 4: Generate Machine-Readable Audit Report
 ```bash
 npm run test:json
 ```
-*Generates `test-results.json` recording 23 passed test files and 200 passed tests.*
+*Generates `test-results.json` recording 24 passed test files and 208 passed tests.*
 
 
 ---
@@ -202,4 +203,13 @@ npm run test:json
   - Conflict-preserving supplementary claims join without averaging, voting, or guessing (`MCP-SUPPLEMENTARY-CONFLICT-JOIN-006`).
   - Bitemporal decision immutability proof, duplicate overwrite rejection (`E-ERR-BITEMPORAL-OVERWRITE`), and distinct $t_d$ / $t_k$ timestamps (`MCP-BITEMPORAL-IMMUTABILITY-PROOF-007`).
   - Full research scheduler worker invocation verifying genuine sub-agent execution, red-team auditing, and RFC 8785 JCS telemetry (`MCP-SCHEDULER-FULL-WORKER-INVOCATION-008`).
+- **`suite24_m6_2_source_capture_worker.test.ts` (8 tests)**: Gate M6.2 Micro-Agent #1 SourceCaptureWorker, 6-Layer DOM Sanitization Sieve, and Prompt-Injection & Canary Defense:
+  - Clean extraction on Amazon India (`1050000`) and Howrah Supplier (`250000`) with distinct raw vs sanitized DOM hashes and status ceiling (`MCP-SCW-CLEAN-EXTRACT-001`).
+  - Missing freight or non-numeric string returns `DATA_REQUIRED` with `E-SCW-MANDATORY-COST-MISSING` and never substitutes 0 or 0n (`MCP-SCW-MISSING-FIELD-NO-ZERO-002`).
+  - Layer 3 strips cloaked hidden nodes (`display:none`, `hidden`, `opacity:0`, off-screen `left:-9999px`) and HTML comments, extracting exact visible ₹38.21 (`382100`) (`MCP-SCW-HIDDEN-DOM-CLOAKING-003`).
+  - Canary scanner triggers `E-SCW-PROMPT-INJECTION-DETECTED` on adversarial overrides and domain spoofing (`MCP-SCW-PROMPT-INJECTION-CANARY-004`).
+  - Broker blocks `file://`, `http://`, `POST`, unapproved hosts, and HTTP redirects (`MCP-SCW-HOST-METHOD-REDIRECT-SCHEME-005`).
+  - Broker blocks `127.0.0.1`, IPv4-mapped IPv6, IPv6 ULA, and payloads $> 524,288$ bytes (`MCP-SCW-SSRF-IPV6-AND-OVERSIZE-006`).
+  - Layer 5 strips zero-width chars (`₹3\u200B8.21` -> `382100`) and rejects fullwidth/Cyrillic homographs (`E-SCW-HOMOGRAPH-DETECTED`) (`MCP-SCW-UNICODE-HOMOGRAPH-007`).
+  - Bit-for-bit reproducible JCS response and SHA-256 digest with monotonic hash-chained `McpRunLedger` (`MCP-SCW-REPRODUCIBLE-JCS-008`).
 
