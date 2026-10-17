@@ -28,3 +28,4 @@ export * from './research/m5SiloAndGroupSimulator.js';
 export * from './agents/m6AgentFramework.js';
 export * from './mcp/mcpSubstrate.js';
 export * from './agents/workers/sourceCaptureWorker.js';
+export * from './agents/workers/mediaChatterWorker.js';

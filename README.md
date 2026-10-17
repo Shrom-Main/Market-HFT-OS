@@ -6,7 +6,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 [![Vitest](https://img.shields.io/badge/Vitest-4.1.12-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.8-blue.svg)](https://www.postgresql.org/)
-[![Status](https://img.shields.io/badge/Gate_M6.2_Conformance-Passing_(209_Tests_/_24_Suites)-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Gate_M6.3_Conformance-Passing_(217_Tests_/_25_Suites)-brightgreen.svg)]()
 
 ---
 
@@ -21,6 +21,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 - **Gate M6 Multi-Agent Research Swarm & Bitemporal Replay Gate**: Governed multi-agent research swarm with strict operational boundary firewall (`AgentSecurityFirewall` prohibiting financial calculations, ledger writes, and unvetted URLs), `TinyFishScopedBrowserAgent` executing scoped read-only web extractions, 4 specialist sub-agents (`MediaAndChatterSubAgent`, `MacroAndLateralMarketSubAgent`, `GovtSchemeAndTaxSubAgent`, `RedTeamReviewerSubAgent`), 9-stage DAG coordinator (`ResearchSchedulerAndManager`) with graceful degraded-mode partial-failure handling, and `BitemporalRestatementEngine` providing immutable $t_0$ decision state reconstruction and non-destructive retrospective restatements under RFC 8785 JCS determinism.
 - **Gate M6.1 Capability-Aware MCP Substrate & Broker Gate**: Standardized JSON-RPC 2.0 / MCP tool schema envelopes (`McpToolDescriptor`, `McpToolCallRequest`, `McpToolCallResponse`), `McpServerAdapter` with forbidden capability firewall (shell, SQL, ledger mutation, promotion, order routing, secrets), task-scoped immutable `CapabilityGrant` (`Object.freeze`), `McpCapabilityBroker` enforcing strict SSRF and private/loopback/metadata IP blocking (`127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.169.254`, `localhost`, `0.0.0.0`, `::1`), GET-only methods, redirect blocking, 4-quota enforcement (`requests_made`, `wall_clock_ms`, `payload_bytes`, `tokens_used`), `McpRunLedger` with RFC 8785 JCS hash-chained execution events, conflict-preserving join (`joinSupplementaryClaims`), bitemporal append-only immutability proof with duplicate overwrite prevention (`E-ERR-BITEMPORAL-OVERWRITE`), and genuine subagent wiring.
 - **Gate M6.2 Micro-Agent #1 SourceCaptureWorker & 6-Layer DOM Sieve Gate**: Zero-trust extraction pipeline (`src/agents/workers/sourceCaptureWorker.ts`) invoking `mcp://source-capture/http_get_snapshot` strictly via `McpCapabilityBroker`, 6-Layer DOM Sanitization Sieve (`sanitizeHtmlDomSieve` byte cap, active tag purge, anti-cloaking/invisible element purge, attribute allowlisting with `data-min-qty`/`data-max-qty`, Unicode NFC/homograph normalization, and canonical digest), 4-Layer Prompt-Injection & Canary Defense (`InjectionCanaryGuard` zero-LLM BigInt subunit parsing, IndiaMART Deterministic Tiered MOQ Bracket Resolver `resolveTieredMoqPrice`, canary scanner, hardcoded `UNVERIFIED` / `ADVERTISED_LISTING` ceiling, and cryptographic spotlighting), and deterministic fixture replay & live HTTPS GET.
+- **Gate M6.3 Micro-Agent #2 MediaAndChatterWorker & Tiered Batch Optimization Gate**: Micro-Agent #2 (`src/agents/workers/mediaChatterWorker.ts`) routing read-only requests exclusively through `McpCapabilityBroker` under tool `mcp://media-corpus/fetch_transcript`, mandatory verbatim citation span verification (`verifyVerbatimCitationSpan` substring matching, 10–280 char bounds), empirical defect rate math (`observed_defect_rate_bps`), hardcoded 4D evidence ceiling (`UNVERIFIED` / `NOT_APPLICABLE`), prompt injection defense (`QUARANTINED_INJECTION`), trigger helper (`evaluateChatterSupplementTrigger`), and Tiered MOQ Batch Optimizer (`evaluateOptimalBatchSize` in `src/research/m5SiloAndGroupSimulator.ts`) with statutory subunit arithmetic under treasury budget and concentration caps.
 
 
 ---
@@ -89,13 +90,13 @@ npm test
 $env:DATABASE_URL = "postgresql://postgres@localhost:5432/market_hft_test"
 npm test
 ```
-*Expected output: 24 test files passed, 208 tests passed (Exit code 0).*
+*Expected output: 25 test files passed, 217 tests passed (Exit code 0).*
 
 ### Step 4: Generate Machine-Readable Audit Report
 ```bash
 npm run test:json
 ```
-*Generates `test-results.json` recording 24 passed test files and 208 passed tests.*
+*Generates `test-results.json` recording 25 passed test files and 217 passed tests.*
 
 
 ---
@@ -213,4 +214,13 @@ npm run test:json
   - Layer 5 strips zero-width chars (`₹3\u200B8.21` -> `382100`) and rejects fullwidth/Cyrillic homographs (`E-SCW-HOMOGRAPH-DETECTED`) (`MCP-SCW-UNICODE-HOMOGRAPH-007`).
   - IndiaMART quantity-slab bracket resolver selects exact price bracket for target batch quantity, fails closed on below-MOQ (`E-SCW-BELOW-MINIMUM-TIER-MOQ`), and rejects overlapping slabs (`E-SCW-AMBIGUOUS-TIER-BRACKET`) (`MCP-SCW-INDIAMART-TIERED-MOQ-008`).
   - Bit-for-bit reproducible JCS response and SHA-256 digest with monotonic hash-chained `McpRunLedger` (`MCP-SCW-REPRODUCIBLE-JCS-009`).
+- **`suite25_m6_3_media_chatter_worker.test.ts` (8 tests)**: Gate M6.3 Micro-Agent #2 MediaAndChatterWorker, Verbatim Citation Span Verification, and Tiered MOQ Batch Optimization:
+  - Extracts metallurgy defect (`METALLURGY_GRADE_DEFECT` — SS202 rust/magnet failure) and torque failure claims with exact verbatim citation spans, media timestamps, and empirical defect rates (`MCP-MCW-VERBATIM-CITATION-EXTRACT-001`).
+  - Fails closed on uncited claims (`E-MCW-UNCITED-CLAIM-REJECTED`) and character offset mismatches (`E-MCW-INVALID-CITATION-SPAN`) (`MCP-MCW-UNCITED-AND-OFFSET-MISMATCH-REJECT-002`).
+  - Injects adversarial instructions into transcript stream, triggering `QUARANTINED_INJECTION` / `E-MCW-PROMPT-INJECTION-DETECTED` with zero claims emitted (`MCP-MCW-PROMPT-INJECTION-QUARANTINE-003`).
+  - Enforces hardcoded `UNVERIFIED` / `NOT_APPLICABLE` ceiling and throws `E-MCW-COMMERCIAL-STATUS-FORBIDDEN` on commercial elevation (`MCP-MCW-COMMERCIAL-STATUS-AND-AUTHORITY-CEILING-004`).
+  - Enforces MCP Broker security policy: blocks unapproved hosts, POST method, payloads > 256 KB (`E-MCP-PAYLOAD-TOO-LARGE`), and >3 requests per task quota (`MCP-MCW-BROKER-POLICY-AND-QUOTA-005`).
+  - Evaluates chatter supplement trigger: dispatches `COMPLEMENTARY_GAP_FILL` when return data is absent and `SUPPLEMENTARY_ANOMALY_CHECK` when supplier quote is within 15% of physical scrap floor (`MCP-MCW-COMPLEMENTARY-VS-SUPPLEMENTARY-TRIGGER-006`).
+  - Optimizes batch quantities across IndiaMART price brackets under treasury budget and concentration constraints, selecting 500 packs @ 399.41% RoWC under ₹50k budget, and 250 packs under ₹15k budget with `E-M5-BUDGET-EXHAUSTED` on 500+ (`MCP-SCW-M5-TIERED-BATCH-OPTIMIZATION-007`).
+  - Verifies bit-for-bit identical RFC 8785 JCS SHA-256 digests and deep immutability (`deepFreeze`) across repeated runs (`MCP-MCW-REPRODUCIBLE-JCS-008`).
 

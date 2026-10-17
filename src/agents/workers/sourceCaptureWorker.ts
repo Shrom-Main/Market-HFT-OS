@@ -35,6 +35,7 @@ import {
   CapabilityGrant,
   createCapabilityGrant
 } from '../../mcp/mcpSubstrate.js';
+import { deepFreeze } from '../../verification/gate.js';
 
 // ============================================================================
 // 1. TOOL POLICY & CONTRACT TYPES
@@ -195,6 +196,11 @@ const ALLOWED_ATTRIBUTES = new Set([
   'data-moq',
   'data-min-qty',
   'data-max-qty',
+  'data-pack',
+  'data-freight',
+  'data-material',
+  'data-size',
+  'data-hsn',
   'itemprop',
   'href'
 ]);
@@ -1499,6 +1505,6 @@ export class SourceCaptureWorker {
     }
 
     const parsed: SourceCaptureMcpResponse = JSON.parse(contentItem.text);
-    return Object.freeze(parsed);
+    return deepFreeze(parsed);
   }
 }

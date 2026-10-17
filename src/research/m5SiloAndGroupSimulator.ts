@@ -30,6 +30,7 @@ import {
   resolveReturnStatus
 } from './m5SignalAndEvidenceEngine.js';
 import { OperationalEconomicsParameters } from './m4VerticalSlice.js';
+import { PriceBracketTier } from '../agents/workers/sourceCaptureWorker.js';
 
 export type SS304Diameter = '16-25mm' | '20-32mm' | '25-40mm' | '32-50mm';
 export type SS304PackSize = 10 | 20;
@@ -623,4 +624,185 @@ export class M5SiloAndGroupSimulator {
       telemetry_digest_sha256: telemetryDigest
     };
   }
+
+  /**
+   * Evaluates optimal batch size across tiered price brackets under treasury and concentration constraints.
+   */
+  public static evaluateOptimalBatchSize(
+    observedTiers: readonly PriceBracketTier[],
+    targetBatchQty: number,
+    inboundFreightAndPackagingSubunits: bigint,
+    treasuryBudgetSubunits: bigint,
+    maxConcentrationBps: bigint,
+    ops: OperationalEconomicsParameters,
+    grossSellingPriceSubunits: bigint,
+    totalMarketplaceFeesSubunits: bigint
+  ): BatchOptimizationResult {
+    return evaluateOptimalBatchSize(
+      observedTiers,
+      targetBatchQty,
+      inboundFreightAndPackagingSubunits,
+      treasuryBudgetSubunits,
+      maxConcentrationBps,
+      ops,
+      grossSellingPriceSubunits,
+      totalMarketplaceFeesSubunits
+    );
+  }
 }
+
+// ============================================================================
+// 4. TIERED MOQ BATCH OPTIMIZER
+// ============================================================================
+
+export interface BatchOptimizationTierEvaluation {
+  readonly tier: PriceBracketTier;
+  readonly batch_quantity: number;
+  readonly exw_price_subunits: bigint;
+  readonly unit_landed_cost_subunits: bigint;
+  readonly total_outlay_subunits: bigint;
+  readonly unit_net_contribution_subunits: bigint;
+  readonly cash_margin_bps: number;
+  readonly annualized_rowc_bps: number;
+  readonly is_feasible: boolean;
+  readonly failure_reason?: string;
+}
+
+export interface BatchOptimizationResult {
+  readonly selected_tier: PriceBracketTier;
+  readonly optimal_batch_quantity: number;
+  readonly unit_landed_cost_subunits: bigint;
+  readonly total_outlay_subunits: bigint;
+  readonly annualized_rowc_bps: number;
+  readonly evaluated_tiers: readonly BatchOptimizationTierEvaluation[];
+}
+
+export function evaluateOptimalBatchSize(
+  observedTiers: readonly PriceBracketTier[],
+  targetBatchQty: number,
+  inboundFreightAndPackagingSubunits: bigint,
+  treasuryBudgetSubunits: bigint,
+  maxConcentrationBps: bigint,
+  ops: OperationalEconomicsParameters,
+  grossSellingPriceSubunits: bigint,
+  totalMarketplaceFeesSubunits: bigint
+): BatchOptimizationResult {
+  if (!observedTiers || observedTiers.length === 0) {
+    throw new Error('E-M5-NO-FEASIBLE-BRACKET: observedTiers array is empty.');
+  }
+
+  // Statutory 18% GST on marketplace fees
+  const marketplaceFeeGst = (totalMarketplaceFeesSubunits * ops.gst_rate_bps) / 10000n;
+
+  // Ex-GST base for TCS and TDS (Sec 52 CGST & Sec 194-O Income Tax)
+  const exGstRevenue = (grossSellingPriceSubunits * 10000n) / (10000n + ops.gst_rate_bps);
+  const tcs = (exGstRevenue * ops.tcs_rate_bps) / 10000n;
+  const tds = (exGstRevenue * ops.tds_rate_bps) / 10000n;
+
+  // Net disbursement from marketplace
+  const netDisbursement = grossSellingPriceSubunits - totalMarketplaceFeesSubunits - marketplaceFeeGst - tcs - tds;
+
+  // Output GST
+  const outputGst = grossSellingPriceSubunits - exGstRevenue;
+  const feeGstItc = (marketplaceFeeGst * ops.itc_eligible_fraction_bps) / 10000n;
+
+  // CCC days
+  const cccDays = Math.max(
+    1,
+    ops.procurement_lead_time_days + ops.warehouse_dwell_days + ops.marketplace_settlement_delay_days
+  );
+
+  const maxAllowedConcentrationSubunits = (treasuryBudgetSubunits * maxConcentrationBps) / 10000n;
+
+  const evaluatedTiers: BatchOptimizationTierEvaluation[] = [];
+
+  for (const tier of observedTiers) {
+    const exwPrice = BigInt(tier.unit_price_subunits);
+    const unitLandedCost = exwPrice + inboundFreightAndPackagingSubunits;
+
+    // Determine batch quantity for this tier
+    const batchQty =
+      targetBatchQty >= tier.min_qty && (tier.max_qty === null || targetBatchQty <= tier.max_qty)
+        ? targetBatchQty
+        : tier.min_qty;
+
+    const totalOutlay = BigInt(batchQty) * unitLandedCost;
+
+    // Statutory GST settlement
+    const procurementItc = unitLandedCost - (unitLandedCost * 10000n) / (10000n + ops.gst_rate_bps);
+    const totalItc = procurementItc + feeGstItc;
+    const netGstCashLiability = outputGst > totalItc ? outputGst - totalItc : 0n;
+    const netStatutorySettlement = netGstCashLiability > tcs ? netGstCashLiability - tcs : 0n;
+
+    // Customer return drag (forward FBA + reverse logistics + unit landed cost)
+    const fbaFee = 140000n;
+    const unitReturnAttritionCost = fbaFee + ops.reverse_logistics_fee_subunits + unitLandedCost;
+    const returnDrag = (unitReturnAttritionCost * ops.customer_return_rate_bps) / 10000n;
+
+    // Unit net contribution
+    const unitNetContribution = netDisbursement - unitLandedCost - netStatutorySettlement - returnDrag;
+
+    // Margin & RoWC
+    const cashMarginBps =
+      unitLandedCost > 0n
+        ? Number((unitNetContribution * 10000n) / unitLandedCost)
+        : -10000;
+
+    const annualizedRowcBps = cccDays > 0 ? Math.floor((cashMarginBps * 365) / cccDays) : 0;
+
+    // Feasibility checks:
+    // 1. Budget check: totalOutlay must not exceed treasuryBudgetSubunits
+    // 2. Concentration cap check: totalOutlay must not exceed maxAllowedConcentrationSubunits
+    let isFeasible = true;
+    let failureReason: string | undefined;
+
+    if (totalOutlay > treasuryBudgetSubunits) {
+      isFeasible = false;
+      failureReason = 'E-M5-BUDGET-EXHAUSTED';
+    } else if (totalOutlay > maxAllowedConcentrationSubunits) {
+      isFeasible = false;
+      failureReason = 'E-M5-CONCENTRATION-CAP-EXCEEDED';
+    }
+
+    evaluatedTiers.push({
+      tier,
+      batch_quantity: batchQty,
+      exw_price_subunits: exwPrice,
+      unit_landed_cost_subunits: unitLandedCost,
+      total_outlay_subunits: totalOutlay,
+      unit_net_contribution_subunits: unitNetContribution,
+      cash_margin_bps: cashMarginBps,
+      annualized_rowc_bps: annualizedRowcBps,
+      is_feasible: isFeasible,
+      failure_reason: failureReason
+    });
+  }
+
+  // Select feasible tier that maximizes annualized_rowc_bps
+  const feasibleTiers = evaluatedTiers.filter((e) => e.is_feasible);
+  if (feasibleTiers.length === 0) {
+    throw new Error(
+      'E-M5-NO-FEASIBLE-BRACKET: No tiered pricing bracket meets treasury budget and concentration constraints.'
+    );
+  }
+
+  // Sort descending by annualized_rowc_bps, then descending by batch_quantity
+  feasibleTiers.sort((a, b) => {
+    if (b.annualized_rowc_bps !== a.annualized_rowc_bps) {
+      return b.annualized_rowc_bps - a.annualized_rowc_bps;
+    }
+    return b.batch_quantity - a.batch_quantity;
+  });
+
+  const best = feasibleTiers[0];
+
+  return {
+    selected_tier: best.tier,
+    optimal_batch_quantity: best.batch_quantity,
+    unit_landed_cost_subunits: best.unit_landed_cost_subunits,
+    total_outlay_subunits: best.total_outlay_subunits,
+    annualized_rowc_bps: best.annualized_rowc_bps,
+    evaluated_tiers: Object.freeze(evaluatedTiers)
+  };
+}
+
