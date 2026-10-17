@@ -48,6 +48,7 @@ import {
 } from '../research/m5SiloAndGroupSimulator.js';
 import { FormulaRegistry } from '../research/formulaRegistry.js';
 import { GroqFormulaAdvisor } from '../research/llmFormulaAdvisor.js';
+import { deepFreeze } from '../verification/gate.js';
 
 export function sanitizeForJcs(val: any): any {
   if (val === null || val === undefined) return val;
@@ -62,6 +63,24 @@ export function sanitizeForJcs(val: any): any {
   }
   return val;
 }
+
+export function deepClone<T>(obj: T): T {
+  if (obj === null || typeof obj !== 'object') {
+    return obj;
+  }
+  if (typeof obj === 'bigint') {
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(deepClone) as unknown as T;
+  }
+  const copy: Record<string, any> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    copy[k] = deepClone(v);
+  }
+  return copy as T;
+}
+
 
 export type AgentPermissionScope =
   | 'READ_ONLY_DISCOVERY'
@@ -483,6 +502,16 @@ export interface ResearchTaskTick {
   media_transcripts?: Array<{ channel: 'YOUTUBE_VIDEO_TRANSCRIPT' | 'SOCIAL_FORUM_CHATTER'; source_id: string; text: string }>;
   lateral_market_quotes?: Array<{ symbol: string; change_bps: number; source_id: string }>;
   force_degraded_worker_timeout?: boolean;
+  govt_notifications?: Array<{
+    notification_id: string;
+    statutory_act: string;
+    tariff_bps: number;
+  }>;
+  candidate_offers?: Array<{
+    candidate_id: string;
+    claimed_price_subunits: bigint;
+    raw_material_scrap_floor_subunits: bigint;
+  }>;
 }
 
 export interface ResearchManagerRunRecord {
@@ -494,6 +523,11 @@ export interface ResearchManagerRunRecord {
   degraded_mode_triggered: boolean;
   signals_collected: NormalizedSignal[];
   extracted_listings: TinyFishExtractionResult[];
+  red_team_audits?: Array<{
+    candidate_id: string;
+    approved: boolean;
+    rejection_reason?: string;
+  }>;
   group_simulation_result?: GroupSimulationResult;
   telemetry_digest_sha256: string;
 }
@@ -521,7 +555,7 @@ export class ResearchSchedulerAndManager {
   }
 
   /**
-   * Coordinates the 9-stage research pipeline tick.
+   * Coordinates the 9-stage research pipeline tick synchronously.
    */
   public executeResearchTick(tick: ResearchTaskTick): ResearchManagerRunRecord {
     const stages: string[] = [];
@@ -584,10 +618,34 @@ export class ResearchSchedulerAndManager {
           signals.push(sig);
         }
       }
+
+      // Execute Govt Scheme & Tax extraction
+      if (tick.govt_notifications) {
+        for (const g of tick.govt_notifications) {
+          const sig = this.govtAgent.extractPolicyNotification(g);
+          signals.push(sig);
+        }
+      }
     }
 
     // Stage 6: REVIEW_RED_TEAM
     stages.push('REVIEW_RED_TEAM');
+    const redTeamAudits: Array<{ candidate_id: string; approved: boolean; rejection_reason?: string }> = [];
+    if (tick.candidate_offers) {
+      for (const offer of tick.candidate_offers) {
+        const audit = this.redTeam.auditCandidateOffer({
+          candidate_id: offer.candidate_id,
+          claimed_price_subunits: offer.claimed_price_subunits,
+          raw_material_scrap_floor_subunits: offer.raw_material_scrap_floor_subunits,
+          defect_signals: signals.filter((s) => s.channel === 'SOCIAL_FORUM_CHATTER')
+        });
+        redTeamAudits.push({
+          candidate_id: offer.candidate_id,
+          approved: audit.approved,
+          rejection_reason: audit.rejection_reason
+        });
+      }
+    }
 
     // Stage 7: ASSEMBLE_EVIDENCE
     stages.push('ASSEMBLE_EVIDENCE');
@@ -598,7 +656,7 @@ export class ResearchSchedulerAndManager {
     // Stage 9: PRESENT
     stages.push('PRESENT');
 
-    const cleanRecord = {
+    const cleanRecord: Record<string, any> = {
       run_id: tick.tick_id,
       timestamp_utc: tick.timestamp_utc,
       stages_completed: stages,
@@ -608,6 +666,9 @@ export class ResearchSchedulerAndManager {
       signals_collected: signals,
       extracted_listings: extractedListings
     };
+    if (redTeamAudits.length > 0) {
+      cleanRecord.red_team_audits = redTeamAudits;
+    }
 
     const sanitizedRecord = sanitizeForJcs(cleanRecord);
     const telemetryDigest = createHash('sha256')
@@ -615,7 +676,145 @@ export class ResearchSchedulerAndManager {
       .digest('hex');
 
     return {
-      ...cleanRecord,
+      ...(cleanRecord as any),
+      telemetry_digest_sha256: telemetryDigest
+    };
+  }
+
+  /**
+   * Async variant that genuinely invokes GroqFormulaAdvisor.resolveOrSynthesizeFormula
+   * for live RAG/LLM synthesis routing telemetry.
+   */
+  public async executeResearchTickAsync(tick: ResearchTaskTick): Promise<ResearchManagerRunRecord> {
+    const stages: string[] = [];
+    let degradedMode = false;
+
+    // Stage 1: DECOMPOSE
+    stages.push('DECOMPOSE');
+
+    // Stage 2: ROUTE (RAG-First Sufficiency Gate via GroqFormulaAdvisor)
+    stages.push('ROUTE');
+    let ragCacheHit = false;
+    let llmCalled = false;
+    try {
+      const resolution = await this.groqAdvisor.resolveOrSynthesizeFormula(
+        {
+          query: tick.thesis,
+          min_bm25_score: 1.5
+        },
+        this.formulaRegistry
+      );
+      ragCacheHit = resolution.resolution_path === 'RAG_CACHE_HIT';
+      llmCalled = resolution.llm_called;
+    } catch {
+      const existingMatches = this.formulaRegistry.retrieveFormulas(tick.thesis, { topK: 1 });
+      ragCacheHit = existingMatches.length > 0 && existingMatches[0].relevance_score >= 1.5;
+      llmCalled = !ragCacheHit;
+    }
+
+    // Stage 3: ASSEMBLE_CONTEXT
+    stages.push('ASSEMBLE_CONTEXT');
+
+    // Stage 4: PROMPT
+    stages.push('PROMPT');
+
+    // Stage 5: EXECUTE_SCOPED_WORKER
+    stages.push('EXECUTE_SCOPED_WORKER');
+    const signals: NormalizedSignal[] = [];
+    const extractedListings: TinyFishExtractionResult[] = [];
+
+    if (tick.force_degraded_worker_timeout) {
+      degradedMode = true;
+    } else {
+      if (tick.raw_dom_pages) {
+        for (const page of tick.raw_dom_pages) {
+          const res = this.tinyFish.extractListing({
+            source_url: page.url,
+            raw_dom: page.dom,
+            mandatory_fields: page.mandatory_fields,
+            observed_at_utc: tick.timestamp_utc
+          });
+          extractedListings.push(res);
+        }
+      }
+
+      if (tick.media_transcripts) {
+        for (const m of tick.media_transcripts) {
+          const sig = this.mediaAgent.extractSignals({
+            ...m,
+            observed_at_utc: tick.timestamp_utc
+          });
+          signals.push(sig);
+        }
+      }
+
+      if (tick.lateral_market_quotes) {
+        for (const l of tick.lateral_market_quotes) {
+          const sig = this.macroAgent.extractLateralShock({
+            ...l,
+            observed_at_utc: tick.timestamp_utc
+          });
+          signals.push(sig);
+        }
+      }
+
+      if (tick.govt_notifications) {
+        for (const g of tick.govt_notifications) {
+          const sig = this.govtAgent.extractPolicyNotification(g);
+          signals.push(sig);
+        }
+      }
+    }
+
+    // Stage 6: REVIEW_RED_TEAM
+    stages.push('REVIEW_RED_TEAM');
+    const redTeamAudits: Array<{ candidate_id: string; approved: boolean; rejection_reason?: string }> = [];
+    if (tick.candidate_offers) {
+      for (const offer of tick.candidate_offers) {
+        const audit = this.redTeam.auditCandidateOffer({
+          candidate_id: offer.candidate_id,
+          claimed_price_subunits: offer.claimed_price_subunits,
+          raw_material_scrap_floor_subunits: offer.raw_material_scrap_floor_subunits,
+          defect_signals: signals.filter((s) => s.channel === 'SOCIAL_FORUM_CHATTER')
+        });
+        redTeamAudits.push({
+          candidate_id: offer.candidate_id,
+          approved: audit.approved,
+          rejection_reason: audit.rejection_reason
+        });
+      }
+    }
+
+    // Stage 7: ASSEMBLE_EVIDENCE
+    stages.push('ASSEMBLE_EVIDENCE');
+
+    // Stage 8: POLISH
+    stages.push('POLISH');
+
+    // Stage 9: PRESENT
+    stages.push('PRESENT');
+
+    const cleanRecord: Record<string, any> = {
+      run_id: tick.tick_id,
+      timestamp_utc: tick.timestamp_utc,
+      stages_completed: stages,
+      rag_cache_hit: ragCacheHit,
+      llm_called: llmCalled,
+      degraded_mode_triggered: degradedMode,
+      signals_collected: signals,
+      extracted_listings: extractedListings
+    };
+    if (redTeamAudits.length > 0) {
+      cleanRecord.red_team_audits = redTeamAudits;
+    }
+
+    const sanitizedRecord = sanitizeForJcs(cleanRecord);
+    const telemetryDigest = createHash('sha256')
+      .update(canonicalizeJCS(sanitizedRecord))
+      .digest('hex');
+
+    return {
+      ...(cleanRecord as any),
       telemetry_digest_sha256: telemetryDigest
     };
   }
@@ -654,6 +853,16 @@ export interface BitemporalRestatementReport {
 }
 
 export class BitemporalRestatementEngine {
+  private static readonly appendOnlyStore = new Map<string, BitemporalDecisionRecord>();
+
+  public static getStoredRecord(decisionId: string): BitemporalDecisionRecord | undefined {
+    return this.appendOnlyStore.get(decisionId);
+  }
+
+  public static clearStoreForTesting(): void {
+    this.appendOnlyStore.clear();
+  }
+
   /**
    * Creates an immutable bitemporal decision record at t_0.
    */
@@ -661,15 +870,28 @@ export class BitemporalRestatementEngine {
     decisionId: string,
     decisionTimeUtc: string,
     candidates: SiloCandidateInput[],
-    config: GroupSimulationConfig
+    config: GroupSimulationConfig,
+    knowledgeTimeUtc?: string
   ): BitemporalDecisionRecord {
-    const simResult = M5SiloAndGroupSimulator.runGroupSimulation(candidates, config);
+    if (this.appendOnlyStore.has(decisionId)) {
+      throw new Error(
+        `E-ERR-BITEMPORAL-OVERWRITE: Decision ID '${decisionId}' already exists in append-only bitemporal store. Overwrite prohibited.`
+      );
+    }
+
+    const tK = knowledgeTimeUtc ?? decisionTimeUtc;
+
+    // Deep clone inputs to ensure caller cannot mutate later
+    const clonedCandidates = deepClone(candidates);
+    const clonedConfig = deepClone(config);
+
+    const simResult = M5SiloAndGroupSimulator.runGroupSimulation(clonedCandidates, clonedConfig);
 
     const cleanRecord = {
       decision_id: decisionId,
       decision_time_utc: decisionTimeUtc,
-      knowledge_time_utc: decisionTimeUtc,
-      candidate_inputs: candidates.map((c) => ({
+      knowledge_time_utc: tK,
+      candidate_inputs: clonedCandidates.map((c) => ({
         ...c,
         gross_selling_price_subunits: c.gross_selling_price_subunits.toString(),
         raw_material_purchase_subunits: c.raw_material_purchase_subunits.toString(),
@@ -679,10 +901,10 @@ export class BitemporalRestatementEngine {
         customs_inspection_subunits: (c.customs_inspection_subunits ?? 45100n).toString()
       })),
       simulation_config: {
-        treasury_budget_subunits: config.treasury_budget_subunits.toString(),
-        max_single_candidate_concentration_bps: (config.max_single_candidate_concentration_bps ?? 5000n).toString(),
-        tbill_yield_bps: (config.tbill_yield_bps ?? 650n).toString(),
-        nifty_liquid_yield_bps: (config.nifty_liquid_yield_bps ?? 680n).toString()
+        treasury_budget_subunits: clonedConfig.treasury_budget_subunits.toString(),
+        max_single_candidate_concentration_bps: (clonedConfig.max_single_candidate_concentration_bps ?? 5000n).toString(),
+        tbill_yield_bps: (clonedConfig.tbill_yield_bps ?? 650n).toString(),
+        nifty_liquid_yield_bps: (clonedConfig.nifty_liquid_yield_bps ?? 680n).toString()
       },
       simulation_result: simResult
     };
@@ -692,15 +914,19 @@ export class BitemporalRestatementEngine {
       .update(canonicalizeJCS(sanitizedRecord))
       .digest('hex');
 
-    return {
+    const record: BitemporalDecisionRecord = {
       decision_id: decisionId,
       decision_time_utc: decisionTimeUtc,
-      knowledge_time_utc: decisionTimeUtc,
-      candidate_inputs: candidates,
-      simulation_config: config,
+      knowledge_time_utc: tK,
+      candidate_inputs: clonedCandidates,
+      simulation_config: clonedConfig,
       simulation_result: simResult,
       record_digest_sha256: digest
     };
+
+    deepFreeze(record);
+    this.appendOnlyStore.set(decisionId, record);
+    return record;
   }
 
   /**
@@ -779,9 +1005,11 @@ export class BitemporalRestatementEngine {
       .update(canonicalizeJCS(sanitizedReport))
       .digest('hex');
 
-    return {
+    const report: BitemporalRestatementReport = {
       ...cleanReport,
       restatement_digest_sha256: digest
     };
+
+    return deepFreeze(report);
   }
 }

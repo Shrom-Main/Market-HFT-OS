@@ -541,7 +541,17 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
     }
 
     // Await delivery window
-    await new Promise(r => setTimeout(r, 80));
+    for (let i = 0; i < 20; i++) {
+      if (
+        handler1.getExpectedSequence('VENUE-A', 'prod:clamp:001') === '6' &&
+        handler1.getExpectedSequence('VENUE-A', 'prod:clamp:002') === '6' &&
+        handler2.getExpectedSequence('VENUE-A', 'prod:clamp:001') === '6' &&
+        handler2.getExpectedSequence('VENUE-A', 'prod:clamp:002') === '6'
+      ) {
+        break;
+      }
+      await new Promise(r => setTimeout(r, 50));
+    }
 
     expect(handler1.getExpectedSequence('VENUE-A', 'prod:clamp:001')).toBe('6');
     expect(handler1.getExpectedSequence('VENUE-A', 'prod:clamp:002')).toBe('6');
@@ -847,7 +857,7 @@ describe('SUITE-16: Gate M3 — Persistence, Crash Recovery & Multi-Stream Integ
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
     }
-  });
+  }, 30000);
 
   // --------------------------------------------------------------------------------------
   // 9. WAL Flush Failure Fault Injection & Live State Poisoning

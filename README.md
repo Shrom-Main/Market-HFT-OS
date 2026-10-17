@@ -6,7 +6,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 [![Vitest](https://img.shields.io/badge/Vitest-4.1.12-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.8-blue.svg)](https://www.postgresql.org/)
-[![Status](https://img.shields.io/badge/Gate_M6_Conformance-Passing_(192_Tests_/_22_Suites)-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Gate_M6.1_Conformance-Passing_(200_Tests_/_23_Suites)-brightgreen.svg)]()
 
 ---
 
@@ -19,6 +19,8 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 - **Gate M4 Research & Capital-Allocation Gate**: Evaluates physical commodity arbitrage vertical slices (DIN 3017 W4 SS304 worm-drive hose clamp) with cryptographic provenance envelopes, exact rational/integer subunit financial and tax arithmetic (GST, TCS, TDS), 7-bucket inventory conservation, working-capital hurdle rate gating, and deterministic edge-decay detection.
 - **Gate M5 Signal Bus, 4D Evidence & Group Strategy Simulator Gate**: 6-channel continuous signal bus (`NEWS_TRADE_PRESS`, `YOUTUBE_VIDEO_TRANSCRIPT`, `SOCIAL_FORUM_CHATTER`, `MACROECONOMIC_INDICATOR`, `LATERAL_FINANCIAL_MARKET`, `GOVERNMENT_SCHEME_POLICY`), 4 orthogonal evidence dimensions with fail-closed promotion firewall, 9-stage Deep Research DAG contract, 6-status return vocabulary, and Silo vs. Simultaneous Group Strategy Simulator across the SS304 DIN 3017 matrix (4 sizes x 2 packs) under ₹50,000 treasury budget, correlated LME steel shocks, concentration limits, Conviction vs Allocation separation firewall, and T-Bill sweep.
 - **Gate M6 Multi-Agent Research Swarm & Bitemporal Replay Gate**: Governed multi-agent research swarm with strict operational boundary firewall (`AgentSecurityFirewall` prohibiting financial calculations, ledger writes, and unvetted URLs), `TinyFishScopedBrowserAgent` executing scoped read-only web extractions, 4 specialist sub-agents (`MediaAndChatterSubAgent`, `MacroAndLateralMarketSubAgent`, `GovtSchemeAndTaxSubAgent`, `RedTeamReviewerSubAgent`), 9-stage DAG coordinator (`ResearchSchedulerAndManager`) with graceful degraded-mode partial-failure handling, and `BitemporalRestatementEngine` providing immutable $t_0$ decision state reconstruction and non-destructive retrospective restatements under RFC 8785 JCS determinism.
+- **Gate M6.1 Capability-Aware MCP Substrate & Broker Gate**: Standardized JSON-RPC 2.0 / MCP tool schema envelopes (`McpToolDescriptor`, `McpToolCallRequest`, `McpToolCallResponse`), `McpServerAdapter` with forbidden capability firewall (shell, SQL, ledger mutation, promotion, order routing, secrets), task-scoped immutable `CapabilityGrant` (`Object.freeze`), `McpCapabilityBroker` enforcing strict SSRF and private/loopback/metadata IP blocking (`127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.169.254`, `localhost`, `0.0.0.0`, `::1`), GET-only methods, redirect blocking, 4-quota enforcement (`requests_made`, `wall_clock_ms`, `payload_bytes`, `tokens_used`), `McpRunLedger` with RFC 8785 JCS hash-chained execution events, conflict-preserving join (`joinSupplementaryClaims`), bitemporal append-only immutability proof with duplicate overwrite prevention (`E-ERR-BITEMPORAL-OVERWRITE`), and genuine subagent wiring.
+
 
 ---
 
@@ -82,17 +84,18 @@ npm run typecheck
 # Standard run (skips live PostgreSQL tests cleanly if DATABASE_URL is unset)
 npm test
 
-# Full run with live PostgreSQL 16.8 (runs all 192 tests across 22 suites)
+# Full run with live PostgreSQL 16.8 (runs all 200 tests across 23 suites)
 $env:DATABASE_URL = "postgresql://postgres@localhost:5432/market_hft_test"
 npm test
 ```
-*Expected output: 22 test files passed, 192 tests passed (Exit code 0).*
+*Expected output: 23 test files passed, 200 tests passed (Exit code 0).*
 
 ### Step 4: Generate Machine-Readable Audit Report
 ```bash
 npm run test:json
 ```
-*Generates `test-results.json` recording 22 passed test files and 192 passed tests.*
+*Generates `test-results.json` recording 23 passed test files and 200 passed tests.*
+
 
 ---
 
@@ -190,3 +193,13 @@ npm run test:json
   - Red-team reviewer sub-agent identifies false-positive arbitrage, unverified suppliers, and seasonal demand traps with mandatory human review flags (`M6-RED-TEAM-ADVERSARIAL-SCRUTINY-005`).
   - Bitemporal restatement engine reproduces $t_0$ decision state and computes retrospective restatement deltas without mutating historical records (`M6-BITEMPORAL-REPLAY-AND-RESTATEMENT-006`).
   - End-to-end multi-agent research tick produces bit-for-bit identical telemetry, signal hashes, and decision digests under RFC 8785 JCS (`M6-END-TO-END-POLISH-AND-PRESENT-JCS-007`).
+- **`suite23_m6_1_mcp_substrate_and_broker.test.ts` (8 tests)**: Gate M6.1 capability-aware MCP substrate, read-only micro-agent broker, and hardened bitemporal store:
+  - JSON-RPC 2.0 / MCP tool schema envelopes & McpServerAdapter forbidden capability firewall (`MCP-SUBSTRATE-SCHEMA-AND-FORBIDDEN-TOOLS-001`).
+  - Deeply frozen CapabilityGrant & strict broker policy on allowed tools, allowed hosts, GET-only methods, and redirect blocking (`MCP-BROKER-CAPABILITY-AND-HOST-POLICY-002`).
+  - Strict SSRF & private IP / loopback / metadata egress blocking across IPv4 and IPv6 (`MCP-BROKER-SSRF-PRIVATE-IP-BLOCK-003`).
+  - Multi-quota deterministic enforcement across all 4 resource dimensions: requests_made, wall_clock_ms, payload_bytes, tokens_used (`MCP-BROKER-MULTI-QUOTA-ENFORCEMENT-004`).
+  - McpRunLedger append-only hash chains under RFC 8785 JCS with fail-closed tampering detection (`MCP-RUN-LEDGER-HASH-CHAIN-005`).
+  - Conflict-preserving supplementary claims join without averaging, voting, or guessing (`MCP-SUPPLEMENTARY-CONFLICT-JOIN-006`).
+  - Bitemporal decision immutability proof, duplicate overwrite rejection (`E-ERR-BITEMPORAL-OVERWRITE`), and distinct $t_d$ / $t_k$ timestamps (`MCP-BITEMPORAL-IMMUTABILITY-PROOF-007`).
+  - Full research scheduler worker invocation verifying genuine sub-agent execution, red-team auditing, and RFC 8785 JCS telemetry (`MCP-SCHEDULER-FULL-WORKER-INVOCATION-008`).
+
