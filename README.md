@@ -6,7 +6,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 [![Vitest](https://img.shields.io/badge/Vitest-4.1.12-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.8-blue.svg)](https://www.postgresql.org/)
-[![Status](https://img.shields.io/badge/Gate_M6.9_Conformance-Passing_(269_Tests_/_31_Suites)-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Gate_M7.0_Conformance-Passing_(279_Tests_/_32_Suites)-brightgreen.svg)]()
 
 ---
 
@@ -28,6 +28,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 - **Gate M6.7 Typed DAG Scheduler, Bounded Concurrency, Deduplication & Capital Gate**: Upgrades the multi-agent orchestrator to a typed DAG scheduler (`ContextRoutingStateMachine`, `DagTaskNode`, `DagExecutionPlan`), Kahn-algorithm cycle detection (`validateDagAcyclicity`, `E-DAG-CYCLE-DETECTED`), bounded parallel worker execution (`runBoundedParallel`, default 3 concurrent workers) with deterministic barrier sorting `(pass_number, node_id)` ensuring bit-for-bit identical RFC 8785 JCS digests under asynchronous event loop jitter, idempotent task deduplication (`DEDUPLICATED_REPLAY` without consuming MCP broker quotas), Pass 4 Deterministic Capital Gate connecting 5 micro-agents, Regime Classifier (`SUSTAINED_STRUCTURAL_SIGNAL` vs `FAST_TACTICAL_OPPORTUNITY`), `FactorEfficacyLedger`, and `evaluateOptimalBatchSize` with bitemporal restatements ($t_d$ and $t_k$) in `BitemporalRestatementEngine`, and fail-closed degraded hold / red-team / refutation / tactical edge-decay firewalls.
 - **Gate M6.8 Comprehensive MCP Protocol Hardening, Constrained Egress Connector, First-Class Evidence Origin Firewall, Provider Certification & Plan-Driven DAG Execution Gate**: Full JSON-RPC 2.0 / MCP 2025-11-25 wire lifecycle (`initialize`, `notifications/initialized`, `ping`, `tools/list`, `resources/list`, `resources/read`, `notifications/cancelled`, `tools/call`), positive tool manifest registry with strict schema validation (`additionalProperties: false`) and SHA-256 handler code attestation, HMAC-SHA256 signed `CapabilityGrant` with worker/task identity binding and cumulative task wall-clock budget, `ConstrainedHttpsConnector` (port 443 only, DNS pre-resolution checking private/loopback/metadata IPs, streaming byte cutoff immediately aborting socket on quota overflow), append-only durable `McpRunLedger` disk persistence with JCS monotonic hash chains, first-class `EvidenceOriginClass` with origin promotion firewall and `RT-08` rule preventing non-live promotion, look-ahead bias check against reference time UTC, Groq LLM egress lockdown to approved endpoint with prompt secret redaction and `LLM_MODEL_PROPOSAL` tagging, Adala-inspired `GoldenExtractionBench` evaluating 100% field precision/recall/exact match (`10000n` bps), and plan-driven topological wave dispatcher (`executeCompiledDagPlan`) with activation predicates, bounded wave parallelism, and durable JCS DAG checkpointing.
 - **Gate M6.9 8-Workspace Read-Only Operator Terminal, Safety Controls, Egress Telemetry & 12-Point Release Gate**: Strictly read-only Operator Terminal projection layer across 8 workspaces (Command Center, Opportunity Radar, Evidence Workbench, Economic & Simulation Sandbox, Capital Allocation & Review Queue, Strategy & Factor Lifecycle, Risk & Exposure Monitor, Statutory & Audit Ledger); anti-vanity profit firewall (`E-M9-VANITY-PROFIT-FORBIDDEN`); HMAC-SHA256 capability grant and DNS-pinned egress telemetry; Adala-style GoldenExtractionBench worker precision/recall certification scoreboard; 3-tier kill switch with $\ge 15$-character governed confirmation rationale; two-level error envelopes with secret scrubbing; self-contained HTML5/SVG dark-mode workstation renderer; and 12-point platform release gate evaluating RFC 8785 JCS SHA-256 certificate.
+- **Gate M7.0 Runnable Local Loopback Workstation Server & Zero-Trust Security Gate**: Deterministic local loopback HTTP and WebSocket server (`WorkstationServer` on `127.0.0.1:4310` or ephemeral `port: 0`), strictly prohibiting non-loopback bindings (`E-SRV-NON-LOOPBACK-BIND-FORBIDDEN`); Browser DNS-Rebinding and CSWSH Firewalls (`SRV-01`) inspecting `Host` and `Origin` headers (HTTP 403 / `E-SRV-INVALID-HOST-HEADER` / `E-SRV-CROSS-ORIGIN-BLOCKED`); hard 64 KB request body cap (`E-SRV-REQUEST-BODY-TOO-LARGE`); strict security headers (`CSP`, `XFO: DENY`, `nosniff`, `no-store`); Zero Client-Side Float Math / Zero Optimistic UI (`SRV-02`) evaluating What-If models purely via server-side BigInt rational AST arithmetic in sandboxed `CANDIDATE_UI_MODEL` tier; Live Kill-Switch Fail-Closed Enforcement (`SRV-03`) blocking DAG execution with HTTP 409 Conflict under halt scopes while maintaining 100% availability for read-only inspection endpoints; real-time WebSocket live broadcast feed (`TERMINAL_SNAPSHOT_BROADCAST`); and CLI workstation runner (`npm run workstation`).
 
 
 ---
@@ -39,6 +40,7 @@ src/
 ├── agents/             # Multi-agent framework, specialist workers, context DAG scheduler
 ├── canonical/          # RFC 8785 JCS, currency rational math, product normalization, crypto
 ├── checkpoint/         # Virtual genesis head and trust anchor verification
+├── cli/                # Local loopback operator workstation CLI runner
 ├── execution/          # Simulated execution gateway, order books, fill engines
 ├── feeds/              # Market data normalization, replay buffering, sequence checking
 ├── financial/          # Cash flow engine, two-tier clearing, outlay recovery, RoPF/XIRR
@@ -47,6 +49,7 @@ src/
 ├── persistence/        # File-backed WAL, crash recovery engine, PostgreSQL adapter, locks
 ├── portfolio/          # Simulation portfolio, anchored cumulative COGS, positions
 ├── research/           # SS304 physical vertical slice, formula registry, signal engine
+├── server/             # Authoritative workstation state manager & HTTP/WS server
 ├── simulation/         # End-to-end simulation pipeline coordinator
 ├── terminal/           # Operator terminal projection, kill-switch engine, HTML/SVG workstation
 └── verification/       # 4-claim verification gate, attester auth, commercial reconciliation

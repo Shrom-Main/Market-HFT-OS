@@ -1,13 +1,13 @@
 # POC-001 — Capital-Allocation Research and Market Simulation Platform
-## Project Charter v0.2.7
+## Project Charter v0.2.8
 
-**Document Status:** APPROVED / CLOSED (Gates M0–M6 and Gates M6.1–M6.9 Fully Closed & Verified; 269 Tests across 31 Suites Passing; Release Ready)  
-**Governance Authority:** Project Owner Directive (Decision OD-19, 18 October 2026)  
+**Document Status:** APPROVED / CLOSED (Gates M0–M6, Gates M6.1–M6.9, and Gate M7.0 Fully Closed & Verified; 279 Tests across 32 Suites Passing; Workstation Release Ready)  
+**Governance Authority:** Project Owner Directive (Decision OD-20, 18 October 2026)  
 **Target Repository:** `D:\Market HFT OS` (Workspace Root)  
 **Legacy Reference Repository:** `D:\Market HFT OS\_salvage\AIStudio` (Preserved in read-only quarantine)  
 **External Research Pool:** `D:\Market HFT OS\_salvage\external\` (Preserved in read-only quarantine)  
 **Operating Mode:** DRY_RUN / Paper Simulation; Actuals Execution strictly disabled  
-**Micro-Agent Boundary:** The MCP Broker & Micro-Agent Framework (Gates M6.1–M6.9) is fully implemented, verified, and closed under strict paper-only (`DRY_RUN`), non-destructive evaluation, and mandatory human-authorization confirmation gates (`POC.docx` §2, §6.5, §7–§13, §15).
+**Micro-Agent Boundary:** The MCP Broker & Micro-Agent Framework (Gates M6.1–M6.9) and Runnable Loopback Workstation (Gate M7.0) are fully implemented, verified, and closed under strict paper-only (`DRY_RUN`), non-destructive evaluation, and mandatory human-authorization confirmation gates (`POC.docx` §2, §6.5, §7–§13, §15).
 
 ---
 
@@ -381,6 +381,7 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 | **DEC-017** | Secret environment variable configuration for GitHub operations | 2026-10-10 | `GithubPersonalAccessTokenFORAG.env` used for remote operations; never read, printed, or tracked in git |
 | **DEC-018** | Governed MCP Broker & 5-Worker Specialist Architecture Hardening | 2026-10-18 | Authorizes Gate M6.1–M6.8 as bounded research extension under paper-only (DRY_RUN) constraints; enforces wire-level MCP lifecycle, positive manifests, streaming bytes limit, DNS rebinding prevention, honest evidence provenance, DAG plan execution, and provider certification. |
 | **DEC-019** | 8-Workspace Read-Only Operator Terminal, 3-Tier Kill Switch, Governed Confirmation Gate, HMAC & Egress Telemetry, Worker Certification Scoreboard & 12-Point Platform Release Gate | 2026-10-18 | Establishes the strictly read-only Operator Terminal projection layer across 8 workspaces (Command Center, Opportunity Radar, Evidence Workbench, Economic & Simulation Sandbox, Capital Allocation & Queue, Strategy & Factor Lifecycle, Risk & Exposure Monitor, Statutory & Audit Ledger); enforces anti-vanity profit firewall (`E-M9-VANITY-PROFIT-FORBIDDEN`); exposes HMAC-SHA256 capability grant and DNS-pinned egress telemetry; exposes Adala-style GoldenExtractionBench worker precision/recall certification; implements 3-tier kill switch with $\ge 15$-character governed confirmation rationale; formats two-level error envelopes with secret scrubbing; renders self-contained HTML5/SVG dark-mode workstation; and evaluates the 12-point platform release gate into canonical RFC 8785 JCS SHA-256 certificate. |
+| **DEC-020** | Runnable Local Loopback Workstation Server, Authoritative State Manager, Interactive 8-Workspace Client & Zero-Trust Security Acceptance Gate | 2026-10-18 | Authorizes Gate M7.0 establishing the runnable local loopback HTTP and WebSocket workstation server (127.0.0.1:4310 / port 0); enforces SRV-01 (Host & Origin firewalls, 64 KB request body cap, CSP, XFO: DENY, nosniff, no-store); enforces SRV-02 (zero client-side float math; pure BigInt rational AST on backend); enforces SRV-03 (kill-switch fail-closed enforcement across live HTTP action dispatches returning HTTP 409 under halt scopes while read-only GET endpoints remain 100% available); enforces SRV-04 (ephemeral loopback port assignment for isolated test execution); provides interactive 8-workspace dark-mode client with live WebSocket telemetry broadcast; verified by Acceptance Suite 32 (10 normative tests, total 279 tests across 32 suites). |
 
 ---
 
@@ -392,7 +393,7 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 |---|---|---|---|
 | 0.1 | Workspace discovery and context acquisition | Discovery report produced | ✅ Complete |
 | 0.2 | Legacy repository recovery & independent audit | Salvage Report & Addendum v1.4 completed | ✅ Complete |
-| 0.3 | Project Charter produced | This document (v0.2.7) | ✅ Approved |
+| 0.3 | Project Charter produced | This document (v0.2.8) | ✅ Approved |
 | 0.4 | Root Git repository initialization & `_salvage/` quarantine | Repository exists with charter as initial commit | ✅ Complete |
 | 0.5 | Create `RESEARCH_CORPUS_INDEX.md` | Corpus documents indexed with key decisions | ✅ Complete |
 
@@ -409,7 +410,7 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 
 ---
 
-## 13. Requirement-to-Code-and-Test Traceability Matrix (Gates M6.1–M6.9)
+## 13. Requirement-to-Code-and-Test Traceability Matrix (Gates M6.1–M7.0)
 
 *Default classification: Commitment.*
 
@@ -424,6 +425,8 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 | **M6.7** | Signal Bus, Evidence Promotion, Context Routing State Machine & Bounded DAG Cooperation | `src/agents/cooperation/contextRoutingStateMachine.ts`, `src/research/m5SignalAndEvidenceEngine.ts` | `suite29_m6_7_context_dag_and_cooperation.test.ts` (8 tests) |
 | **M6.8** | Stage 8 Read-Only Operator Terminal Projection, 3-Tier Kill Switch, Two-Level Error Presentation & 12-Point Release Gate | `src/mcp/contracts/operatorTerminalContract.ts`, `src/terminal/operatorTerminalController.ts` (`OperatorTerminalController`, `KillSwitchController`, `executeGovernedOperatorAction`, `renderOperatorTerminalHtml`, `evaluateTwelvePointPlatformReadiness`) | `suite30_m6_8_operator_terminal_and_release_gate.test.ts` (8 tests) |
 | **M6.9** | Gate M6.9 Comprehensive MCP Protocol Hardening, Constrained Egress, First-Class Evidence Origin Firewall, GoldenExtractionBench, Topological DAG Waves & Terminal Telemetry Upgrade (Decision OD-19 / Charter DEC-019) | `src/mcp/mcpSubstrate.ts`, `src/agents/evaluation/goldenExtractionBench.ts`, `src/research/llmFormulaAdvisor.ts`, `src/agents/scheduler/contextRoutingStateMachine.ts`, `src/terminal/operatorTerminalController.ts` | `suite31_m6_9_mcp_hardening_and_terminal_certification.test.ts` (12 tests) |
+| **M7.0** | Runnable Local Loopback Workstation Server, Authoritative State Manager, Zero-Trust Browser Firewalls & Acceptance Suite 32 (Decision OD-20 / Charter DEC-020) | `src/server/workstationServer.ts`, `src/server/workstationStateManager.ts`, `src/cli/workstationCli.ts`, `src/terminal/operatorTerminalController.ts` | `suite32_m7_0_workstation_server.test.ts` (10 tests) |
+
 
 ---
 

@@ -38,3 +38,5 @@ export * from './agents/scheduler/contextRoutingStateMachine.js';
 export * from './mcp/contracts/operatorTerminalContract.js';
 export * from './terminal/operatorTerminalController.js';
 export * from './agents/evaluation/goldenExtractionBench.js';
+export * from './server/workstationStateManager.js';
+export * from './server/workstationServer.js';

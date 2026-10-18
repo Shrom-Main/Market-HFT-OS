@@ -823,6 +823,111 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
       width: 100%;
       height: 160px;
     }
+    .nav-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+      padding: 10px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .nav-btn {
+      background: #1e293b;
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .nav-btn:hover, .nav-btn:focus {
+      background: #334155;
+      border-color: var(--accent);
+      outline: none;
+    }
+    .nav-btn.active {
+      background: var(--accent);
+      color: #0b0f19;
+      border-color: var(--accent);
+    }
+    .action-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 20px;
+      padding: 12px 16px;
+      background: #172033;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .action-btn {
+      padding: 6px 14px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      background: #1e293b;
+      color: var(--text);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .action-btn:hover {
+      background: #334155;
+      border-color: var(--accent);
+    }
+    .action-btn-primary {
+      background: #0284c7;
+      border-color: #38bdf8;
+      color: #ffffff;
+    }
+    .action-btn-primary:hover {
+      background: #0369a1;
+    }
+    .action-btn-danger {
+      background: #991b1b;
+      border-color: #ef4444;
+      color: #ffffff;
+    }
+    .action-btn-danger:hover {
+      background: #7f1d1d;
+    }
+    .action-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .error-banner {
+      background: #450a0a;
+      border: 1px solid #ef4444;
+      border-radius: 6px;
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      color: #fecaca;
+    }
+    .modal-backdrop {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(0, 0, 0, 0.75);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+    }
+    .modal-card {
+      background: #141c2e;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      width: 520px;
+      max-width: 90vw;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+    }
   </style>
 </head>
 <body>
@@ -834,6 +939,60 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
   </div>
 
   <div class="container">
+    <!-- NAVIGATION BAR (WORKSPACE TABS) -->
+    <nav class="nav-bar" role="tablist" aria-label="Operator Workspaces">
+      <button class="nav-btn active" role="tab" aria-selected="true" data-tab="all">All Workspaces</button>
+      <button class="nav-btn" role="tab" aria-selected="false" data-tab="workspace-command-center">1. Command Center</button>
+      <button class="nav-btn" role="tab" aria-selected="false" data-tab="workspace-opportunity-radar">2. Opportunity Radar</button>
+      <button class="nav-btn" role="tab" aria-selected="false" data-tab="workspace-evidence-workbench">3. Evidence Workbench</button>
+      <button class="nav-btn" role="tab" aria-selected="false" data-tab="workspace-economics-lab">4. Economics Lab</button>
+      <button class="nav-btn" role="tab" aria-selected="false" data-tab="workspace-capital-allocator">5. Capital Allocator</button>
+      <button class="nav-btn" role="tab" aria-selected="false" data-tab="workspace-simulation-and-positions">6. Simulation &amp; Positions</button>
+      <button class="nav-btn" role="tab" aria-selected="false" data-tab="workspace-reconciliation-and-performance">7. Reconciliation &amp; Performance</button>
+      <button class="nav-btn" role="tab" aria-selected="false" data-tab="workspace-risk-audit-and-system-health">8. Risk, Audit &amp; Health</button>
+    </nav>
+
+    <!-- ACTION BAR (GOVERNED OPERATOR CONTROLS) -->
+    <div class="action-bar" role="toolbar" aria-label="Governed Operator Controls">
+      <button id="btn-run-dag" class="action-btn action-btn-primary" type="button">Run Governed DAG</button>
+      <button id="btn-ks-halt-allocations" class="action-btn action-btn-danger" type="button" data-scope="HALT_NEW_ALLOCATIONS">Halt Allocations</button>
+      <button id="btn-ks-halt-simulation" class="action-btn action-btn-danger" type="button" data-scope="HALT_ALL_SIMULATION_PROCESSING">Halt All Simulation</button>
+      <button id="btn-ks-recovery-only" class="action-btn action-btn-danger" type="button" data-scope="ENTER_RECOVERY_ONLY_MODE">Enter Recovery Only</button>
+      <button id="btn-ks-normal-ops" class="action-btn" type="button" data-scope="NORMAL_PAPER_OPERATION">Normal Operations</button>
+      <span id="ws-indicator" class="badge badge-warn">[WS: CONNECTING]</span>
+      <span id="last-update-time" style="font-size:11px;color:var(--text-muted);margin-left:auto;">Updated: ${escapeHtml(snapshot.as_of_timestamp_utc)}</span>
+    </div>
+
+    <!-- TWO-LEVEL ERROR BANNER -->
+    <div id="two-level-error-banner" class="error-banner" style="display:none;" role="alert" aria-live="assertive">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+        <strong id="error-summary-heading" style="font-size:13px;color:#f87171;">Action Error</strong>
+        <button id="error-dismiss-btn" type="button" style="background:transparent;border:none;color:#fca5a5;cursor:pointer;font-size:16px;line-height:1;padding:0 4px;" aria-label="Dismiss Error">&times;</button>
+      </div>
+      <div id="error-summary-text" style="margin-top:4px;font-size:12px;"></div>
+      <pre id="error-diagnostic-details" style="margin-top:8px;padding:8px;background:rgba(0,0,0,0.4);border-radius:4px;font-size:11px;font-family:var(--font-mono);white-space:pre-wrap;color:#fecaca;"></pre>
+    </div>
+
+    <!-- CONFIRMATION MODAL -->
+    <div id="action-modal" class="modal-backdrop" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-card">
+        <h3 id="modal-title" style="margin-top:0;color:var(--accent);">Confirm Governed Operator Action</h3>
+        <p id="modal-desc" style="color:var(--text);font-size:12px;margin-bottom:12px;"></p>
+        <div style="margin-bottom:12px;">
+          <label for="modal-rationale" style="display:block;font-size:11px;margin-bottom:4px;color:var(--text-muted);">Operator Rationale (minimum 15 characters required per POC.docx &sect;8.4):</label>
+          <textarea id="modal-rationale" rows="3" style="width:100%;box-sizing:border-box;background:#0b0f19;border:1px solid var(--border);color:var(--text);font-family:var(--font-mono);font-size:12px;padding:8px;border-radius:4px;" placeholder="Provide audit rationale (e.g., Manual risk mitigation routine check)..."></textarea>
+          <div style="font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;margin-top:4px;">
+            <span>Characters: <span id="rationale-char-count">0</span> / 15 min</span>
+            <span id="rationale-validation-hint" style="color:var(--blocked);">Too short (&ge; 15 chars required)</span>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:10px;">
+          <button id="modal-cancel-btn" class="action-btn" type="button">Cancel</button>
+          <button id="modal-confirm-btn" class="action-btn action-btn-danger" type="button" disabled>Confirm Transition</button>
+        </div>
+      </div>
+    </div>
+
     <!-- WORKSPACE 1: COMMAND CENTER -->
     <div class="grid-2">
       <div class="card" id="workspace-command-center">
@@ -962,6 +1121,37 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
           <text x="80" y="115" fill="#f87171" font-size="9">Trough -₹38.21</text>
           <text x="380" y="20" fill="#4ade80" font-size="9" text-anchor="end">Day 35: RoWC Recovered</text>
         </svg>
+        <!-- WHAT-IF MODEL SANDBOX (SRV-02: Zero Client-Side Math / Server Rational AST) -->
+        <div style="margin-top:16px;padding:12px;background:#0f172a;border:1px solid var(--border);border-radius:6px;">
+          <h4 style="margin:0 0 8px 0;color:var(--accent);display:flex;justify-content:space-between;align-items:center;">
+            <span>What-If Model Sandbox (Symbolic Rational AST)</span>
+            <span class="badge badge-warn">[CANDIDATE_UI_MODEL: NON-PERSISTED]</span>
+          </h4>
+          <form id="what-if-form" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;">
+            <div>
+              <label for="what-if-formula-id" style="display:block;color:var(--text-muted);margin-bottom:2px;">Expression / Target Formula:</label>
+              <select id="what-if-formula-id" style="width:100%;background:#1e293b;border:1px solid var(--border);color:var(--text);padding:4px;border-radius:3px;">
+                <option value="F01_ESTIMATED_NET_PAYOUT">F01: Net Payout (Price - Fees - Taxes)</option>
+                <option value="F02_ROWC_ANNUALIZED">F02: Annualized Return on Working Capital</option>
+                <option value="F03_GST_INPUT_CREDIT">F03: Net GST Liability (Output - Input Credit)</option>
+              </select>
+            </div>
+            <div>
+              <label for="what-if-price" style="display:block;color:var(--text-muted);margin-bottom:2px;">Simulated Price (INR):</label>
+              <input id="what-if-price" type="number" step="1" value="1299" style="width:100%;box-sizing:border-box;background:#1e293b;border:1px solid var(--border);color:var(--text);padding:4px;border-radius:3px;">
+            </div>
+            <div>
+              <label for="what-if-cost" style="display:block;color:var(--text-muted);margin-bottom:2px;">Simulated Landed Cost (INR):</label>
+              <input id="what-if-cost" type="number" step="1" value="450" style="width:100%;box-sizing:border-box;background:#1e293b;border:1px solid var(--border);color:var(--text);padding:4px;border-radius:3px;">
+            </div>
+            <div style="display:flex;align-items:flex-end;">
+              <button id="btn-evaluate-what-if" class="action-btn action-btn-primary" type="button" style="width:100%;">Evaluate Symbolic AST</button>
+            </div>
+          </form>
+          <div id="what-if-result" style="margin-top:10px;padding:8px;background:rgba(0,0,0,0.3);border-radius:4px;font-family:var(--font-mono);font-size:11px;display:none;">
+            <!-- Rendered by client script on response -->
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1178,6 +1368,303 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
       </div>
     </div>
   </div>
+  <script>
+    (function() {
+      // 1. Tab Navigation & Workspace Filtering
+      var tabButtons = document.querySelectorAll('.nav-btn');
+      var allCards = document.querySelectorAll('.card[id^="workspace-"]');
+      var allGrids = document.querySelectorAll('.grid-2');
+
+      tabButtons.forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var targetTab = btn.getAttribute('data-tab');
+          tabButtons.forEach(function(b) {
+            b.classList.remove('active');
+            b.setAttribute('aria-selected', 'false');
+          });
+          btn.classList.add('active');
+          btn.setAttribute('aria-selected', 'true');
+
+          if (targetTab === 'all') {
+            allGrids.forEach(function(g) { g.style.display = 'grid'; });
+            allCards.forEach(function(c) { c.style.display = ''; });
+          } else {
+            allCards.forEach(function(c) {
+              c.style.display = (c.id === targetTab) ? 'block' : 'none';
+            });
+            allGrids.forEach(function(g) {
+              var hasVisibleChild = Array.from(g.querySelectorAll('.card[id^="workspace-"]')).some(function(c) { return c.id === targetTab; });
+              if (hasVisibleChild) {
+                g.style.display = 'block';
+              } else {
+                g.style.display = 'none';
+              }
+            });
+          }
+        });
+      });
+
+      // 2. Error Banner Management
+      var errorBanner = document.getElementById('two-level-error-banner');
+      var errorSummary = document.getElementById('error-summary-text');
+      var errorDetails = document.getElementById('error-diagnostic-details');
+      var errorDismissBtn = document.getElementById('error-dismiss-btn');
+
+      function showError(summary, details) {
+        if (!errorBanner) return;
+        errorSummary.textContent = summary || 'An operational error occurred.';
+        errorDetails.textContent = typeof details === 'string' ? details : JSON.stringify(details, null, 2);
+        errorBanner.style.display = 'block';
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+
+      function hideError() {
+        if (errorBanner) errorBanner.style.display = 'none';
+      }
+
+      if (errorDismissBtn) {
+        errorDismissBtn.addEventListener('click', hideError);
+      }
+
+      // 3. Modal Dialog & Governed Action Flow
+      var modal = document.getElementById('action-modal');
+      var modalTitle = document.getElementById('modal-title');
+      var modalDesc = document.getElementById('modal-desc');
+      var modalRationale = document.getElementById('modal-rationale');
+      var charCountSpan = document.getElementById('rationale-char-count');
+      var hintSpan = document.getElementById('rationale-validation-hint');
+      var modalConfirmBtn = document.getElementById('modal-confirm-btn');
+      var modalCancelBtn = document.getElementById('modal-cancel-btn');
+
+      var currentAction = null; // { type: 'kill-switch', target_scope: string } | { type: 'run-dag' }
+
+      function openModal(action, title, description) {
+        currentAction = action;
+        modalTitle.textContent = title;
+        modalDesc.textContent = description;
+        modalRationale.value = '';
+        updateRationaleValidation();
+        modal.style.display = 'flex';
+        modalRationale.focus();
+      }
+
+      function closeModal() {
+        modal.style.display = 'none';
+        currentAction = null;
+      }
+
+      function updateRationaleValidation() {
+        var text = modalRationale.value.trim();
+        var len = text.length;
+        charCountSpan.textContent = String(len);
+        if (len >= 15) {
+          hintSpan.textContent = 'Valid rationale (>= 15 chars)';
+          hintSpan.style.color = 'var(--ok)';
+          modalConfirmBtn.disabled = false;
+        } else {
+          hintSpan.textContent = 'Too short (>= 15 chars required)';
+          hintSpan.style.color = 'var(--blocked)';
+          modalConfirmBtn.disabled = true;
+        }
+      }
+
+      if (modalRationale) {
+        modalRationale.addEventListener('input', updateRationaleValidation);
+      }
+      if (modalCancelBtn) {
+        modalCancelBtn.addEventListener('click', closeModal);
+      }
+
+      // Trigger buttons: Kill Switches
+      var ksHaltAlloc = document.getElementById('btn-ks-halt-allocations');
+      var ksHaltSim = document.getElementById('btn-ks-halt-simulation');
+      var ksRecovery = document.getElementById('btn-ks-recovery-only');
+      var ksNormal = document.getElementById('btn-ks-normal-ops');
+
+      function setupKsButton(btn) {
+        if (!btn) return;
+        btn.addEventListener('click', function() {
+          var scope = btn.getAttribute('data-scope');
+          openModal(
+            { type: 'kill-switch', target_scope: scope },
+            'Confirm Kill-Switch Transition',
+            'You are changing the active kill-switch scope to [' + scope + ']. POC.docx §8.4 mandates an operator rationale of at least 15 characters for this transition.'
+          );
+        });
+      }
+
+      setupKsButton(ksHaltAlloc);
+      setupKsButton(ksHaltSim);
+      setupKsButton(ksRecovery);
+      setupKsButton(ksNormal);
+
+      // Trigger button: Run DAG
+      var btnRunDag = document.getElementById('btn-run-dag');
+      if (btnRunDag) {
+        btnRunDag.addEventListener('click', function() {
+          openModal(
+            { type: 'run-dag' },
+            'Confirm Governed DAG Execution',
+            'Triggering 3-pass worker DAG execution under active kill-switch and quota governance. Enter operator rationale (min 15 characters).'
+          );
+        });
+      }
+
+      if (modalConfirmBtn) {
+        modalConfirmBtn.addEventListener('click', async function() {
+          if (!currentAction || modalRationale.value.trim().length < 15) return;
+          var rationale = modalRationale.value.trim();
+          modalConfirmBtn.disabled = true;
+          modalConfirmBtn.textContent = 'Executing...';
+
+          try {
+            var url = '';
+            var body = {};
+            if (currentAction.type === 'kill-switch') {
+              url = '/api/actions/kill-switch';
+              body = { target_scope: currentAction.target_scope, rationale: rationale };
+            } else if (currentAction.type === 'run-dag') {
+              url = '/api/actions/run-dag';
+              body = { rationale: rationale };
+            }
+
+            var res = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body)
+            });
+
+            var data = await res.json();
+            if (!res.ok) {
+              var operatorSummary = (data && data.error && data.error.operator_summary) ? data.error.operator_summary : (data && data.error ? data.error : 'Execution failed');
+              var diagnostic = (data && data.error && data.error.diagnostic_details) ? data.error.diagnostic_details : data;
+              showError(operatorSummary, diagnostic);
+            } else {
+              hideError();
+              closeModal();
+            }
+          } catch (err) {
+            showError('Network or server error during action dispatch', String(err));
+          } finally {
+            modalConfirmBtn.textContent = 'Confirm Transition';
+            updateRationaleValidation();
+            closeModal();
+          }
+        });
+      }
+
+      // 4. What-If Model Sandbox (SRV-02: BigInt Rational AST)
+      var btnEvalWhatIf = document.getElementById('btn-evaluate-what-if');
+      var whatIfResult = document.getElementById('what-if-result');
+      var whatIfFormulaId = document.getElementById('what-if-formula-id');
+      var whatIfPrice = document.getElementById('what-if-price');
+      var whatIfCost = document.getElementById('what-if-cost');
+
+      if (btnEvalWhatIf && whatIfResult) {
+        btnEvalWhatIf.addEventListener('click', async function() {
+          whatIfResult.style.display = 'block';
+          whatIfResult.innerHTML = '<span style="color:var(--accent);">[Evaluating BigInt Rational AST on Server...]</span>';
+          try {
+            var price = Number(whatIfPrice.value || 0);
+            var cost = Number(whatIfCost.value || 0);
+            var formulaId = whatIfFormulaId.value;
+
+            var res = await fetch('/api/actions/what-if-formula', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                formula_id: formulaId,
+                inputs: { price: price, cost: cost }
+              })
+            });
+
+            var data = await res.json();
+            if (!res.ok) {
+              var summary = (data && data.error && data.error.operator_summary) ? data.error.operator_summary : 'What-If calculation failed';
+              whatIfResult.innerHTML = '<span style="color:var(--blocked);">' + summary + '</span>';
+              showError(summary, data);
+            } else {
+              var model = data.model;
+              whatIfResult.innerHTML = 
+                '<div style="color:var(--ok);font-weight:600;margin-bottom:4px;">[OK] EVALUATED RATIONAL AST</div>' +
+                '<div>Status: <span class="badge badge-warn">' + model.status + '</span></div>' +
+                '<div>Formula: <strong>' + model.formula_id + '</strong></div>' +
+                '<div>Calculated Result: <strong>₹' + (model.result.value / 100).toFixed(2) + '</strong> (' + model.result.value + ' ' + model.result.unit + ')</div>' +
+                '<div>Exact Rational: <code>' + model.result.rational_representation + '</code></div>' +
+                '<div style="color:var(--text-muted);margin-top:6px;font-size:10px;">Zero State Mutation Enforced: Projection remains purely server-evaluated candidate AST.</div>';
+            }
+          } catch (err) {
+            whatIfResult.innerHTML = '<span style="color:var(--blocked);">Network error during evaluation: ' + String(err) + '</span>';
+          }
+        });
+      }
+
+      // 5. WebSocket Live Telemetry Broadcast
+      var wsIndicator = document.getElementById('ws-indicator');
+      var lastUpdateSpan = document.getElementById('last-update-time');
+      var ws = null;
+      var reconnectTimer = null;
+
+      function connectWs() {
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        var wsUrl = protocol + '//' + window.location.host + '/ws';
+
+        try {
+          ws = new WebSocket(wsUrl);
+          if (wsIndicator) {
+            wsIndicator.className = 'badge badge-warn';
+            wsIndicator.textContent = '[WS: CONNECTING]';
+          }
+
+          ws.onopen = function() {
+            if (wsIndicator) {
+              wsIndicator.className = 'badge badge-ok';
+              wsIndicator.textContent = '[WS: CONNECTED]';
+            }
+          };
+
+          ws.onmessage = function(event) {
+            try {
+              var msg = JSON.parse(event.data);
+              if (msg.type === 'TERMINAL_SNAPSHOT_BROADCAST') {
+                if (lastUpdateSpan) {
+                  lastUpdateSpan.textContent = 'Updated: ' + (msg.snapshot ? msg.snapshot.as_of_timestamp_utc : new Date().toISOString());
+                }
+              }
+            } catch (e) {
+              console.error('Failed to parse WS broadcast message', e);
+            }
+          };
+
+          ws.onclose = function() {
+            if (wsIndicator) {
+              wsIndicator.className = 'badge badge-blocked';
+              wsIndicator.textContent = '[WS: DISCONNECTED]';
+            }
+            reconnectTimer = setTimeout(connectWs, 3000);
+          };
+
+          ws.onerror = function() {
+            if (wsIndicator) {
+              wsIndicator.className = 'badge badge-blocked';
+              wsIndicator.textContent = '[WS: ERROR]';
+            }
+          };
+        } catch (e) {
+          if (wsIndicator) {
+            wsIndicator.className = 'badge badge-blocked';
+            wsIndicator.textContent = '[WS: ERROR]';
+          }
+          reconnectTimer = setTimeout(connectWs, 3000);
+        }
+      }
+
+      if (typeof window !== 'undefined' && window.location && window.location.host) {
+        connectWs();
+      }
+    })();
+  </script>
 </body>
 </html>`;
 }
