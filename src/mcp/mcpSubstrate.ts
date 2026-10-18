@@ -350,6 +350,7 @@ export function verifyCapabilityGrantSignature(
 
 export interface McpBrokerOptions {
   readonly hmacSecret?: string;
+  readonly requireInitializedSession?: boolean;
 }
 
 export class McpCapabilityBroker {
@@ -360,15 +361,23 @@ export class McpCapabilityBroker {
   private readonly taskCumulativeWallClock = new Map<string, number>();
   private readonly activeAbortControllers = new Map<string | number, AbortController>();
   private initialized = false;
+  public requireInitializedSession = false;
 
   constructor(server: McpServerAdapter, runLedger?: McpRunLedger, options?: McpBrokerOptions) {
     this.server = server;
     this.runLedger = runLedger ?? new McpRunLedger();
     this.options = options;
+    if (options?.requireInitializedSession !== undefined) {
+      this.requireInitializedSession = options.requireInitializedSession;
+    }
   }
 
   public getRunLedger(): McpRunLedger {
     return this.runLedger;
+  }
+
+  public getOptions(): McpBrokerOptions | undefined {
+    return this.options;
   }
 
   public getUsage(grantId: string): { requests_made: number; tokens_used: number } | undefined {
@@ -496,6 +505,11 @@ export class McpCapabilityBroker {
     }
 
     try {
+      // 0. Session Initialization Check if required
+      if (this.requireInitializedSession && !this.initialized) {
+        throw new Error('E-MCP-SESSION-NOT-INITIALIZED: Client session has not completed notifications/initialized handshake.');
+      }
+
       // 0a. HMAC Signature Verification if broker configured with secret
       if (this.options?.hmacSecret) {
         if (!grant.grant_signature_hmac || !verifyCapabilityGrantSignature(grant, this.options.hmacSecret)) {
@@ -816,6 +830,16 @@ export class McpCapabilityBroker {
       }
 
       case 'tools/call': {
+        if (this.requireInitializedSession && !this.initialized) {
+          return {
+            jsonrpc: '2.0',
+            id,
+            error: {
+              code: -32002,
+              message: 'E-MCP-SESSION-NOT-INITIALIZED: Client session has not completed notifications/initialized handshake.'
+            }
+          };
+        }
         if (!grant) {
           return {
             jsonrpc: '2.0',
@@ -856,6 +880,33 @@ export class McpCapabilityBroker {
       }
     }
   }
+
+  /**
+   * Alias for handleRpcMessage conforming to Task 1 specification.
+   */
+  public async handleJsonRpcMessage(
+    message: McpRpcRequest,
+    sessionContext?: {
+      grant?: CapabilityGrant | null;
+      callingWorkerId?: string;
+      callingTaskId?: string;
+      requireInitializedSession?: boolean;
+    } | CapabilityGrant | null,
+    callingContext?: { callingWorkerId?: string; callingTaskId?: string }
+  ): Promise<McpRpcResponse | null> {
+    if (sessionContext && 'worker_id' in sessionContext && 'task_id' in sessionContext) {
+      return this.handleRpcMessage(message, sessionContext as CapabilityGrant, callingContext);
+    }
+    const grant = (sessionContext as any)?.grant ?? null;
+    const ctx = callingContext ?? {
+      callingWorkerId: (sessionContext as any)?.callingWorkerId,
+      callingTaskId: (sessionContext as any)?.callingTaskId
+    };
+    if ((sessionContext as any)?.requireInitializedSession !== undefined) {
+      this.requireInitializedSession = (sessionContext as any).requireInitializedSession;
+    }
+    return this.handleRpcMessage(message, grant, ctx);
+  }
 }
 
 // ============================================================================
@@ -868,6 +919,7 @@ export interface ConstrainedHttpsOptions {
   readonly max_payload_bytes: number;
   readonly timeout_ms: number;
   readonly allow_redirects?: boolean;
+  readonly dnsLookupFn?: (hostname: string) => Promise<{ address: string; family: number }[]>;
 }
 
 export interface ConstrainedHttpsResponse {
@@ -898,9 +950,10 @@ export class ConstrainedHttpsConnector {
 
     // DNS Pre-Resolution Check
     const hostname = parsed.hostname.toLowerCase();
+    const lookupFn = options.dnsLookupFn ?? (async (h: string) => dns.lookup(h, { all: true }));
     let addresses: { address: string; family: number }[];
     try {
-      addresses = await dns.lookup(hostname, { all: true });
+      addresses = await lookupFn(hostname);
     } catch (dnsErr: unknown) {
       throw new Error(`E-MCP-DNS-RESOLUTION-FAILED: DNS lookup failed for '${hostname}': ${dnsErr instanceof Error ? dnsErr.message : String(dnsErr)}`);
     }

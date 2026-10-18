@@ -1,13 +1,13 @@
 # POC-001 — Capital-Allocation Research and Market Simulation Platform
-## Project Charter v0.2.6
+## Project Charter v0.2.7
 
-**Document Status:** APPROVED / CLOSED (Gates M0–M6 and Gates M6.1–M6.8 Fully Closed & Verified; Release Ready)  
-**Governance Authority:** Project Owner Directive (Decision OD-18, 18 October 2026)  
+**Document Status:** APPROVED / CLOSED (Gates M0–M6 and Gates M6.1–M6.9 Fully Closed & Verified; 269 Tests across 31 Suites Passing; Release Ready)  
+**Governance Authority:** Project Owner Directive (Decision OD-19, 18 October 2026)  
 **Target Repository:** `D:\Market HFT OS` (Workspace Root)  
 **Legacy Reference Repository:** `D:\Market HFT OS\_salvage\AIStudio` (Preserved in read-only quarantine)  
 **External Research Pool:** `D:\Market HFT OS\_salvage\external\` (Preserved in read-only quarantine)  
 **Operating Mode:** DRY_RUN / Paper Simulation; Actuals Execution strictly disabled  
-**Micro-Agent Boundary:** The MCP Broker & Micro-Agent Framework (Gates M6.1–M6.8) is fully implemented, verified, and closed under strict paper-only (`DRY_RUN`), non-destructive evaluation, and mandatory human-authorization confirmation gates (`POC.docx` §2, §6.5, §7–§13, §15).
+**Micro-Agent Boundary:** The MCP Broker & Micro-Agent Framework (Gates M6.1–M6.9) is fully implemented, verified, and closed under strict paper-only (`DRY_RUN`), non-destructive evaluation, and mandatory human-authorization confirmation gates (`POC.docx` §2, §6.5, §7–§13, §15).
 
 ---
 
@@ -392,7 +392,7 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 |---|---|---|---|
 | 0.1 | Workspace discovery and context acquisition | Discovery report produced | ✅ Complete |
 | 0.2 | Legacy repository recovery & independent audit | Salvage Report & Addendum v1.4 completed | ✅ Complete |
-| 0.3 | Project Charter produced | This document (v0.2.6) | ✅ Approved |
+| 0.3 | Project Charter produced | This document (v0.2.7) | ✅ Approved |
 | 0.4 | Root Git repository initialization & `_salvage/` quarantine | Repository exists with charter as initial commit | ✅ Complete |
 | 0.5 | Create `RESEARCH_CORPUS_INDEX.md` | Corpus documents indexed with key decisions | ✅ Complete |
 
@@ -422,8 +422,8 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 | **M6.5** | Micro-Agent #4: GovtStatutoryAndTariffWorker, HSN Verification, Duty Shock Matrix & Reverse-Charge Engine | `src/agents/workers/govtStatutoryWorker.ts` (`GovtStatutoryAndTariffWorker`, `evaluateCustomsShockMatrix`) | `suite27_m6_5_govt_statutory_worker.test.ts` (8 tests) |
 | **M6.6** | Micro-Agent #5: RedTeamConflictWorker, 7-Rule Invariant Sieve, Hallucination Spotter & Counter-Factual Sensitivity | `src/agents/workers/redTeamWorker.ts` (`RedTeamConflictWorker`, `executeRedTeamSieve`) | `suite28_m6_6_red_team_conflict_worker.test.ts` (8 tests) |
 | **M6.7** | Signal Bus, Evidence Promotion, Context Routing State Machine & Bounded DAG Cooperation | `src/agents/cooperation/contextRoutingStateMachine.ts`, `src/research/m5SignalAndEvidenceEngine.ts` | `suite29_m6_7_context_dag_and_cooperation.test.ts` (8 tests) |
-| **M6.8** | MCP Protocol Wire Lifecycle, Constrained HTTPS Egress, First-Class Evidence Origin Firewall, Provider Certification Bench & Plan-Driven Wave Execution | `src/mcp/mcpSubstrate.ts`, `src/agents/evaluation/goldenExtractionBench.ts`, `src/research/llmFormulaAdvisor.ts`, `src/agents/cooperation/contextRoutingStateMachine.ts` | `suite30_m6_8_mcp_hardening_and_worker_certification.test.ts` (10 tests) |
-| **M6.9** | 8-Workspace Read-Only Operator Terminal, 3-Tier Kill Switch, Governed Confirmation Gate, Telemetry, Two-Level Error Presentation & 12-Point Release Gate | `src/mcp/contracts/operatorTerminalContract.ts`, `src/terminal/operatorTerminalController.ts` (`OperatorTerminalController`, `KillSwitchController`, `executeGovernedOperatorAction`, `renderOperatorTerminalHtml`, `evaluateTwelvePointPlatformReadiness`) | `suite31_m6_9_operator_terminal_and_release_gate.test.ts` (8 tests) |
+| **M6.8** | Stage 8 Read-Only Operator Terminal Projection, 3-Tier Kill Switch, Two-Level Error Presentation & 12-Point Release Gate | `src/mcp/contracts/operatorTerminalContract.ts`, `src/terminal/operatorTerminalController.ts` (`OperatorTerminalController`, `KillSwitchController`, `executeGovernedOperatorAction`, `renderOperatorTerminalHtml`, `evaluateTwelvePointPlatformReadiness`) | `suite30_m6_8_operator_terminal_and_release_gate.test.ts` (8 tests) |
+| **M6.9** | Gate M6.9 Comprehensive MCP Protocol Hardening, Constrained Egress, First-Class Evidence Origin Firewall, GoldenExtractionBench, Topological DAG Waves & Terminal Telemetry Upgrade (Decision OD-19 / Charter DEC-019) | `src/mcp/mcpSubstrate.ts`, `src/agents/evaluation/goldenExtractionBench.ts`, `src/research/llmFormulaAdvisor.ts`, `src/agents/scheduler/contextRoutingStateMachine.ts`, `src/terminal/operatorTerminalController.ts` | `suite31_m6_9_mcp_hardening_and_terminal_certification.test.ts` (12 tests) |
 
 ---
 

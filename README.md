@@ -6,7 +6,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 [![Vitest](https://img.shields.io/badge/Vitest-4.1.12-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.8-blue.svg)](https://www.postgresql.org/)
-[![Status](https://img.shields.io/badge/Gate_M6.9_Conformance-Passing_(267_Tests_/_31_Suites)-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Gate_M6.9_Conformance-Passing_(269_Tests_/_31_Suites)-brightgreen.svg)]()
 
 ---
 
@@ -95,17 +95,17 @@ npm run typecheck
 # Standard run (skips live PostgreSQL tests cleanly if DATABASE_URL is unset)
 npm test
 
-# Full run with live PostgreSQL 16.8 (runs all 249 tests across 29 suites)
+# Full run with live PostgreSQL 16.8 (runs all 269 tests across 31 suites)
 $env:DATABASE_URL = "postgresql://postgres@localhost:5432/market_hft_test"
 npm test
 ```
-*Expected output: 29 test files passed, 249 tests passed (Exit code 0).*
+*Expected output: 31 test files passed, 269 tests passed (Exit code 0).*
 
 ### Step 4: Generate Machine-Readable Audit Report
 ```bash
 npm run test:json
 ```
-*Generates `test-results.json` recording 29 passed test files and 249 passed tests.*
+*Generates `test-results.json` recording 31 passed test files and 269 passed tests.*
 
 
 ---
@@ -259,5 +259,33 @@ npm run test:json
   - Enforces zero-cost substitution ban on mandatory freight/packaging (RT-06) and blocks future clock skew or expired evidence TTL (RT-07) -> `HOLD_BLOCKED_BY_RED_TEAM` (`MCP-RTW-MANDATORY-COST-DATA-AND-CLOCK-SKEW-006`).
   - Enforces zero network egress (`allowed_hosts: []`) and hard disposition ceiling (`HOLD_BLOCKED_BY_RED_TEAM`, `REQUIRES_SUPPLEMENTARY_CORROBORATION`, `ELIGIBLE_FOR_HUMAN_REVIEW`), failing closed on `APPROVED_FOR_EXECUTION` with `E-RTW-DISPOSITION-CEILING-BREACH` (`MCP-RTW-DISPOSITION-CEILING-AND-ZERO-NETWORK-EGRESS-007`).
   - Executes 3-pass `ContextRoutingStateMachine` coordinating horizontal gap-filling, supplementary corroboration & join, and red-team audit with bit-for-bit RFC 8785 JCS canonical attestation and SHA-256 telemetry digest (`MCP-RTW-3PASS-SCHEDULER-STATE-MACHINE-008`).
+- **`suite29_m6_7_context_dag_and_cooperation.test.ts` (8 tests)**: Gate M6.7 Typed Context DAG Scheduler, Bounded Concurrency, Deduplication & Capital Gate:
+  - Kahn's algorithm cycle detection and topological sorting (`validateDagAcyclicity`, `E-DAG-CYCLE-DETECTED`).
+  - Bounded concurrency with deterministic barrier ordering (`runBoundedParallel`).
+  - Idempotent task deduplication preserving quotas (`DEDUPLICATED_REPLAY`).
+  - Full Pass 4 Capital Gate with bitemporal restatement and fail-closed firewalls.
+- **`suite30_m6_8_operator_terminal_and_release_gate.test.ts` (8 tests)**: Stage 8 Read-Only Operator Terminal Projection, 3-Tier Kill Switch, Two-Level Error Presentation & 12-Point Release Gate:
+  - 8-workspace deterministic read-only projection without vanity profit mixing (`POC.docx` §10.1).
+  - 10-dimension comparison without composite scores, separating conviction from allocation (`POC.docx` §8).
+  - 3-tier kill switch controller (`HALT_NEW_ALLOCATIONS`, `HALT_ALL_SIMULATION_PROCESSING`, `ENTER_RECOVERY_ONLY_MODE`).
+  - Governed confirmation envelope with $\ge 15$-character rationale.
+  - Two-level error envelopes with secret scrubbing and unknown-outcome write timeouts.
+  - Cross-ledger comparison and 7-bucket inventory conservation.
+  - Dark-mode accessible HTML5/SVG workstation rendering.
+  - 12-point platform release gate evaluating RFC 8785 JCS SHA-256 certificate (`POC.docx` §13).
+- **`suite31_m6_9_mcp_hardening_and_terminal_certification.test.ts` (12 tests)**: Gate M6.9 Comprehensive MCP Protocol Hardening, Constrained Egress, First-Class Evidence Origin Firewall, GoldenExtractionBench, Topological DAG Waves & Terminal Telemetry Upgrade (Decision OD-19 / Charter DEC-019):
+  - MCP 2025-11-25 wire lifecycle negotiation (`initialize`, `ping`, `tools/list`, `resources/read`) and positive tool manifests (`additionalProperties: false`, handler SHA-256 integrity).
+  - HMAC-SHA256 signed capability grants, identity binding, and cumulative task wall-clock budget quotas.
+  - Constrained HTTPS connector: strict port 443 locking, pre-resolved DNS rebinding prevention, and custom `dnsLookupFn`.
+  - In-flight streaming response cutoff via `ReadableStream` reader and `AbortController` latency timeouts.
+  - Honest evidence origin tracking: fail-closed worker sources (`E-WORKER-UNSUPPORTED-OR-UNMAPPED-SOURCE`) and requested vs resolved source identities.
+  - Origin promotion firewall (`E-EV-NON-LIVE-ORIGIN-PROMOTION-FORBIDDEN`), RedTeam rule `RT-08`, and look-ahead bias firewall (`E-MLW-LOOKAHEAD-BIAS-REJECTED`).
+  - GroqFormulaAdvisor endpoint locking (`https://api.groq.com/openai/v1/chat/completions`), secret scrubbing (`redactPromptSecrets` / `redactPromptInputs`), and `LLM_MODEL_PROPOSAL` origin tagging.
+  - Adala-style `GoldenExtractionBench` 10000n bps certification across all 4 specialist extraction workers.
+  - Plan-driven topological multi-wave DAG execution (`executeCompiledDagPlan`) with activation predicate filtering and bounded concurrency.
+  - Durable append-only ledger and DAG checkpoint persistence with tamper detection (`E-MCP-LEDGER-TAMPERED`, `E-DAG-CHECKPOINT-TAMPERED`).
+  - Stage 9 Operator Terminal projection: Origin breakdown, HMAC/DNS egress telemetry, GoldenExtractionBench scores, dynamic 7-bucket check (`OTC-01`), and HTML sanitization (`OTC-02`).
+  - End-to-end RFC 8785 JCS canonicalization determinism and platform release gate capstone proving Charter DEC-019 invariants.
+
 
 

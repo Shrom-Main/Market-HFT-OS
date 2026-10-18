@@ -126,6 +126,8 @@ export function redactPromptSecrets(text: string): string {
     .replace(/(?:bearer|key|token|password|secret)[=:\s]+['"]?[a-zA-Z0-9_\-\.]{8,}['"]?/gi, '[REDACTED_SECRET]');
 }
 
+export const redactPromptInputs = redactPromptSecrets;
+
 export class GroqFormulaAdvisor {
   private readonly apiKey: string | null;
   private readonly model: string;

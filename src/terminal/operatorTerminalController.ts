@@ -120,6 +120,16 @@ export function createEvidenceOriginBadge(
   };
 }
 
+export function escapeHtml(str: string): string {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 // -----------------------------------------------------------------------------
 // 1. THREE-TIER KILL-SWITCH CONTROLLER (POC.docx §8)
 // -----------------------------------------------------------------------------
@@ -163,17 +173,17 @@ export class KillSwitchController {
   public assertAllocationAllowed(): void {
     if (this.currentScope === 'HALT_NEW_ALLOCATIONS') {
       throw new Error(
-        'E-M9-KILLSWITCH-NEW-ALLOCATIONS-HALTED: Kill switch active in HALT_NEW_ALLOCATIONS scope; new paper capital commitments blocked.'
+        'E-M8-KILLSWITCH-NEW-ALLOCATIONS-HALTED: Kill switch active in HALT_NEW_ALLOCATIONS scope; new paper capital commitments blocked.'
       );
     }
     if (this.currentScope === 'HALT_ALL_SIMULATION_PROCESSING') {
       throw new Error(
-        'E-M9-KILLSWITCH-ALL-SIMULATION-HALTED: Kill switch active in HALT_ALL_SIMULATION_PROCESSING scope; simulation processing and new allocations blocked.'
+        'E-M8-KILLSWITCH-ALL-SIMULATION-HALTED: Kill switch active in HALT_ALL_SIMULATION_PROCESSING scope; simulation processing and new allocations blocked.'
       );
     }
     if (this.currentScope === 'ENTER_RECOVERY_ONLY_MODE') {
       throw new Error(
-        'E-M9-KILLSWITCH-RECOVERY-ONLY: Kill switch active in ENTER_RECOVERY_ONLY_MODE scope; system restricted strictly to recovery and reconciliation.'
+        'E-M8-KILLSWITCH-RECOVERY-ONLY: Kill switch active in ENTER_RECOVERY_ONLY_MODE scope; system restricted strictly to recovery and reconciliation.'
       );
     }
   }
@@ -181,12 +191,12 @@ export class KillSwitchController {
   public assertSimulationAllowed(): void {
     if (this.currentScope === 'HALT_ALL_SIMULATION_PROCESSING') {
       throw new Error(
-        'E-M9-KILLSWITCH-ALL-SIMULATION-HALTED: Kill switch active in HALT_ALL_SIMULATION_PROCESSING scope; simulation processing halted.'
+        'E-M8-KILLSWITCH-ALL-SIMULATION-HALTED: Kill switch active in HALT_ALL_SIMULATION_PROCESSING scope; simulation processing halted.'
       );
     }
     if (this.currentScope === 'ENTER_RECOVERY_ONLY_MODE') {
       throw new Error(
-        'E-M9-KILLSWITCH-RECOVERY-ONLY: Kill switch active in ENTER_RECOVERY_ONLY_MODE scope; system restricted strictly to recovery and reconciliation.'
+        'E-M8-KILLSWITCH-RECOVERY-ONLY: Kill switch active in ENTER_RECOVERY_ONLY_MODE scope; system restricted strictly to recovery and reconciliation.'
       );
     }
   }
@@ -194,7 +204,7 @@ export class KillSwitchController {
   public assertResearchAllowed(): void {
     if (this.currentScope === 'ENTER_RECOVERY_ONLY_MODE') {
       throw new Error(
-        'E-M9-KILLSWITCH-RECOVERY-ONLY: Kill switch active in ENTER_RECOVERY_ONLY_MODE scope; system restricted strictly to recovery and reconciliation.'
+        'E-M8-KILLSWITCH-RECOVERY-ONLY: Kill switch active in ENTER_RECOVERY_ONLY_MODE scope; system restricted strictly to recovery and reconciliation.'
       );
     }
   }
@@ -222,7 +232,7 @@ export class KillSwitchController {
       confirmation.explicit_rationale.trim().length < 15
     ) {
       throw new Error(
-        'E-M9-CONFIRMATION-AND-RATIONALE-REQUIRED: Action requires explicit confirmation token and rationale of at least 15 characters.'
+        'E-M8-CONFIRMATION-AND-RATIONALE-REQUIRED: Action requires explicit confirmation token and rationale of at least 15 characters.'
       );
     }
   }
@@ -244,7 +254,7 @@ export function executeGovernedOperatorAction<T>(
     confirmation.explicit_rationale.trim().length < 15
   ) {
     throw new Error(
-      'E-M9-CONFIRMATION-AND-RATIONALE-REQUIRED: Action requires explicit confirmation token and rationale of at least 15 characters.'
+      'E-M8-CONFIRMATION-AND-RATIONALE-REQUIRED: Action requires explicit confirmation token and rationale of at least 15 characters.'
     );
   }
 
@@ -308,7 +318,7 @@ export function formatTwoLevelError(
   }
 
   if (secretDetected) {
-    scrubbedMessage = `[E-M9-SECRET-REDACTED] ${scrubbedMessage}`;
+    scrubbedMessage = `[E-M8-SECRET-REDACTED] ${scrubbedMessage}`;
   }
 
   // Determine outcome status: mid-write timeout vs definite failure
@@ -341,7 +351,7 @@ export function formatTwoLevelError(
 
   // Extract error code
   const codeMatch = rawMessage.match(/E-[A-Z0-9-]+/);
-  const errorCode = codeMatch ? codeMatch[0] : (secretDetected ? 'E-M9-SECRET-REDACTED' : 'E-M9-OPERATOR-ERROR');
+  const errorCode = codeMatch ? codeMatch[0] : (secretDetected ? 'E-M8-SECRET-REDACTED' : 'E-M8-OPERATOR-ERROR');
 
   return {
     operator_message: scrubbedMessage,
@@ -475,7 +485,7 @@ export class OperatorTerminalController {
     // 1. Enforce No Single Vanity Profit Figure (`POC.docx` §10.1)
     if (params.command_center.vanity_profit_check !== undefined) {
       throw new Error(
-        'E-M9-VANITY-PROFIT-FORBIDDEN: Combining forecasts, paper results, and actuals into a single profit figure is strictly prohibited by POC.docx §10.1.'
+        'E-M8-VANITY-PROFIT-FORBIDDEN: Combining forecasts, paper results, and actuals into a single profit figure is strictly prohibited by POC.docx §10.1.'
       );
     }
 
@@ -502,7 +512,7 @@ export class OperatorTerminalController {
     ) {
       if (invSum !== inv.total_conserved && !hasReconExceptions) {
         throw new Error(
-          'E-M9-RECONCILIATION-EXCEPTION: 7-bucket inventory conservation sum mismatch detected in simulation positions.'
+          'E-M8-RECONCILIATION-EXCEPTION: 7-bucket inventory conservation sum mismatch detected in simulation positions.'
         );
       }
     }
@@ -522,9 +532,9 @@ export class OperatorTerminalController {
           fixtureCount++;
         } else if (oClass === 'LLM_MODEL_PROPOSAL') {
           proposalCount++;
-        } else if (rec.resolved_source_identity.startsWith('fixture://')) {
+        } else if (rec.resolved_source_identity?.startsWith('fixture://')) {
           fixtureCount++;
-        } else if (rec.resolved_source_identity.startsWith('https://')) {
+        } else if (rec.resolved_source_identity?.startsWith('https://')) {
           liveCount++;
         }
       }
@@ -674,6 +684,20 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
   const recon = workspaces.reconciliation_and_performance;
   const risk = workspaces.risk_audit_and_system_health;
 
+  const inv = sim.seven_bucket_inventory;
+  const invSum =
+    inv.raw_material +
+    inv.work_in_progress +
+    inv.finished_goods +
+    inv.intransit_to_fba +
+    inv.fba_available +
+    inv.reserved_customer +
+    inv.returned_quarantine;
+  const isInvBalanced = invSum === inv.total_conserved;
+  const invBadgeHtml = isInvBalanced
+    ? '<span class="badge badge-ok">[OK]</span>'
+    : '<span class="badge badge-blocked">[BLOCKED] MISMATCH</span>';
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -815,7 +839,7 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
       <div class="card" id="workspace-command-center">
         <h2>
           1. Command Center
-          <span class="badge badge-ok" aria-label="${cc.ledger_reconciliation_status.aria_description}">${cc.ledger_reconciliation_status.icon_symbol} ${cc.ledger_reconciliation_status.label}</span>
+          <span class="badge badge-ok" aria-label="${escapeHtml(cc.ledger_reconciliation_status.aria_description)}">${escapeHtml(cc.ledger_reconciliation_status.icon_symbol)} ${escapeHtml(cc.ledger_reconciliation_status.label)}</span>
         </h2>
         <table>
           <tr><td>Available Treasury Capital</td><td class="metric-value">₹${cc.available_treasury_capital_inr.value}<span class="provenance-tag">${cc.available_treasury_capital_inr.classification}</span></td></tr>
@@ -1030,7 +1054,7 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
               <td>${sim.seven_bucket_inventory.fba_available}</td>
               <td>${sim.seven_bucket_inventory.reserved_customer}</td>
               <td>${sim.seven_bucket_inventory.returned_quarantine}</td>
-              <td><strong>${sim.seven_bucket_inventory.total_conserved}</strong> <span class="badge badge-ok">[OK]</span></td>
+              <td><strong>${sim.seven_bucket_inventory.total_conserved}</strong> ${invBadgeHtml}</td>
             </tr>
           </tbody>
         </table>

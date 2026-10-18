@@ -210,10 +210,10 @@ export interface EvidenceWorkbenchRecord {
   readonly evidence_kind: string;
   readonly verification_status: string;
   readonly commercial_status: string;
-  readonly requested_url: string;
-  readonly resolved_source_identity: string;
+  readonly requested_url?: string;
+  readonly resolved_source_identity?: string;
   readonly evidence_origin?: EvidenceOriginBadge;
-  readonly lookahead_bias_status: 'CLEAN_NO_LOOKAHEAD' | 'LOOKAHEAD_BIAS_REJECTED';
+  readonly lookahead_bias_status?: 'CLEAN_NO_LOOKAHEAD' | 'LOOKAHEAD_BIAS_REJECTED';
   readonly dom_sha256?: string;
   readonly transcript_sha256?: string;
   readonly circular_sha256?: string;

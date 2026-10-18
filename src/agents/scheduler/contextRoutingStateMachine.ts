@@ -1656,3 +1656,26 @@ export async function executeCompiledDagPlan(
 
 export const ContextDagOrchestrator = ContextRoutingStateMachine;
 export type ContextDagOrchestrator = ContextRoutingStateMachine;
+
+export async function saveDagCheckpointToFile(
+  arg1: string | DagCheckpoint,
+  arg2: DagCheckpoint | string
+): Promise<void> {
+  if (typeof arg1 === 'string') {
+    return DagCheckpointStore.saveCheckpointToFile(arg2 as DagCheckpoint, arg1);
+  } else {
+    return DagCheckpointStore.saveCheckpointToFile(arg1, arg2 as string);
+  }
+}
+
+export async function resumeDagFromCheckpoint(
+  filePath: string,
+  plan?: CompiledDagPlan,
+  initialContext?: Record<string, unknown>
+): Promise<any> {
+  const checkpoint = await DagCheckpointStore.resumeFromCheckpoint(filePath);
+  if (plan) {
+    return executeCompiledDagPlan(plan, initialContext ?? {}, checkpoint);
+  }
+  return checkpoint;
+}
