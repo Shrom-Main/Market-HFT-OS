@@ -51,6 +51,13 @@ export type SignalChannel =
   | 'LATERAL_FINANCIAL_MARKET'
   | 'GOVERNMENT_SCHEME_POLICY';
 
+export type EvidenceOriginClass =
+  | 'LIVE_VERIFIED_CAPTURE'
+  | 'RECORDED_GOLDEN_FIXTURE'
+  | 'CALLER_SUPPLIED_PAYLOAD'
+  | 'SYNTHETIC_SIMULATION'
+  | 'LLM_MODEL_PROPOSAL';
+
 export interface ProvenanceLineage {
   source_id: string;
   channel: SignalChannel;
@@ -58,6 +65,10 @@ export interface ProvenanceLineage {
   ttl_seconds: number;
   parent_claim_hashes?: string[];
   transformation_rule_id?: string;
+  evidence_origin_class?: EvidenceOriginClass;
+  requested_url?: string;
+  resolved_source_identity?: string;
+  extractor_version?: string;
 }
 
 export interface EvidenceEnvelope<T> {
@@ -95,6 +106,8 @@ export class EvidencePromotionEngine {
    * Promotes commercial status of an evidence envelope with strict validation.
    * Prohibits ADVERTISED_LISTING or SYNTHETIC_SCENARIO from promoting to
    * VERIFIED_EXECUTABLE_OFFER without cryptographic attestation or corroboration.
+   * Strictly bars non-live evidence origins (RECORDED_GOLDEN_FIXTURE, CALLER_SUPPLIED_PAYLOAD,
+   * SYNTHETIC_SIMULATION, LLM_MODEL_PROPOSAL) from promoting to VERIFIED_EXECUTABLE_OFFER.
    */
   public static promoteCommercialStatus<T>(
     envelope: EvidenceEnvelope<T>,
@@ -106,6 +119,15 @@ export class EvidencePromotionEngine {
   ): EvidenceEnvelope<T> {
     // Check illegal promotion to VERIFIED_EXECUTABLE_OFFER
     if (targetStatus === 'VERIFIED_EXECUTABLE_OFFER') {
+      if (
+        envelope.provenance.evidence_origin_class &&
+        envelope.provenance.evidence_origin_class !== 'LIVE_VERIFIED_CAPTURE'
+      ) {
+        throw new Error(
+          `E-EV-NON-LIVE-ORIGIN-PROMOTION-FORBIDDEN: Cannot promote claim with origin '${envelope.provenance.evidence_origin_class}' to VERIFIED_EXECUTABLE_OFFER. Only LIVE_VERIFIED_CAPTURE claims can be promoted to executable offers.`
+        );
+      }
+
       const isAttested =
         envelope.verification_status === 'CRYPTOGRAPHICALLY_ATTESTED' ||
         Boolean(options?.attestation_signature);

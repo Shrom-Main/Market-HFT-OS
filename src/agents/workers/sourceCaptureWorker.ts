@@ -163,6 +163,9 @@ export interface SourceCaptureEvidenceEnvelope {
   readonly commercial_status: 'ADVERTISED_LISTING' | 'SUPPLIER_QUOTE';
   readonly provenance_lineage: {
     readonly source_id: string;
+    readonly requested_url?: string;
+    readonly resolved_source_identity?: string;
+    readonly evidence_origin_class?: 'LIVE_VERIFIED_CAPTURE' | 'RECORDED_GOLDEN_FIXTURE' | 'CALLER_SUPPLIED_PAYLOAD';
     readonly observed_at_utc: string;
     readonly ttl_seconds: number;
     readonly raw_sha256: string;
@@ -1195,8 +1198,12 @@ export function registerSourceCaptureTool(server: McpServerAdapter): void {
         : getDefaultExtractionRules(sourceProfile);
 
       let rawHtml = '';
+      let evidenceOriginClass: 'LIVE_VERIFIED_CAPTURE' | 'RECORDED_GOLDEN_FIXTURE' | 'CALLER_SUPPLIED_PAYLOAD' = 'RECORDED_GOLDEN_FIXTURE';
+      let resolvedSourceIdentity = targetUrl;
 
       if (executionMode === 'APPROVED_LIVE_HTTPS_GET') {
+        evidenceOriginClass = 'LIVE_VERIFIED_CAPTURE';
+        resolvedSourceIdentity = targetUrl;
         const fetchRes = await fetch(targetUrl, {
           method: 'GET',
           redirect: 'error'
@@ -1213,17 +1220,29 @@ export function registerSourceCaptureTool(server: McpServerAdapter): void {
         // RECORDED_FIXTURE_REPLAY
         if (rawHtmlPayload) {
           rawHtml = rawHtmlPayload;
+          evidenceOriginClass = 'CALLER_SUPPLIED_PAYLOAD';
+          resolvedSourceIdentity = 'caller://raw_html_payload';
         } else if (fixtureId) {
           rawHtml = SourceCaptureFixtureRegistry.getFixture(fixtureId) ?? '';
+          evidenceOriginClass = 'RECORDED_GOLDEN_FIXTURE';
+          resolvedSourceIdentity = `fixture://${fixtureId}`;
         } else if (targetUrl.includes('B09XYZ1234') || targetUrl.includes('amazon')) {
           rawHtml = SourceCaptureFixtureRegistry.getFixture('amazon_in_b09xyz1234') ?? '';
-        } else if (targetUrl.includes('howrah') || targetUrl.includes('indiamart')) {
+          evidenceOriginClass = 'RECORDED_GOLDEN_FIXTURE';
+          resolvedSourceIdentity = 'fixture://amazon_in_b09xyz1234';
+        } else if (targetUrl.includes('howrah') || targetUrl.includes('howrah-ss304-clamp')) {
           rawHtml = SourceCaptureFixtureRegistry.getFixture('howrah_ss304_supplier') ?? '';
+          evidenceOriginClass = 'RECORDED_GOLDEN_FIXTURE';
+          resolvedSourceIdentity = 'fixture://howrah_ss304_supplier';
+        } else if (targetUrl.includes('ss304-bracket') || targetUrl.includes('indiamart-tier')) {
+          rawHtml = SourceCaptureFixtureRegistry.getFixture('indiamart_tiered_moq') ?? '';
+          evidenceOriginClass = 'RECORDED_GOLDEN_FIXTURE';
+          resolvedSourceIdentity = 'fixture://indiamart_tiered_moq';
         }
 
         if (!rawHtml) {
           throw new Error(
-            `E-SCW-FIXTURE-NOT-FOUND: No recorded fixture available for target '${targetUrl}'.`
+            `E-WORKER-UNSUPPORTED-OR-UNMAPPED-SOURCE: Target URL '${targetUrl}' has no mapped golden fixture and live egress is not permitted.`
           );
         }
       }
@@ -1411,6 +1430,9 @@ export function registerSourceCaptureTool(server: McpServerAdapter): void {
           commercial_status: commercialStatus,
           provenance_lineage: Object.freeze({
             source_id: targetUrl,
+            requested_url: targetUrl,
+            resolved_source_identity: resolvedSourceIdentity,
+            evidence_origin_class: evidenceOriginClass,
             observed_at_utc: capturedAtUtc,
             ttl_seconds: 86400,
             raw_sha256: sieveResult.raw_response_sha256,

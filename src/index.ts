@@ -37,3 +37,4 @@ export * from './agents/workers/redTeamWorker.js';
 export * from './agents/scheduler/contextRoutingStateMachine.js';
 export * from './mcp/contracts/operatorTerminalContract.js';
 export * from './terminal/operatorTerminalController.js';
+export * from './agents/evaluation/goldenExtractionBench.js';

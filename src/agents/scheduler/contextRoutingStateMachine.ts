@@ -19,6 +19,7 @@
  *    - Corroborated candidate -> evaluateOptimalBatchSize + BitemporalRestatementEngine with distinct t_d and t_k.
  */
 
+import fs from 'node:fs/promises';
 import { sha256 } from '../../canonical/crypto.js';
 import { canonicalizeJCS } from '../../canonical/jcs.js';
 import { sanitizeForJcs } from '../m6AgentFramework.js';
@@ -97,11 +98,73 @@ export interface DagTaskNode {
   readonly pass_number: DagPassNumber;
   readonly worker_id: string;
   readonly depends_on_node_ids: readonly string[];
-  readonly idempotency_key: string;
-  readonly status: DagTaskNodeStatus;
+  readonly idempotency_key?: string;
+  readonly status?: DagTaskNodeStatus;
   readonly error_code?: string;
   readonly error_message?: string;
   readonly result_summary?: string;
+  readonly activation_predicate?: (contextSnapshot: Readonly<Record<string, unknown>>) => boolean;
+  readonly action?: (contextSnapshot: Readonly<Record<string, unknown>>) => Promise<Record<string, unknown>>;
+  readonly required_capabilities?: readonly string[];
+}
+
+export interface CompiledDagPlan {
+  readonly plan_id: string;
+  readonly max_parallel_workers?: number;
+  readonly max_wall_clock_budget_ms?: number;
+  readonly granted_capabilities?: readonly string[];
+  readonly nodes: readonly DagTaskNode[];
+}
+
+export interface CompiledDagExecutionResult {
+  readonly plan_id: string;
+  readonly run_id: string;
+  readonly status: 'SUCCESS' | 'PARTIAL_DEGRADED_HOLD' | 'BLOCKED_BY_POLICY';
+  readonly waves_executed: number;
+  readonly total_nodes_evaluated: number;
+  readonly completed_nodes: readonly string[];
+  readonly skipped_nodes: readonly string[];
+  readonly failed_nodes: readonly string[];
+  readonly context_snapshot: Record<string, unknown>;
+  readonly elapsed_ms: number;
+  readonly checkpoint_hash: string;
+  readonly timestamp_utc: string;
+  readonly checkpoint: DagCheckpoint;
+}
+
+export interface DagCheckpoint {
+  readonly plan_id: string;
+  readonly run_id: string;
+  readonly timestamp_utc: string;
+  readonly completed_node_ids: readonly string[];
+  readonly skipped_node_ids: readonly string[];
+  readonly node_results: Record<string, unknown>;
+  readonly context_snapshot: Record<string, unknown>;
+  readonly checkpoint_hash: string;
+}
+
+export class DagCheckpointStore {
+  public static computeCheckpointHash(checkpoint: Omit<DagCheckpoint, 'checkpoint_hash'>): string {
+    return sha256(canonicalizeJCS(sanitizeForJcs(checkpoint)));
+  }
+
+  public static async saveCheckpointToFile(checkpoint: DagCheckpoint, filePath: string): Promise<void> {
+    const jcs = canonicalizeJCS(sanitizeForJcs(checkpoint));
+    await fs.writeFile(filePath, jcs, 'utf8');
+  }
+
+  public static async resumeFromCheckpoint(filePath: string): Promise<DagCheckpoint> {
+    const raw = await fs.readFile(filePath, 'utf8');
+    const parsed: DagCheckpoint = JSON.parse(raw);
+    const { checkpoint_hash, ...rest } = parsed;
+    const computed = sha256(canonicalizeJCS(sanitizeForJcs(rest)));
+    if (computed !== checkpoint_hash) {
+      throw new Error(
+        `E-DAG-CHECKPOINT-TAMPERED: Checkpoint hash verification failed. Expected ${checkpoint_hash}, computed ${computed}.`
+      );
+    }
+    return Object.freeze(parsed);
+  }
 }
 
 export interface DagExecutionPlan {
@@ -1367,6 +1430,228 @@ export class ContextRoutingStateMachine {
 
     return deepFreeze(finalRecord);
   }
+
+  /**
+   * Executes a plan-driven compiled DAG with topological wave dispatching and bounded parallelism.
+   */
+  public async executePlan(
+    plan: CompiledDagPlan,
+    initialContext: Record<string, unknown> = {},
+    resumeCheckpoint?: DagCheckpoint
+  ): Promise<CompiledDagExecutionResult> {
+    return executeCompiledDagPlan(plan, initialContext, resumeCheckpoint);
+  }
+}
+
+/**
+ * Plan-Driven Topological Wave Dispatcher for Compiled DAGs.
+ * Enforces acyclicity, capability matching, budget limits, dynamic activation predicates,
+ * bounded parallelism, and deterministic JCS checkpointing.
+ */
+export async function executeCompiledDagPlan(
+  plan: CompiledDagPlan,
+  initialContext: Record<string, unknown> = {},
+  resumeCheckpoint?: DagCheckpoint
+): Promise<CompiledDagExecutionResult> {
+  const startMs = Date.now();
+  const runId = resumeCheckpoint?.run_id ?? `dag-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const nodeMap = new Map<string, DagTaskNode>();
+  for (const node of plan.nodes) {
+    nodeMap.set(node.node_id, node);
+  }
+
+  // 1. Missing Dependencies Check
+  for (const node of plan.nodes) {
+    for (const depId of node.depends_on_node_ids) {
+      if (!nodeMap.has(depId)) {
+        throw new Error(
+          `E-DAG-MISSING-DEPENDENCY: Node '${node.node_id}' depends on unknown node '${depId}'.`
+        );
+      }
+    }
+  }
+
+  // 2. Capability Matching Check
+  if (plan.granted_capabilities) {
+    const granted = new Set(plan.granted_capabilities);
+    for (const node of plan.nodes) {
+      if (node.required_capabilities) {
+        for (const cap of node.required_capabilities) {
+          if (!granted.has(cap)) {
+            throw new Error(
+              `E-DAG-CAPABILITY-MISMATCH: Node '${node.node_id}' requires capability '${cap}' which is not in granted_capabilities [${plan.granted_capabilities.join(', ')}].`
+            );
+          }
+        }
+      }
+    }
+  }
+
+  // 3. Acyclicity Validation
+  validateDagAcyclicity(plan.nodes);
+
+  // 4. In-Degree & Dependents Topology Mapping
+  const inDegree = new Map<string, number>();
+  const dependents = new Map<string, string[]>();
+  for (const node of plan.nodes) {
+    inDegree.set(node.node_id, node.depends_on_node_ids.length);
+    for (const dep of node.depends_on_node_ids) {
+      if (!dependents.has(dep)) dependents.set(dep, []);
+      dependents.get(dep)!.push(node.node_id);
+    }
+  }
+
+  // If resuming from checkpoint, seed completed/skipped and context
+  const completedNodeIds = new Set<string>(resumeCheckpoint?.completed_node_ids ?? []);
+  const skippedNodeIds = new Set<string>(resumeCheckpoint?.skipped_node_ids ?? []);
+  const failedNodeIds = new Set<string>();
+  const contextSnapshot: Record<string, unknown> = {
+    ...initialContext,
+    ...(resumeCheckpoint?.context_snapshot ?? {})
+  };
+  const nodeResults: Record<string, unknown> = {
+    ...(resumeCheckpoint?.node_results ?? {})
+  };
+
+  // Decrement inDegree for already completed/skipped dependencies
+  for (const doneId of [...completedNodeIds, ...skippedNodeIds]) {
+    const children = dependents.get(doneId) ?? [];
+    for (const childId of children) {
+      const deg = inDegree.get(childId) ?? 0;
+      if (deg > 0) inDegree.set(childId, deg - 1);
+    }
+  }
+
+  let wavesExecuted = 0;
+  let totalNodesEvaluated = 0;
+  const maxParallel = plan.max_parallel_workers ?? 3;
+
+  while (true) {
+    // Find all nodes whose in-degree is 0 and not yet processed
+    const waveNodeIds: string[] = [];
+    for (const node of plan.nodes) {
+      if (
+        (inDegree.get(node.node_id) ?? 0) === 0 &&
+        !completedNodeIds.has(node.node_id) &&
+        !skippedNodeIds.has(node.node_id) &&
+        !failedNodeIds.has(node.node_id)
+      ) {
+        waveNodeIds.push(node.node_id);
+      }
+    }
+
+    if (waveNodeIds.length === 0) {
+      break; // All reachable nodes processed
+    }
+
+    // Deterministic canonical sort by node_id within each wave
+    waveNodeIds.sort();
+    wavesExecuted++;
+
+    // In each wave, determine which nodes to execute vs skip by policy
+    const eligibleToRun: DagTaskNode[] = [];
+    for (const nodeId of waveNodeIds) {
+      totalNodesEvaluated++;
+      const node = nodeMap.get(nodeId)!;
+
+      // Check activation predicate
+      if (node.activation_predicate) {
+        const frozenCtx = deepFreeze({ ...contextSnapshot });
+        let shouldActivate = false;
+        try {
+          shouldActivate = node.activation_predicate(frozenCtx);
+        } catch {
+          shouldActivate = false;
+        }
+        if (!shouldActivate) {
+          skippedNodeIds.add(nodeId);
+          // Free its dependents
+          const children = dependents.get(nodeId) ?? [];
+          for (const child of children) {
+            const deg = inDegree.get(child) ?? 0;
+            if (deg > 0) inDegree.set(child, deg - 1);
+          }
+          continue;
+        }
+      }
+
+      eligibleToRun.push(node);
+    }
+
+    // Execute eligible active nodes in bounded parallel batches
+    for (let i = 0; i < eligibleToRun.length; i += maxParallel) {
+      const batch = eligibleToRun.slice(i, i + maxParallel);
+      await Promise.all(
+        batch.map(async (node) => {
+          const elapsedSoFar = Date.now() - startMs;
+          if (plan.max_wall_clock_budget_ms !== undefined && elapsedSoFar > plan.max_wall_clock_budget_ms) {
+            throw new Error(
+              `E-DAG-BUDGET-OVERFLOW: Execution elapsed ${elapsedSoFar}ms, exceeding max_wall_clock_budget_ms (${plan.max_wall_clock_budget_ms}ms).`
+            );
+          }
+
+          if (node.action) {
+            try {
+              const result = await node.action(deepFreeze({ ...contextSnapshot }));
+              nodeResults[node.node_id] = result;
+              Object.assign(contextSnapshot, result);
+              completedNodeIds.add(node.node_id);
+            } catch (err: unknown) {
+              failedNodeIds.add(node.node_id);
+              throw err;
+            }
+          } else {
+            completedNodeIds.add(node.node_id);
+          }
+
+          // Free dependents
+          const children = dependents.get(node.node_id) ?? [];
+          for (const child of children) {
+            const deg = inDegree.get(child) ?? 0;
+            if (deg > 0) inDegree.set(child, deg - 1);
+          }
+        })
+      );
+    }
+  }
+
+  const totalElapsedMs = Date.now() - startMs;
+  if (plan.max_wall_clock_budget_ms !== undefined && totalElapsedMs > plan.max_wall_clock_budget_ms) {
+    throw new Error(
+      `E-DAG-BUDGET-OVERFLOW: Execution elapsed ${totalElapsedMs}ms, exceeding max_wall_clock_budget_ms (${plan.max_wall_clock_budget_ms}ms).`
+    );
+  }
+
+  const checkpointPayload = {
+    plan_id: plan.plan_id,
+    run_id: runId,
+    timestamp_utc: new Date().toISOString(),
+    completed_node_ids: Array.from(completedNodeIds).sort(),
+    skipped_node_ids: Array.from(skippedNodeIds).sort(),
+    node_results: sanitizeForJcs(nodeResults),
+    context_snapshot: sanitizeForJcs(contextSnapshot)
+  };
+  const checkpointHash = sha256(canonicalizeJCS(checkpointPayload));
+  const checkpoint: DagCheckpoint = Object.freeze({
+    ...checkpointPayload,
+    checkpoint_hash: checkpointHash
+  });
+
+  return Object.freeze({
+    plan_id: plan.plan_id,
+    run_id: runId,
+    status: failedNodeIds.size > 0 ? 'PARTIAL_DEGRADED_HOLD' : 'SUCCESS',
+    waves_executed: wavesExecuted,
+    total_nodes_evaluated: totalNodesEvaluated,
+    completed_nodes: Object.freeze(Array.from(completedNodeIds).sort()),
+    skipped_nodes: Object.freeze(Array.from(skippedNodeIds).sort()),
+    failed_nodes: Object.freeze(Array.from(failedNodeIds).sort()),
+    context_snapshot: deepFreeze({ ...contextSnapshot }),
+    elapsed_ms: totalElapsedMs,
+    checkpoint_hash: checkpointHash,
+    timestamp_utc: checkpointPayload.timestamp_utc,
+    checkpoint
+  });
 }
 
 export const ContextDagOrchestrator = ContextRoutingStateMachine;

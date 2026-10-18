@@ -118,6 +118,14 @@ export interface LlmCandidateEvaluationResult {
   error?: string;
 }
 
+export const APPROVED_GROQ_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
+
+export function redactPromptSecrets(text: string): string {
+  return text
+    .replace(/gsk_[a-zA-Z0-9_\-]+/g, '[REDACTED_SECRET]')
+    .replace(/(?:bearer|key|token|password|secret)[=:\s]+['"]?[a-zA-Z0-9_\-\.]{8,}['"]?/gi, '[REDACTED_SECRET]');
+}
+
 export class GroqFormulaAdvisor {
   private readonly apiKey: string | null;
   private readonly model: string;
@@ -136,7 +144,12 @@ export class GroqFormulaAdvisor {
   constructor(options?: GroqFormulaAdvisorOptions) {
     this.apiKey = options?.apiKey ?? loadGroqKeyFromEnv();
     this.model = options?.model ?? process.env.GROQ_MODEL ?? 'openai/gpt-oss-120b';
-    this.endpoint = options?.endpoint ?? 'https://api.groq.com/openai/v1/chat/completions';
+    this.endpoint = options?.endpoint ?? APPROVED_GROQ_ENDPOINT;
+    if (this.endpoint !== APPROVED_GROQ_ENDPOINT) {
+      throw new Error(
+        `E-GROQ-UNAPPROVED-ENDPOINT: Groq endpoint '${this.endpoint}' is not permitted. Network egress strictly locked to '${APPROVED_GROQ_ENDPOINT}'.`
+      );
+    }
     this.offlineFallback = options?.offlineFallback ?? true;
     this.forceSimulated = options?.forceSimulated ?? false;
   }
@@ -210,7 +223,8 @@ export class GroqFormulaAdvisor {
             Unit_Cost: 500
           },
           expected_output: 10000
-        }
+        },
+        evidence_origin_class: 'LLM_MODEL_PROPOSAL'
       };
     }
 
@@ -239,7 +253,8 @@ export class GroqFormulaAdvisor {
             SocialWelfareSurcharge: 1500
           },
           expected_output: 36500
-        }
+        },
+        evidence_origin_class: 'LLM_MODEL_PROPOSAL'
       };
     }
 
@@ -266,7 +281,8 @@ export class GroqFormulaAdvisor {
             DefaultProbabilityBps: 250
           },
           expected_output: 25000
-        }
+        },
+        evidence_origin_class: 'LLM_MODEL_PROPOSAL'
       };
     }
 
@@ -287,7 +303,8 @@ export class GroqFormulaAdvisor {
       canonical_test_vector: {
         inputs: { BaseValue: 10000, MarginBuffer: 2500 },
         expected_output: 12500
-      }
+      },
+      evidence_origin_class: 'LLM_MODEL_PROPOSAL'
     };
   }
 
@@ -331,6 +348,7 @@ Do not include any markdown wrappers or commentary, only the raw JSON object.`;
       if (existingFormula) {
         userPrompt += `\nExisting formula to refine:\nID: ${existingFormula.formula_id}\nTitle: ${existingFormula.title}\nExpression: ${existingFormula.symbolic_expression}\nTest Vector: ${JSON.stringify(existingFormula.canonical_test_vector)}`;
       }
+      userPrompt = redactPromptSecrets(userPrompt);
 
       const res = await fetch(this.endpoint, {
         method: 'POST',
@@ -455,7 +473,8 @@ Do not include any markdown wrappers or commentary, only the raw JSON object.`;
       canonical_test_vector: {
         inputs,
         expected_output
-      }
+      },
+      evidence_origin_class: 'LLM_MODEL_PROPOSAL'
     };
   }
 

@@ -116,6 +116,9 @@ export interface MediaChatterEvidenceEnvelope {
   readonly commercial_status: 'NOT_APPLICABLE';
   readonly provenance_lineage: {
     readonly source_id: string;
+    readonly requested_url?: string;
+    readonly resolved_source_identity?: string;
+    readonly evidence_origin_class?: 'LIVE_VERIFIED_CAPTURE' | 'RECORDED_GOLDEN_FIXTURE' | 'CALLER_SUPPLIED_PAYLOAD';
     readonly observed_at_utc: string;
     readonly ttl_seconds: number;
     readonly raw_sha256: string;
@@ -524,28 +527,42 @@ export function registerMediaChatterTool(server: McpServerAdapter): void {
 
       let rawText = '';
       let fixtureData: RegisteredChatterFixture | undefined;
+      let evidenceOriginClass: 'LIVE_VERIFIED_CAPTURE' | 'RECORDED_GOLDEN_FIXTURE' | 'CALLER_SUPPLIED_PAYLOAD' = 'RECORDED_GOLDEN_FIXTURE';
+      let resolvedSourceIdentity = targetUrl;
 
       if (rawPayload) {
         rawText = rawPayload;
+        evidenceOriginClass = 'CALLER_SUPPLIED_PAYLOAD';
+        resolvedSourceIdentity = 'caller://raw_transcript_payload';
       } else if (fixtureId) {
         fixtureData = MediaChatterFixtureRegistry.getFixture(fixtureId);
-        rawText = fixtureData?.transcript ?? '';
+        if (!fixtureData) {
+          throw new Error(`E-WORKER-UNSUPPORTED-OR-UNMAPPED-SOURCE: Fixture '${fixtureId}' not found.`);
+        }
+        rawText = fixtureData.transcript;
+        evidenceOriginClass = 'RECORDED_GOLDEN_FIXTURE';
+        resolvedSourceIdentity = `fixture://${fixtureId}`;
       } else if (targetUrl.includes('youtube')) {
         fixtureData = MediaChatterFixtureRegistry.getFixture('youtube_ss304_unboxing');
         rawText = fixtureData?.transcript ?? '';
+        evidenceOriginClass = 'RECORDED_GOLDEN_FIXTURE';
+        resolvedSourceIdentity = 'fixture://youtube_ss304_unboxing';
       } else if (targetUrl.includes('sellercentral')) {
         fixtureData = MediaChatterFixtureRegistry.getFixture('seller_central_forum');
         rawText = fixtureData?.transcript ?? '';
+        evidenceOriginClass = 'RECORDED_GOLDEN_FIXTURE';
+        resolvedSourceIdentity = 'fixture://seller_central_forum';
       } else if (targetUrl.includes('amazon')) {
         fixtureData = MediaChatterFixtureRegistry.getFixture('amazon_buyer_reviews');
         rawText = fixtureData?.transcript ?? '';
+        evidenceOriginClass = 'RECORDED_GOLDEN_FIXTURE';
+        resolvedSourceIdentity = 'fixture://amazon_buyer_reviews';
       } else {
-        fixtureData = MediaChatterFixtureRegistry.getFixture('youtube_ss304_unboxing');
-        rawText = fixtureData?.transcript ?? '';
+        throw new Error(`E-WORKER-UNSUPPORTED-OR-UNMAPPED-SOURCE: Target URL '${targetUrl}' has no mapped golden fixture and live egress is not permitted.`);
       }
 
       if (!rawText) {
-        throw new Error(`E-MCW-FIXTURE-NOT-FOUND: No transcript available for target '${targetUrl}'.`);
+        throw new Error(`E-WORKER-UNSUPPORTED-OR-UNMAPPED-SOURCE: No transcript available for target '${targetUrl}'.`);
       }
 
       // 1. Sanitize transcript stream (256KB cap, null-byte check, NFC normalize, zero-width strip)
@@ -702,6 +719,9 @@ export function registerMediaChatterTool(server: McpServerAdapter): void {
           commercial_status: 'NOT_APPLICABLE',
           provenance_lineage: Object.freeze({
             source_id: targetUrl,
+            requested_url: targetUrl,
+            resolved_source_identity: resolvedSourceIdentity,
+            evidence_origin_class: evidenceOriginClass,
             observed_at_utc: capturedAtUtc,
             ttl_seconds: 604800,
             raw_sha256: rawSha256,

@@ -58,6 +58,7 @@ export interface FormulaCard {
   rationale_and_invariants: string;
   canonical_test_vector: FormulaTestVector;
   jcs_hash: string;
+  evidence_origin_class?: string;
 }
 
 export interface FormulaRetrievalResult {

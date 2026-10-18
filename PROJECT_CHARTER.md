@@ -379,6 +379,7 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 | **DEC-015** | Explicit evidence promotion state machine | 2026-10-10 | Promotion requires documented transition event, corroborating evidence, and timestamp; historical records immutable |
 | **DEC-016** | Real-money fidelity and dual-ledger reconciliation module | 2026-10-10 | Real vs paper money ratio tracked; bank statement / settlement reconciliation module on dashboard |
 | **DEC-017** | Secret environment variable configuration for GitHub operations | 2026-10-10 | `GithubPersonalAccessTokenFORAG.env` used for remote operations; never read, printed, or tracked in git |
+| **DEC-018** | Governed MCP Broker & 5-Worker Specialist Architecture Hardening | 2026-10-18 | Authorizes Gate M6.1–M6.8 as bounded research extension under paper-only (DRY_RUN) constraints; enforces wire-level MCP lifecycle, positive manifests, streaming bytes limit, DNS rebinding prevention, honest evidence provenance, DAG plan execution, and provider certification. |
 
 ---
 
@@ -390,9 +391,9 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 |---|---|---|---|
 | 0.1 | Workspace discovery and context acquisition | Discovery report produced | ✅ Complete |
 | 0.2 | Legacy repository recovery & independent audit | Salvage Report & Addendum v1.4 completed | ✅ Complete |
-| 0.3 | Project Charter produced | This document (v0.2.4) | ⏳ Ready for owner approval |
-| 0.4 | Root Git repository initialization & `_salvage/` quarantine | Repository exists with charter as initial commit | Blocked on 0.3 & Gate 3 |
-| 0.5 | Create `RESEARCH_CORPUS_INDEX.md` | Corpus documents indexed with key decisions | Blocked on 0.4 |
+| 0.3 | Project Charter produced | This document (v0.2.6) | ✅ Approved |
+| 0.4 | Root Git repository initialization & `_salvage/` quarantine | Repository exists with charter as initial commit | ✅ Complete |
+| 0.5 | Create `RESEARCH_CORPUS_INDEX.md` | Corpus documents indexed with key decisions | ✅ Complete |
 
 ### Phase 1 — Requirements Baseline and Architecture Decisions
 
@@ -404,6 +405,23 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 | 1.4 | Epistemic framework: evidence schemas, provenance rules, governed assumptions | Framework approved |
 | 1.5 | Economic engine specification: Strategy #1 cost model + common comparison measures | Specification approved; contract tests defined |
 | 1.6 | Risk-framework specification: capital controls, exposure limits, simulated ledgers | Framework approved |
+
+---
+
+## 13. Requirement-to-Code-and-Test Traceability Matrix (Gates M6.1–M6.8)
+
+*Default classification: Commitment.*
+
+| Gate | Capability / Architectural Requirement | Implementation File(s) & Key Exports | Acceptance Test Suite |
+|---|---|---|---|
+| **M6.1** | Micro-Agent Substrate, Broker, Policy Sandbox & Epistemic Ceiling | `src/mcp/mcpSubstrate.ts` (`McpCapabilityBroker`, `McpRunLedger`, `createSecureMcpContext`) | `suite23_m6_1_mcp_substrate_and_broker.test.ts` (8 tests) |
+| **M6.2** | Micro-Agent #1: SourceCaptureWorker, 6-Layer DOM Sieve, Tiered MOQ Bracket Resolver | `src/agents/workers/sourceCaptureWorker.ts` (`SourceCaptureWorker`, `resolveTieredMoqPrice`) | `suite24_m6_2_source_capture_worker.test.ts` (9 tests) |
+| **M6.3** | Micro-Agent #2: MediaAndChatterWorker, Spotlight Nonce, Verbatim Citations & Chatter Supplement Trigger | `src/agents/workers/mediaChatterWorker.ts` (`MediaAndChatterWorker`, `evaluateChatterSupplementTrigger`) | `suite25_m6_3_media_chatter_worker.test.ts` (8 tests) |
+| **M6.4** | Micro-Agent #3: MacroAndLateralMarketWorker, SS304 Scrap Floor, Formula-RAG Driver & Regime Classification | `src/agents/workers/macroLateralWorker.ts` (`MacroAndLateralMarketWorker`, `evaluateDynamicGrowthDriver`) | `suite26_m6_4_macro_lateral_and_regime_worker.test.ts` (8 tests) |
+| **M6.5** | Micro-Agent #4: GovtStatutoryAndTariffWorker, HSN Verification, Duty Shock Matrix & Reverse-Charge Engine | `src/agents/workers/govtStatutoryWorker.ts` (`GovtStatutoryAndTariffWorker`, `evaluateCustomsShockMatrix`) | `suite27_m6_5_govt_statutory_worker.test.ts` (8 tests) |
+| **M6.6** | Micro-Agent #5: RedTeamConflictWorker, 7-Rule Invariant Sieve, Hallucination Spotter & Counter-Factual Sensitivity | `src/agents/workers/redTeamWorker.ts` (`RedTeamConflictWorker`, `executeRedTeamSieve`) | `suite28_m6_6_red_team_conflict_worker.test.ts` (8 tests) |
+| **M6.7** | Signal Bus, Evidence Promotion, Context Routing State Machine & Bounded DAG Cooperation | `src/agents/cooperation/contextRoutingStateMachine.ts`, `src/research/m5SignalAndEvidenceEngine.ts` | `suite29_m6_7_context_dag_and_cooperation.test.ts` (8 tests) |
+| **M6.8** | MCP Protocol Wire Lifecycle, Constrained HTTPS Egress, First-Class Evidence Origin Firewall, Provider Certification Bench & Plan-Driven Wave Execution | `src/mcp/mcpSubstrate.ts`, `src/agents/evaluation/goldenExtractionBench.ts`, `src/research/llmFormulaAdvisor.ts`, `src/agents/cooperation/contextRoutingStateMachine.ts` | `suite30_m6_8_mcp_hardening_and_worker_certification.test.ts` (10 tests) |
 
 ---
 

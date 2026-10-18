@@ -529,7 +529,44 @@ export function registerGovtStatutoryTool(server: McpServerAdapter): void {
         }
       }
 
-      // 5. Success Response
+      // 5. Look-Ahead Bias Check on Statutory Citations
+      for (const claim of claims) {
+        if (claim.citation?.effective_from_date) {
+          const effDate = claim.citation.effective_from_date;
+          const refDate = referenceTimeUtc.slice(0, 10);
+          if (effDate > refDate) {
+            const lookaheadFailResponse: GovtStatutoryMcpResponse = {
+              request_id: taskId,
+              requested_at_utc: referenceTimeUtc,
+              status: 'DATA_REQUIRED',
+              error_code: 'E-MLW-LOOKAHEAD-BIAS-REJECTED',
+              error_reason: `E-MLW-LOOKAHEAD-BIAS-REJECTED: Statutory citation effective date '${effDate}' is in the future relative to reference date '${refDate}'. Look-ahead bias prohibited.`,
+              claims: [],
+              evidence_envelope: Object.freeze({
+                evidence_kind: 'SOURCE_DOCUMENT',
+                verification_status: 'UNVERIFIED',
+                commercial_status: 'NOT_APPLICABLE',
+                provenance_lineage: Object.freeze({
+                  source_id: sourceUrl,
+                  requested_url: sourceUrl,
+                  resolved_source_identity: customClaims ? 'caller://custom_claims' : `fixture://${claim.rule_id}`,
+                  evidence_origin_class: customClaims ? 'CALLER_SUPPLIED_PAYLOAD' : 'RECORDED_GOLDEN_FIXTURE',
+                  observed_at_utc: referenceTimeUtc,
+                  ttl_seconds: 604800,
+                  extractor_version: 'gsw-statutory-sieve-v1.0.0'
+                })
+              })
+            };
+            const serialized = canonicalizeJCS(sanitizeForJcs(lookaheadFailResponse));
+            return {
+              content: [{ type: 'text', text: serialized }],
+              tokens_used: Math.ceil(serialized.length / 4)
+            };
+          }
+        }
+      }
+
+      // 6. Success Response
       const successResponse: GovtStatutoryMcpResponse = {
         request_id: taskId,
         requested_at_utc: referenceTimeUtc,
@@ -542,6 +579,9 @@ export function registerGovtStatutoryTool(server: McpServerAdapter): void {
           commercial_status: 'NOT_APPLICABLE',
           provenance_lineage: Object.freeze({
             source_id: sourceUrl,
+            requested_url: sourceUrl,
+            resolved_source_identity: customClaims ? 'caller://custom_claims' : `fixture://${claims[0]?.rule_id || 'cbic-gst'}`,
+            evidence_origin_class: customClaims ? 'CALLER_SUPPLIED_PAYLOAD' : 'RECORDED_GOLDEN_FIXTURE',
             observed_at_utc: referenceTimeUtc,
             ttl_seconds: 604800,
             extractor_version: 'gsw-statutory-sieve-v1.0.0'

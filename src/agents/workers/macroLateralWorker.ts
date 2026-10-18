@@ -519,9 +519,40 @@ export function registerMacroLateralTool(server: McpServerAdapter): void {
         };
       }
 
-      // 4. Staleness Validation
+      // 4. Look-Ahead Bias & Staleness Validation
       const obsTimeMs = new Date(latestObs.timestamp_utc).getTime();
       const refTimeMs = new Date(referenceTimeUtc).getTime();
+
+      if (obsTimeMs > refTimeMs) {
+        const lookaheadResponse: MacroLateralMcpResponse = {
+          request_id: String(args.request_id || args.task_id || `mlw-req-${seriesId}`),
+          series_id: seriesId,
+          requested_at_utc: referenceTimeUtc,
+          status: 'DATA_REQUIRED',
+          error_code: 'E-MLW-LOOKAHEAD-BIAS-REJECTED',
+          error_reason: `E-MLW-LOOKAHEAD-BIAS-REJECTED: Latest observation timestamp '${latestObs.timestamp_utc}' is in the future relative to reference time '${referenceTimeUtc}'. Look-ahead bias prohibited.`,
+          evidence_envelope: Object.freeze({
+            evidence_kind: 'OBSERVED_FACT',
+            verification_status: 'UNVERIFIED',
+            commercial_status: 'NOT_APPLICABLE',
+            provenance_lineage: Object.freeze({
+              source_id: sourceUrl,
+              requested_url: sourceUrl,
+              resolved_source_identity: customObs ? 'caller://custom_observations' : `fixture://${seriesId}`,
+              evidence_origin_class: customObs ? 'CALLER_SUPPLIED_PAYLOAD' : 'RECORDED_GOLDEN_FIXTURE',
+              observed_at_utc: referenceTimeUtc,
+              ttl_seconds: 604800,
+              extractor_version: 'mlw-macro-sieve-v1.0.0'
+            })
+          })
+        };
+        const serializedLookahead = canonicalizeJCS(sanitizeForJcs(lookaheadResponse));
+        return {
+          content: [{ type: 'text', text: serializedLookahead }],
+          tokens_used: Math.ceil(serializedLookahead.length / 4)
+        };
+      }
+
       const stalenessSeconds = Math.floor((refTimeMs - obsTimeMs) / 1000);
 
       if (stalenessSeconds > maxStalenessSeconds) {
@@ -538,6 +569,9 @@ export function registerMacroLateralTool(server: McpServerAdapter): void {
             commercial_status: 'NOT_APPLICABLE',
             provenance_lineage: Object.freeze({
               source_id: sourceUrl,
+              requested_url: sourceUrl,
+              resolved_source_identity: customObs ? 'caller://custom_observations' : `fixture://${seriesId}`,
+              evidence_origin_class: customObs ? 'CALLER_SUPPLIED_PAYLOAD' : 'RECORDED_GOLDEN_FIXTURE',
               observed_at_utc: referenceTimeUtc,
               ttl_seconds: 604800,
               extractor_version: 'mlw-macro-sieve-v1.0.0'
@@ -636,6 +670,9 @@ export function registerMacroLateralTool(server: McpServerAdapter): void {
           commercial_status: 'NOT_APPLICABLE',
           provenance_lineage: Object.freeze({
             source_id: sourceUrl,
+            requested_url: sourceUrl,
+            resolved_source_identity: customObs ? 'caller://custom_observations' : `fixture://${seriesId}`,
+            evidence_origin_class: customObs ? 'CALLER_SUPPLIED_PAYLOAD' : 'RECORDED_GOLDEN_FIXTURE',
             observed_at_utc: latestObs.timestamp_utc,
             ttl_seconds: maxStalenessSeconds,
             extractor_version: 'mlw-macro-sieve-v1.0.0'

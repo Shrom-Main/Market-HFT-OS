@@ -383,6 +383,36 @@ export class RedTeamAuditEvaluator {
 
     return null;
   }
+
+  /**
+   * Rule RT-08: Non-Live Evidence Origin Firewall Check
+   */
+  public static evaluateEvidenceOrigin(args: {
+    evidence_origin_class?: string;
+    intended_commercial_status?: string;
+    envelope_id?: string;
+  }): RedTeamAuditFinding | null {
+    if (!args.evidence_origin_class) return null;
+    const isLive = args.evidence_origin_class === 'LIVE_VERIFIED_CAPTURE';
+    const isExecutableOrCommitment =
+      args.intended_commercial_status === 'VERIFIED_EXECUTABLE_OFFER' ||
+      args.intended_commercial_status === 'ACCEPTED_COMMITMENT' ||
+      args.intended_commercial_status === 'ALLOCATE_PAPER_SIMULATION';
+
+    if (!isLive && isExecutableOrCommitment) {
+      return {
+        rule_id: 'RT-08-NON-LIVE-EVIDENCE-ORIGIN',
+        severity: 'BLOCK_ALLOCATION_GATE',
+        rule_name: 'Non-Live Evidence Origin Firewall',
+        description: `Evidence envelope '${args.envelope_id || 'unidentified'}' carries non-live origin '${args.evidence_origin_class}'. Promotion to executable offer or commitment requires LIVE_VERIFIED_CAPTURE.`,
+        evidence_citations: Object.freeze(['DEC-018-EVIDENCE-ORIGIN-FIREWALL']),
+        metric_involved: 'evidence_origin_class',
+        observed_value: args.evidence_origin_class,
+        threshold_or_floor: 'LIVE_VERIFIED_CAPTURE'
+      };
+    }
+    return null;
+  }
 }
 
 // ============================================================================
@@ -419,6 +449,8 @@ export const RED_TEAM_TOOL_DESCRIPTOR: McpToolDescriptor = Object.freeze({
       statutory_max_payment_terms_days: { type: 'number' },
       cost_breakdown: { type: 'object' },
       evidence_envelopes: { type: 'array' },
+      evidence_origin_class: { type: 'string' },
+      intended_commercial_status: { type: 'string' },
       attempted_disposition_override: { type: 'string' },
       raw_audit_payload: { type: 'string' }
     },
@@ -572,6 +604,13 @@ export function registerRedTeamTool(server: McpServerAdapter): void {
       });
       if (f7) findings.push(f7);
 
+      // Rule RT-08: Non-Live Evidence Origin Promotion Firewall
+      const f8 = RedTeamAuditEvaluator.evaluateEvidenceOrigin({
+        evidence_origin_class: args.evidence_origin_class as string | undefined,
+        intended_commercial_status: args.intended_commercial_status as string | undefined
+      });
+      if (f8) findings.push(f8);
+
       // 5. Determine Hard Disposition
       let disposition: RedTeamDisposition = 'ELIGIBLE_FOR_HUMAN_REVIEW';
       const hasBlock = findings.some((f) => f.severity === 'BLOCK_ALLOCATION_GATE');
@@ -627,6 +666,14 @@ export class RedTeamAndConflictWorker {
   public static readonly WORKER_ID = 'worker:red-team:v1';
   private readonly broker: McpCapabilityBroker;
   private readonly defaultGrant?: CapabilityGrant;
+
+  public static evaluateEvidenceOrigin(args: {
+    evidence_origin_class?: string;
+    intended_commercial_status?: string;
+    envelope_id?: string;
+  }): RedTeamAuditFinding | null {
+    return RedTeamAuditEvaluator.evaluateEvidenceOrigin(args);
+  }
 
   constructor(broker: McpCapabilityBroker, defaultGrant?: CapabilityGrant) {
     this.broker = broker;

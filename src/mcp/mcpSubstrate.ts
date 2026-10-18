@@ -18,6 +18,9 @@
  *    - Zero averaging, zero voting, fail-closed reconciliation
  */
 
+import crypto from 'node:crypto';
+import dns from 'node:dns/promises';
+import fs from 'node:fs/promises';
 import { canonicalizeJCS } from '../canonical/jcs.js';
 import { sha256 } from '../canonical/crypto.js';
 import { sanitizeForJcs } from '../agents/m6AgentFramework.js';
@@ -33,8 +36,12 @@ export interface McpToolDescriptor {
     readonly type: 'object';
     readonly properties: Record<string, unknown>;
     readonly required?: readonly string[];
+    readonly additionalProperties?: boolean;
   };
+  readonly handlerSha256?: string;
 }
+
+export type PositiveToolManifest = McpToolDescriptor;
 
 export interface McpToolCallRequest {
   readonly jsonrpc: '2.0';
@@ -44,6 +51,43 @@ export interface McpToolCallRequest {
     readonly name: string;
     readonly arguments: Record<string, unknown>;
   };
+}
+
+export interface McpRpcRequest {
+  readonly jsonrpc: '2.0';
+  readonly id?: string | number;
+  readonly method: string;
+  readonly params?: Record<string, unknown>;
+}
+
+export interface McpRpcResponse {
+  readonly jsonrpc: '2.0';
+  readonly id?: string | number;
+  readonly result?: unknown;
+  readonly error?: {
+    readonly code: number;
+    readonly message: string;
+    readonly data?: unknown;
+  };
+}
+
+export interface McpResourceDescriptor {
+  readonly uri: string;
+  readonly name: string;
+  readonly mimeType?: string;
+  readonly description?: string;
+}
+
+export interface McpResourceContent {
+  readonly uri: string;
+  readonly mimeType: string;
+  readonly text?: string;
+  readonly blob?: string;
+}
+
+export interface McpResourceDefinition {
+  readonly descriptor: McpResourceDescriptor;
+  readonly read: () => Promise<McpResourceContent>;
 }
 
 export interface McpContentItem {
@@ -78,6 +122,7 @@ export interface McpToolDefinition {
 
 export class McpServerAdapter {
   private readonly tools = new Map<string, McpToolDefinition>();
+  private readonly resources = new Map<string, McpResourceDefinition>();
 
   private static readonly FORBIDDEN_CAPABILITY_PATTERNS = [
     /(?:^|[^a-z0-9])(shell|bash|sh|cmd|powershell|exec|spawn|eval)(?:$|[^a-z0-9])/i,
@@ -87,7 +132,6 @@ export class McpServerAdapter {
     /(?:^|[^a-z0-9])(route_order|place_order|execute_trade|exchange_api|broker_api)(?:$|[^a-z0-9])/i,
     /(?:^|[^a-z0-9])(secret|read_env|groq_key|api_key|credential|token_store|password)(?:$|[^a-z0-9])/i
   ];
-
 
   public registerTool(tool: McpToolDefinition): void {
     const name = tool.descriptor.name;
@@ -106,6 +150,17 @@ export class McpServerAdapter {
       throw new Error(`E-MCP-TOOL-ALREADY-REGISTERED: Tool '${name}' is already registered.`);
     }
 
+    // Verify handler SHA-256 integrity if declared on descriptor
+    if (tool.descriptor.handlerSha256) {
+      const handlerStr = tool.handler.toString();
+      const computedSha = sha256(handlerStr);
+      if (computedSha !== tool.descriptor.handlerSha256) {
+        throw new Error(
+          `E-MCP-HANDLER-TAMPERED: Tool '${name}' handler SHA-256 integrity check failed. Declared ${tool.descriptor.handlerSha256}, computed ${computedSha}.`
+        );
+      }
+    }
+
     this.tools.set(name, tool);
   }
 
@@ -117,10 +172,47 @@ export class McpServerAdapter {
     return Array.from(this.tools.values()).map((t) => t.descriptor);
   }
 
+  public registerResource(resource: McpResourceDefinition): void {
+    const uri = resource.descriptor.uri;
+    if (this.resources.has(uri)) {
+      throw new Error(`E-MCP-RESOURCE-ALREADY-REGISTERED: Resource '${uri}' is already registered.`);
+    }
+    this.resources.set(uri, resource);
+  }
+
+  public getResource(uri: string): McpResourceDefinition | undefined {
+    return this.resources.get(uri);
+  }
+
+  public listResources(): readonly McpResourceDescriptor[] {
+    return Array.from(this.resources.values()).map((r) => r.descriptor);
+  }
+
+  public async readResource(uri: string): Promise<McpResourceContent> {
+    const res = this.resources.get(uri);
+    if (!res) {
+      throw new Error(`E-MCP-RESOURCE-NOT-FOUND: Resource '${uri}' is not registered on this server.`);
+    }
+    return res.read();
+  }
+
   public validateArguments(descriptor: McpToolDescriptor, args: Record<string, unknown>): void {
     if (!args || typeof args !== 'object' || Array.isArray(args)) {
       throw new Error(`E-MCP-INVALID-ARGUMENTS: Tool arguments must be a non-null object.`);
     }
+
+    // Strict positive manifest check: reject unknown arguments if additionalProperties is false
+    if (descriptor.inputSchema.additionalProperties === false) {
+      const allowedProps = new Set(Object.keys(descriptor.inputSchema.properties ?? {}));
+      for (const argKey of Object.keys(args)) {
+        if (!allowedProps.has(argKey)) {
+          throw new Error(
+            `E-MCP-UNKNOWN-ARGUMENT-REJECTED: Argument '${argKey}' is not permitted by positive manifest for tool '${descriptor.name}'.`
+          );
+        }
+      }
+    }
+
     const required = descriptor.inputSchema.required ?? [];
     for (const reqProp of required) {
       if (args[reqProp] === undefined || args[reqProp] === null) {
@@ -176,6 +268,10 @@ export class McpServerAdapter {
 // 3. CAPABILITY GRANT & EGRESS / SSRF POLICY
 // ============================================================================
 
+// ============================================================================
+// 3. CAPABILITY GRANT & EGRESS / SSRF POLICY
+// ============================================================================
+
 export interface CapabilityGrant {
   readonly grant_id: string;
   readonly task_id: string;
@@ -188,7 +284,9 @@ export interface CapabilityGrant {
   readonly max_payload_bytes: number;
   readonly max_latency_ms: number;
   readonly max_tokens: number;
+  readonly max_task_wall_clock_ms?: number;
   readonly expires_at_utc: string;
+  readonly grant_signature_hmac?: string;
 }
 
 export function createCapabilityGrant(params: {
@@ -203,7 +301,9 @@ export function createCapabilityGrant(params: {
   max_payload_bytes: number;
   max_latency_ms: number;
   max_tokens: number;
+  max_task_wall_clock_ms?: number;
   expires_at_utc: string;
+  grant_signature_hmac?: string;
 }): CapabilityGrant {
   const grant: CapabilityGrant = {
     grant_id: params.grant_id,
@@ -217,19 +317,54 @@ export function createCapabilityGrant(params: {
     max_payload_bytes: params.max_payload_bytes,
     max_latency_ms: params.max_latency_ms,
     max_tokens: params.max_tokens,
-    expires_at_utc: params.expires_at_utc
+    ...(params.max_task_wall_clock_ms !== undefined ? { max_task_wall_clock_ms: params.max_task_wall_clock_ms } : {}),
+    expires_at_utc: params.expires_at_utc,
+    ...(params.grant_signature_hmac ? { grant_signature_hmac: params.grant_signature_hmac } : {})
   };
   return Object.freeze(grant);
+}
+
+export function signCapabilityGrant(
+  grant: Omit<CapabilityGrant, 'grant_signature_hmac'>,
+  hmacSecret: string
+): CapabilityGrant {
+  const { ...fieldsWithoutSig } = grant;
+  const canonical = canonicalizeJCS(sanitizeForJcs(fieldsWithoutSig));
+  const signature = crypto.createHmac('sha256', Buffer.from(hmacSecret, 'utf8')).update(canonical).digest('hex');
+  return Object.freeze({
+    ...fieldsWithoutSig,
+    grant_signature_hmac: signature
+  });
+}
+
+export function verifyCapabilityGrantSignature(
+  grant: CapabilityGrant,
+  hmacSecret: string
+): boolean {
+  if (!grant.grant_signature_hmac) return false;
+  const { grant_signature_hmac, ...fieldsWithoutSig } = grant;
+  const canonical = canonicalizeJCS(sanitizeForJcs(fieldsWithoutSig));
+  const expected = crypto.createHmac('sha256', Buffer.from(hmacSecret, 'utf8')).update(canonical).digest('hex');
+  return grant.grant_signature_hmac === expected;
+}
+
+export interface McpBrokerOptions {
+  readonly hmacSecret?: string;
 }
 
 export class McpCapabilityBroker {
   private readonly server: McpServerAdapter;
   private readonly runLedger: McpRunLedger;
+  private readonly options?: McpBrokerOptions;
   private readonly usageRecords = new Map<string, { requests_made: number; tokens_used: number }>();
+  private readonly taskCumulativeWallClock = new Map<string, number>();
+  private readonly activeAbortControllers = new Map<string | number, AbortController>();
+  private initialized = false;
 
-  constructor(server: McpServerAdapter, runLedger?: McpRunLedger) {
+  constructor(server: McpServerAdapter, runLedger?: McpRunLedger, options?: McpBrokerOptions) {
     this.server = server;
     this.runLedger = runLedger ?? new McpRunLedger();
+    this.options = options;
   }
 
   public getRunLedger(): McpRunLedger {
@@ -239,6 +374,14 @@ export class McpCapabilityBroker {
   public getUsage(grantId: string): { requests_made: number; tokens_used: number } | undefined {
     const usage = this.usageRecords.get(grantId);
     return usage ? { ...usage } : undefined;
+  }
+
+  public getTaskWallClockMs(taskId: string): number {
+    return this.taskCumulativeWallClock.get(taskId) ?? 0;
+  }
+
+  public isInitialized(): boolean {
+    return this.initialized;
   }
 
   /**
@@ -336,14 +479,15 @@ export class McpCapabilityBroker {
   }
 
   /**
-   * Brokered tool execution with full 4-quota enforcement, method validation, and ledger recording.
+   * Brokered tool execution with full 4-quota enforcement, identity checks, method validation, and ledger recording.
    */
   public async invokeTool(
     grant: CapabilityGrant,
-    request: McpToolCallRequest
+    request: McpToolCallRequest,
+    callingContext?: { callingWorkerId?: string; callingTaskId?: string }
   ): Promise<McpToolCallResponse> {
-    const toolName = request.params.name;
-    const args = request.params.arguments ?? {};
+    const toolName = request.params?.name;
+    const args = request.params?.arguments ?? {};
 
     let usage = this.usageRecords.get(grant.grant_id);
     if (!usage) {
@@ -352,6 +496,25 @@ export class McpCapabilityBroker {
     }
 
     try {
+      // 0a. HMAC Signature Verification if broker configured with secret
+      if (this.options?.hmacSecret) {
+        if (!grant.grant_signature_hmac || !verifyCapabilityGrantSignature(grant, this.options.hmacSecret)) {
+          throw new Error('E-MCP-GRANT-SIGNATURE-INVALID: CapabilityGrant HMAC signature is invalid or missing.');
+        }
+      }
+
+      // 0b. Calling Worker and Task Identity Verification
+      if (callingContext?.callingWorkerId && callingContext.callingWorkerId !== grant.worker_id) {
+        throw new Error(
+          `E-MCP-WORKER-IDENTITY-MISMATCH: Calling worker '${callingContext.callingWorkerId}' does not match grant worker '${grant.worker_id}'.`
+        );
+      }
+      if (callingContext?.callingTaskId && callingContext.callingTaskId !== grant.task_id) {
+        throw new Error(
+          `E-MCP-WORKER-IDENTITY-MISMATCH: Calling task '${callingContext.callingTaskId}' does not match grant task '${grant.task_id}'.`
+        );
+      }
+
       // 1. Expiration check
       if (Date.now() > Date.parse(grant.expires_at_utc)) {
         throw new Error(
@@ -359,28 +522,36 @@ export class McpCapabilityBroker {
         );
       }
 
-      // 2. Tool permission check
+      // 2. Cumulative task wall-clock quota check (pre-flight)
+      const currentTaskElapsed = this.taskCumulativeWallClock.get(grant.task_id) ?? 0;
+      if (grant.max_task_wall_clock_ms !== undefined && currentTaskElapsed >= grant.max_task_wall_clock_ms) {
+        throw new Error(
+          `E-MCP-TASK-WALL-CLOCK-EXCEEDED: Cumulative task wall-clock budget of ${grant.max_task_wall_clock_ms}ms exhausted (already spent ${currentTaskElapsed}ms).`
+        );
+      }
+
+      // 3. Tool permission check
       if (!grant.allowed_tools.includes(toolName)) {
         throw new Error(
           `E-MCP-TOOL-NOT-PERMITTED: Worker '${grant.worker_id}' is not granted tool '${toolName}'. Allowed: [${grant.allowed_tools.join(', ')}].`
         );
       }
 
-      // 3. Request count quota check
+      // 4. Request count quota check
       if (usage.requests_made + 1 > grant.max_requests) {
         throw new Error(
           `E-MCP-REQUEST-QUOTA-EXCEEDED: Grant '${grant.grant_id}' exceeded max_requests quota (${grant.max_requests}).`
         );
       }
 
-      // 4. Method check (GET only)
+      // 5. Method check (GET only)
       if (args.method && String(args.method).toUpperCase() !== 'GET') {
         throw new Error(
           `E-MCP-METHOD-DENIED: Method '${args.method}' is denied. Only GET operations are permitted under read-only discovery.`
         );
       }
 
-      // 5. Redirect check
+      // 6. Redirect check
       if (
         args.allow_redirects === true ||
         (args.max_redirects !== undefined && Number(args.max_redirects) > 0) ||
@@ -395,13 +566,13 @@ export class McpCapabilityBroker {
         }
       }
 
-      // 6. SSRF & Host validation on any target URL/host argument
+      // 7. SSRF & Host validation on any target URL/host argument
       const targetUrlOrHost = (args.url || args.target_url || args.host || args.target || args.endpoint) as string | undefined;
       if (targetUrlOrHost) {
         McpCapabilityBroker.validateHostAndSsrf(targetUrlOrHost, grant);
       }
 
-      // 7. Verify tool exists & validate arguments
+      // 8. Verify tool exists & validate arguments
       const toolDef = this.server.getTool(toolName);
       if (!toolDef) {
         throw new Error(`E-MCP-TOOL-NOT-FOUND: Tool '${toolName}' is not registered on this server.`);
@@ -411,12 +582,18 @@ export class McpCapabilityBroker {
       // Increment request count quota
       usage.requests_made++;
 
-      // 8. Execute with latency quota (wall_clock_ms)
+      // 9. Execute with latency quota (wall_clock_ms) and abort controller
+      const abortController = new AbortController();
+      if (request.id !== undefined) {
+        this.activeAbortControllers.set(request.id, abortController);
+      }
+
       const startMs = Date.now();
       let timerHandle: ReturnType<typeof setTimeout> | undefined;
 
       const timeoutPromise = new Promise<never>((_, reject) => {
         timerHandle = setTimeout(() => {
+          abortController.abort(new Error(`E-MCP-LATENCY-TIMEOUT: Execution latency exceeded grant max_latency_ms (${grant.max_latency_ms}ms).`));
           reject(
             new Error(
               `E-MCP-LATENCY-TIMEOUT: Execution latency exceeded grant max_latency_ms (${grant.max_latency_ms}ms).`
@@ -433,6 +610,9 @@ export class McpCapabilityBroker {
         if (timerHandle) {
           clearTimeout(timerHandle);
         }
+        if (request.id !== undefined) {
+          this.activeAbortControllers.delete(request.id);
+        }
       }
       const durationMs = Date.now() - startMs;
 
@@ -443,7 +623,16 @@ export class McpCapabilityBroker {
         );
       }
 
-      // 9. Payload size quota check
+      // Tally cumulative task wall-clock
+      const updatedTaskElapsed = currentTaskElapsed + durationMs;
+      this.taskCumulativeWallClock.set(grant.task_id, updatedTaskElapsed);
+      if (grant.max_task_wall_clock_ms !== undefined && updatedTaskElapsed > grant.max_task_wall_clock_ms) {
+        throw new Error(
+          `E-MCP-TASK-WALL-CLOCK-EXCEEDED: Cumulative task wall-clock budget of ${grant.max_task_wall_clock_ms}ms exceeded (${updatedTaskElapsed}ms spent).`
+        );
+      }
+
+      // 10. Payload size quota check
       const payloadBytes = Buffer.byteLength(JSON.stringify(result));
       if (payloadBytes > grant.max_payload_bytes) {
         throw new Error(
@@ -451,7 +640,7 @@ export class McpCapabilityBroker {
         );
       }
 
-      // 10. Token quota check
+      // 11. Token quota check
       const tokensConsumed = result?.tokens_used ?? Math.ceil(payloadBytes / 4);
       if (usage.tokens_used + tokensConsumed > grant.max_tokens) {
         throw new Error(
@@ -466,7 +655,8 @@ export class McpCapabilityBroker {
         tool_name: toolName,
         payload_bytes: payloadBytes,
         tokens_consumed: tokensConsumed,
-        duration_ms: durationMs
+        duration_ms: durationMs,
+        cumulative_task_wall_clock_ms: updatedTaskElapsed
       });
 
       return {
@@ -478,7 +668,7 @@ export class McpCapabilityBroker {
       const errMsg = err instanceof Error ? err.message : String(err);
 
       // Append denied/quota event to Run Ledger
-      const eventType = errMsg.includes('QUOTA') || errMsg.includes('TIMEOUT')
+      const eventType = errMsg.includes('QUOTA') || errMsg.includes('TIMEOUT') || errMsg.includes('WALL-CLOCK')
         ? 'QUOTA_EXCEEDED'
         : 'TOOL_CALL_DENIED';
 
@@ -498,10 +688,330 @@ export class McpCapabilityBroker {
       };
     }
   }
+
+  /**
+   * Complete MCP Wire Protocol Lifecycle Dispatcher.
+   * Handles initialize, notifications/initialized, ping, tools/list, resources/list,
+   * resources/read, notifications/cancelled, and tools/call.
+   */
+  public async handleRpcMessage(
+    message: McpRpcRequest,
+    grant?: CapabilityGrant | null,
+    callingContext?: { callingWorkerId?: string; callingTaskId?: string }
+  ): Promise<McpRpcResponse | null> {
+    const { jsonrpc, id, method, params } = message;
+
+    if (jsonrpc !== '2.0') {
+      return {
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32600, message: 'Invalid Request: jsonrpc must be "2.0".' }
+      };
+    }
+
+    switch (method) {
+      case 'initialize': {
+        const protocolVersion = (params?.protocolVersion as string | undefined) ?? '';
+        if (protocolVersion !== '2025-11-25') {
+          return {
+            jsonrpc: '2.0',
+            id,
+            error: {
+              code: -32602,
+              message: `E-MCP-UNSUPPORTED-PROTOCOL-VERSION: Protocol version '${protocolVersion}' is not supported. Supported version is '2025-11-25'.`
+            }
+          };
+        }
+        return {
+          jsonrpc: '2.0',
+          id,
+          result: {
+            protocolVersion: '2025-11-25',
+            capabilities: {
+              tools: { listChanged: false },
+              resources: { subscribe: false, listChanged: false },
+              logging: {}
+            },
+            serverInfo: {
+              name: 'market-hft-mcp-broker',
+              version: '0.2.6'
+            }
+          }
+        };
+      }
+
+      case 'notifications/initialized': {
+        this.initialized = true;
+        return null; // Notifications return no response per JSON-RPC
+      }
+
+      case 'ping': {
+        return {
+          jsonrpc: '2.0',
+          id,
+          result: {}
+        };
+      }
+
+      case 'tools/list': {
+        return {
+          jsonrpc: '2.0',
+          id,
+          result: {
+            tools: this.server.listTools()
+          }
+        };
+      }
+
+      case 'resources/list': {
+        return {
+          jsonrpc: '2.0',
+          id,
+          result: {
+            resources: this.server.listResources()
+          }
+        };
+      }
+
+      case 'resources/read': {
+        const uri = params?.uri as string | undefined;
+        if (!uri) {
+          return {
+            jsonrpc: '2.0',
+            id,
+            error: { code: -32602, message: 'E-MCP-INVALID-ARGUMENTS: Missing mandatory "uri" parameter for resources/read.' }
+          };
+        }
+        try {
+          const content = await this.server.readResource(uri);
+          return {
+            jsonrpc: '2.0',
+            id,
+            result: {
+              contents: [content]
+            }
+          };
+        } catch (readErr: unknown) {
+          return {
+            jsonrpc: '2.0',
+            id,
+            error: {
+              code: -32000,
+              message: readErr instanceof Error ? readErr.message : String(readErr)
+            }
+          };
+        }
+      }
+
+      case 'notifications/cancelled': {
+        const reqId = (params?.requestId ?? params?.id) as string | number | undefined;
+        if (reqId !== undefined) {
+          const ctrl = this.activeAbortControllers.get(reqId);
+          if (ctrl) {
+            ctrl.abort(new Error(`E-MCP-CANCELLED: Request '${reqId}' cancelled by client notification.`));
+            this.activeAbortControllers.delete(reqId);
+          }
+        }
+        return null;
+      }
+
+      case 'tools/call': {
+        if (!grant) {
+          return {
+            jsonrpc: '2.0',
+            id,
+            error: {
+              code: -32600,
+              message: 'E-MCP-GRANT-REQUIRED: A valid CapabilityGrant is required for tools/call invocation.'
+            }
+          };
+        }
+        const callReq: McpToolCallRequest = {
+          jsonrpc: '2.0',
+          id: id ?? 1,
+          method: 'tools/call',
+          params: {
+            name: (params?.name as string) ?? '',
+            arguments: (params?.arguments as Record<string, unknown>) ?? {}
+          }
+        };
+        const response = await this.invokeTool(grant, callReq, callingContext);
+        return {
+          jsonrpc: '2.0',
+          id,
+          ...(response.result !== undefined ? { result: response.result } : {}),
+          ...(response.error !== undefined ? { error: response.error } : {})
+        };
+      }
+
+      default: {
+        return {
+          jsonrpc: '2.0',
+          id,
+          error: {
+            code: -32601,
+            message: `Method not found: ${method}`
+          }
+        };
+      }
+    }
+  }
 }
 
 // ============================================================================
-// 4. APPEND-ONLY RUN LEDGER (POC.docx §15)
+// 4. CONSTRAINED HTTPS CONNECTOR (SSRF, DNS REBINDING & STREAM CUTOFF)
+// ============================================================================
+
+export interface ConstrainedHttpsOptions {
+  readonly method?: 'GET';
+  readonly headers?: Record<string, string>;
+  readonly max_payload_bytes: number;
+  readonly timeout_ms: number;
+  readonly allow_redirects?: boolean;
+}
+
+export interface ConstrainedHttpsResponse {
+  readonly status: number;
+  readonly headers: Record<string, string>;
+  readonly bodyText: string;
+  readonly bytesRead: number;
+}
+
+export class ConstrainedHttpsConnector {
+  public static async fetch(
+    targetUrl: string,
+    options: ConstrainedHttpsOptions
+  ): Promise<ConstrainedHttpsResponse> {
+    let parsed: URL;
+    try {
+      parsed = new URL(targetUrl);
+    } catch {
+      throw new Error(`E-MCP-HOST-OR-SSRF-DENIED: Malformed URL '${targetUrl}'.`);
+    }
+
+    if (parsed.protocol.toLowerCase() !== 'https:') {
+      throw new Error(`E-MCP-SCHEME-DENIED: Scheme '${parsed.protocol}' is denied. Only https: is permitted for network egress.`);
+    }
+    if (parsed.port && parsed.port !== '' && parsed.port !== '443') {
+      throw new Error(`E-MCP-PORT-DENIED: Port '${parsed.port}' is denied. Network egress is strictly locked to port 443.`);
+    }
+
+    // DNS Pre-Resolution Check
+    const hostname = parsed.hostname.toLowerCase();
+    let addresses: { address: string; family: number }[];
+    try {
+      addresses = await dns.lookup(hostname, { all: true });
+    } catch (dnsErr: unknown) {
+      throw new Error(`E-MCP-DNS-RESOLUTION-FAILED: DNS lookup failed for '${hostname}': ${dnsErr instanceof Error ? dnsErr.message : String(dnsErr)}`);
+    }
+
+    if (!addresses || addresses.length === 0) {
+      throw new Error(`E-MCP-DNS-RESOLUTION-FAILED: No IP addresses resolved for '${hostname}'.`);
+    }
+
+    for (const entry of addresses) {
+      const addr = entry.address.toLowerCase().replace(/^\[|\]$/g, '');
+      const isLoopback =
+        addr === 'localhost' ||
+        addr === '127.0.0.1' ||
+        addr.startsWith('127.') ||
+        addr === '0.0.0.0' ||
+        addr === '::1' ||
+        addr === '::';
+      const isPrivateIpv4 =
+        /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(addr) ||
+        /^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(addr) ||
+        /^192\.168\.\d{1,3}\.\d{1,3}$/.test(addr);
+      const isLinkLocalOrMetadata =
+        addr === '169.254.169.254' ||
+        addr.startsWith('169.254.') ||
+        addr.includes('metadata.google.internal');
+      const isIpv6PrivateOrMapped =
+        addr.includes('::ffff:') ||
+        /^f[cd][0-9a-f]{0,2}:/i.test(addr) ||
+        /^fe80:/i.test(addr);
+
+      if (isLoopback || isPrivateIpv4 || isLinkLocalOrMetadata || isIpv6PrivateOrMapped) {
+        throw new Error(`E-MCP-DNS-REBINDING-OR-PRIVATE-IP-DENIED: Target host '${hostname}' resolved to private/loopback/metadata IP '${addr}'. Network egress blocked to prevent DNS rebinding.`);
+      }
+    }
+
+    // Perform streaming fetch with abort controller
+    const abortController = new AbortController();
+    let timerHandle: ReturnType<typeof setTimeout> | undefined;
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timerHandle = setTimeout(() => {
+        abortController.abort(new Error(`E-MCP-LATENCY-TIMEOUT: Network request exceeded timeout (${options.timeout_ms}ms).`));
+        reject(new Error(`E-MCP-LATENCY-TIMEOUT: Network request exceeded timeout (${options.timeout_ms}ms).`));
+      }, options.timeout_ms);
+    });
+
+    const fetchPromise = (async () => {
+      try {
+        const res = await fetch(targetUrl, {
+          method: 'GET',
+          headers: options.headers,
+          redirect: options.allow_redirects ? 'follow' : 'manual',
+          signal: abortController.signal
+        });
+
+        if (!options.allow_redirects && res.status >= 300 && res.status < 400) {
+          throw new Error(`E-MCP-REDIRECT-DENIED: Server returned redirect status ${res.status} but redirects are disallowed.`);
+        }
+
+        if (!res.body) {
+          return {
+            status: res.status,
+            headers: Object.fromEntries(res.headers.entries()),
+            bodyText: '',
+            bytesRead: 0
+          };
+        }
+
+        const reader = res.body.getReader();
+        const chunks: Uint8Array[] = [];
+        let totalBytes = 0;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            totalBytes += value.byteLength;
+            if (totalBytes > options.max_payload_bytes) {
+              abortController.abort(new Error(`E-MCP-STREAM-PAYLOAD-TOO-LARGE: Streamed response exceeded max_payload_bytes cap (${options.max_payload_bytes} bytes) in-flight. Connection terminated.`));
+              throw new Error(`E-MCP-STREAM-PAYLOAD-TOO-LARGE: Streamed response exceeded max_payload_bytes cap (${options.max_payload_bytes} bytes) in-flight. Connection terminated.`);
+            }
+            chunks.push(value);
+          }
+        }
+
+        const combined = Buffer.concat(chunks);
+        const bodyText = combined.toString('utf8');
+        return {
+          status: res.status,
+          headers: Object.fromEntries(res.headers.entries()),
+          bodyText,
+          bytesRead: totalBytes
+        };
+      } catch (fetchErr: unknown) {
+        if (abortController.signal.aborted && abortController.signal.reason instanceof Error) {
+          throw abortController.signal.reason;
+        }
+        throw fetchErr;
+      }
+    })();
+
+    try {
+      return await Promise.race([fetchPromise, timeoutPromise]);
+    } finally {
+      if (timerHandle) clearTimeout(timerHandle);
+    }
+  }
+}
+
+// ============================================================================
+// 5. APPEND-ONLY RUN LEDGER (POC.docx §15)
 // ============================================================================
 
 export type McpRunEventType =
@@ -590,6 +1100,43 @@ export class McpRunLedger {
       }
     }
     return true;
+  }
+
+  public async saveLedgerToFile(filePath: string): Promise<void> {
+    const jsonl = this.events.map((e) => JSON.stringify(e)).join('\n') + '\n';
+    await fs.writeFile(filePath, jsonl, 'utf8');
+  }
+
+  public static async loadLedgerFromFile(filePath: string): Promise<McpRunLedger> {
+    const content = await fs.readFile(filePath, 'utf8');
+    const lines = content.trim().split('\n').filter((l) => l.trim().length > 0);
+    const ledger = new McpRunLedger();
+    for (let i = 0; i < lines.length; i++) {
+      const evt: McpRunEvent = JSON.parse(lines[i]);
+      const expectedPrev = i === 0 ? McpRunLedger.GENESIS_HASH : ledger.events[i - 1].event_hash;
+      if (evt.previous_event_hash !== expectedPrev) {
+        throw new Error(
+          `E-MCP-LEDGER-TAMPERED: Monotonic hash chain verification failed on event index ${i}. Expected prev hash ${expectedPrev}, found ${evt.previous_event_hash}.`
+        );
+      }
+      const payload = {
+        event_id: evt.event_id,
+        event_type: evt.event_type,
+        task_id: evt.task_id,
+        worker_id: evt.worker_id,
+        timestamp_utc: evt.timestamp_utc,
+        details: sanitizeForJcs(evt.details),
+        previous_event_hash: evt.previous_event_hash
+      };
+      const computed = sha256(canonicalizeJCS(payload));
+      if (computed !== evt.event_hash) {
+        throw new Error(
+          `E-MCP-LEDGER-TAMPERED: Monotonic hash chain verification failed on event index ${i}. Event hash tampered.`
+        );
+      }
+      ledger.events.push(Object.freeze(evt));
+    }
+    return ledger;
   }
 }
 
