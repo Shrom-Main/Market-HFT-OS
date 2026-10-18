@@ -1,13 +1,13 @@
 # POC-001 — Capital-Allocation Research and Market Simulation Platform
-## Project Charter v0.2.5
+## Project Charter v0.2.6
 
-**Document Status:** APPROVED / IN-FLIGHT (Gates M0–M6 Closed & Verified; Gates M6.1–M6.8 MCP Broker & Micro-Agent Framework In-Flight)  
-**Governance Authority:** Project Owner Directive (Decision OD-11, 17 October 2026)  
+**Document Status:** APPROVED / CLOSED (Gates M0–M6 and Gates M6.1–M6.8 Fully Closed & Verified; Release Ready)  
+**Governance Authority:** Project Owner Directive (Decision OD-18, 18 October 2026)  
 **Target Repository:** `D:\Market HFT OS` (Workspace Root)  
 **Legacy Reference Repository:** `D:\Market HFT OS\_salvage\AIStudio` (Preserved in read-only quarantine)  
 **External Research Pool:** `D:\Market HFT OS\_salvage\external\` (Preserved in read-only quarantine)  
 **Operating Mode:** DRY_RUN / Paper Simulation; Actuals Execution strictly disabled  
-**Micro-Agent Boundary:** The MCP Broker & Micro-Agent Framework (Gates M6.1–M6.8) is executed stage-by-stage under strict paper-only (`DRY_RUN`), non-destructive evaluation, and mandatory human-authorization confirmation gates (`POC.docx` §2, §6.5, §15).
+**Micro-Agent Boundary:** The MCP Broker & Micro-Agent Framework (Gates M6.1–M6.8) is fully implemented, verified, and closed under strict paper-only (`DRY_RUN`), non-destructive evaluation, and mandatory human-authorization confirmation gates (`POC.docx` §2, §6.5, §7–§13, §15).
 
 ---
 

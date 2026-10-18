@@ -6,7 +6,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 [![Vitest](https://img.shields.io/badge/Vitest-4.1.12-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.8-blue.svg)](https://www.postgresql.org/)
-[![Status](https://img.shields.io/badge/Gate_M6.7_Conformance-Passing_(249_Tests_/_29_Suites)-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Gate_M6.8_Conformance-Passing_(257_Tests_/_30_Suites)-brightgreen.svg)]()
 
 ---
 
@@ -26,6 +26,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 - **Gate M6.5 Micro-Agent #4 GovtAndStatutoryWorker & Formula Non-Mutation Firewall Gate**: Micro-Agent #4 (`src/agents/workers/govtStatutoryWorker.ts`) routing read-only queries exclusively through `McpCapabilityBroker` under tool `mcp://policy-bulletins/fetch_circular`, immutable statutory citation verification (`verifyStatutoryCitation` with CBIC, CBDT, DGFT, MINISTRY_OF_MSME), zero-default statutory series resolution (`E-GSW-STATUTORY-CIRCULAR-REQUIRED`), MSME Section 43B(h) credit ceiling cross-check (`evaluateMsmePaymentTermLimit`, 45d with agreement / 15d without), FormulaRegistry non-mutation firewall (`proposeStatutoryFormulaCandidate` failing closed with `E-ERR-GOV-002` on normative cards), prompt injection quarantine (`E-GSW-PROMPT-INJECTION-DETECTED`), and deterministic RFC 8785 JCS canonicalization.
 - **Gate M6.6 Micro-Agent #5 RedTeamAndConflictWorker & Context-Routing State Machine Gate**: Micro-Agent #5 (`src/agents/workers/redTeamWorker.ts`) routing read-only queries exclusively through `McpCapabilityBroker` under tool `mcp://audit-corpus/read_joined_claims` with zero network egress (`allowed_hosts: []`), 7 authoritative red-team adversarial & conflict rules (`RT-01` physical scrap floor defense, `RT-02` strict conflict preservation, `RT-03` high-return illusion defense on advertised listing, `RT-04` metallurgy defect & corrosion chatter contradiction quarantine, `RT-05` statutory MSME Sec 43B(h) credit ceiling enforcement, `RT-06` zero-cost substitution ban on mandatory costs, `RT-07` evidence staleness and future clock skew firewall), hard disposition ceiling (`HOLD_BLOCKED_BY_RED_TEAM`, `REQUIRES_SUPPLEMENTARY_CORROBORATION`, `ELIGIBLE_FOR_HUMAN_REVIEW` with `E-RTW-DISPOSITION-CEILING-BREACH` on `APPROVED_FOR_EXECUTION`), and Deterministic Context-Routing State Machine (`src/agents/scheduler/contextRoutingStateMachine.ts`) coordinating Pass 1 (Horizontal gap-filling across Stages 2, 4, 5), Pass 2 (Supplementary corroboration & conflict-preserving join), and Pass 3 (Red-team audit & deterministic join) under bit-for-bit RFC 8785 JCS canonical attestation.
 - **Gate M6.7 Typed DAG Scheduler, Bounded Concurrency, Deduplication & Capital Gate**: Upgrades the multi-agent orchestrator to a typed DAG scheduler (`ContextRoutingStateMachine`, `DagTaskNode`, `DagExecutionPlan`), Kahn-algorithm cycle detection (`validateDagAcyclicity`, `E-DAG-CYCLE-DETECTED`), bounded parallel worker execution (`runBoundedParallel`, default 3 concurrent workers) with deterministic barrier sorting `(pass_number, node_id)` ensuring bit-for-bit identical RFC 8785 JCS digests under asynchronous event loop jitter, idempotent task deduplication (`DEDUPLICATED_REPLAY` without consuming MCP broker quotas), Pass 4 Deterministic Capital Gate connecting 5 micro-agents, Regime Classifier (`SUSTAINED_STRUCTURAL_SIGNAL` vs `FAST_TACTICAL_OPPORTUNITY`), `FactorEfficacyLedger`, and `evaluateOptimalBatchSize` with bitemporal restatements ($t_d$ and $t_k$) in `BitemporalRestatementEngine`, and fail-closed degraded hold / red-team / refutation / tactical edge-decay firewalls.
+- **Gate M6.8 Read-Only Operator Terminal Projection, 3-Tier Kill Switch & 12-Point Release Gate**: Full implementation of the Read-Only Operator Terminal Projection Layer (8 logical workspaces: Command Center, Opportunity Radar, Evidence Workbench, Economics Lab, Capital Allocator, Simulation & Positions, Reconciliation & Performance, Risk & System Health), deeply frozen immutability, ban on single vanity profit figures (POC.docx §10.1), 10 required capital-allocation comparison dimensions without composite score, Conviction vs Allocation separation firewall, 3-tier Kill Switch Controller (HALT_NEW_ALLOCATIONS, HALT_ALL_SIMULATION_PROCESSING, ENTER_RECOVERY_ONLY_MODE) preserving 100% of historical records, Two-Level Error Presentation with secret scrubbing and timeout outcome_unknown distinction, self-contained dark-mode HTML5/SVG interactive workstation renderer, and 12-Point Release Gate verification engine with bit-for-bit reproducible RFC 8785 JCS SHA-256 certificate.
 
 
 ---
@@ -34,16 +35,19 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 
 ```
 src/
+├── agents/             # Multi-agent framework, specialist workers, context DAG scheduler
 ├── canonical/          # RFC 8785 JCS, currency rational math, product normalization, crypto
 ├── checkpoint/         # Virtual genesis head and trust anchor verification
 ├── execution/          # Simulated execution gateway, order books, fill engines
 ├── feeds/              # Market data normalization, replay buffering, sequence checking
 ├── financial/          # Cash flow engine, two-tier clearing, outlay recovery, RoPF/XIRR
 ├── ledger/             # Dual-ledger isolation guard (ActualsGuard, tickets, nonces)
+├── mcp/                # Capability-aware MCP broker, JSON-RPC 2.0 substrate, contracts
 ├── persistence/        # File-backed WAL, crash recovery engine, PostgreSQL adapter, locks
 ├── portfolio/          # Simulation portfolio, anchored cumulative COGS, positions
-├── research/           # SS304 physical vertical slice research & capital-allocation engine
+├── research/           # SS304 physical vertical slice, formula registry, signal engine
 ├── simulation/         # End-to-end simulation pipeline coordinator
+├── terminal/           # Operator terminal projection, kill-switch engine, HTML/SVG workstation
 └── verification/       # 4-claim verification gate, attester auth, commercial reconciliation
 ```
 

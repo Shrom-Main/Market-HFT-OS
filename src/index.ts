@@ -35,3 +35,5 @@ export * from './agents/workers/govtStatutoryWorker.js';
 export * from './mcp/contracts/redTeamContract.js';
 export * from './agents/workers/redTeamWorker.js';
 export * from './agents/scheduler/contextRoutingStateMachine.js';
+export * from './mcp/contracts/operatorTerminalContract.js';
+export * from './terminal/operatorTerminalController.js';
