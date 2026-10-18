@@ -531,6 +531,9 @@ export function parseInrToSubunits(rawText: string): string {
   // Strip currency symbols and formatting commas
   clean = clean.replace(/₹|INR|Rs\.?|,/gi, '').trim();
 
+  // Strip standard marketplace unit denominators (e.g. / Pack, / pc, / piece, / kg, / unit)
+  clean = clean.replace(/\s*\/\s*(?:pack|pc|piece|kg|unit|box|set|meter|nos?)\b/gi, '').trim();
+
   // Check if non-numeric (contains letters or unparseable text)
   if (/[a-zA-Z]/.test(clean) || clean.length === 0) {
     throw new Error(`E-SCW-MANDATORY-COST-MISSING: Non-numeric price string '${rawText}'.`);

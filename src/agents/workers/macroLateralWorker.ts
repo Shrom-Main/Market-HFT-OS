@@ -761,8 +761,9 @@ export function evaluateDynamicGrowthDriver(
       const decay = peakVal - latestVal;
 
       if (impulse > 0n && decay > 0n) {
-        const decayRatio = Number(decay) / Number(impulse);
-        estimatedHalfLifeDays = Math.max(1, Math.round(daysFromPeak * (0.5 / Math.min(1.0, decayRatio))));
+        const clampedDecay = decay > impulse ? impulse : decay;
+        const halfLifeBig = (BigInt(daysFromPeak) * impulse + clampedDecay) / (2n * clampedDecay);
+        estimatedHalfLifeDays = Math.max(1, Number(halfLifeBig));
       } else {
         estimatedHalfLifeDays = totalSpanDays;
       }
@@ -889,6 +890,26 @@ export function evaluateDynamicGrowthDriver(
     formula_expression: formulaCard.symbolic_expression
   });
 }
+
+/**
+ * Async companion that resolves or synthesizes missing formula cards
+ * via GroqFormulaAdvisor before evaluating the dynamic growth driver (MLW-02).
+ */
+export async function evaluateDynamicGrowthDriverWithAdvisor(
+  window: FactorSeriesWindow,
+  registry: FormulaRegistry,
+  advisor: GroqFormulaAdvisor
+): Promise<DynamicDriverEvaluation> {
+  const needsResolution = !window.target_formula_id || !registry.getFormula(window.target_formula_id);
+  if (needsResolution) {
+    await advisor.resolveOrSynthesizeFormula(
+      { query: window.formula_query || window.factor_id },
+      registry
+    );
+  }
+  return evaluateDynamicGrowthDriver(window, registry, advisor);
+}
+
 
 // ============================================================================
 // 6. EMPIRICAL FACTOR EFFICACY LEDGER

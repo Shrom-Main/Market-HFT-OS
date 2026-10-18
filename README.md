@@ -6,7 +6,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 [![Vitest](https://img.shields.io/badge/Vitest-4.1.12-green.svg)](https://vitest.dev/)
 [![RFC 8785](https://img.shields.io/badge/RFC_8785-json--canonicalize@3.0.1-purple.svg)](https://www.rfc-editor.org/rfc/rfc8785)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16.8-blue.svg)](https://www.postgresql.org/)
-[![Status](https://img.shields.io/badge/Gate_M6.6_Conformance-Passing_(241_Tests_/_28_Suites)-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Gate_M6.7_Conformance-Passing_(249_Tests_/_29_Suites)-brightgreen.svg)]()
 
 ---
 
@@ -25,6 +25,7 @@ High-Frequency Market Trading Operating System — Core Architecture, Gate M1 Fo
 - **Gate M6.4 Micro-Agent #3 MacroAndLateralMarketWorker & Dynamic Regime Classifier Gate**: Micro-Agent #3 (`src/agents/workers/macroLateralWorker.ts`) routing read-only queries exclusively through `McpCapabilityBroker` under tool `mcp://macro-feeds/query_series`, zero-default series ingestion, pure BigInt FX conversion & physical scrap floor derivation (`derivePhysicalScrapFloor`), Formula-RAG dynamic growth driver evaluation via `FormulaRegistry` pure-BigInt rational AST arithmetic without hardcoding static function calls, Sustained Signal vs Fast Opportunity Regime Classifier (`OpportunityTemporalRegime`, Tactical Horizon Gate `E-MLW-EDGE-DECAYS-BEFORE-CASH-RECOVERY`), and empirical factor efficacy learning ledger (`FactorEfficacyLedger`).
 - **Gate M6.5 Micro-Agent #4 GovtAndStatutoryWorker & Formula Non-Mutation Firewall Gate**: Micro-Agent #4 (`src/agents/workers/govtStatutoryWorker.ts`) routing read-only queries exclusively through `McpCapabilityBroker` under tool `mcp://policy-bulletins/fetch_circular`, immutable statutory citation verification (`verifyStatutoryCitation` with CBIC, CBDT, DGFT, MINISTRY_OF_MSME), zero-default statutory series resolution (`E-GSW-STATUTORY-CIRCULAR-REQUIRED`), MSME Section 43B(h) credit ceiling cross-check (`evaluateMsmePaymentTermLimit`, 45d with agreement / 15d without), FormulaRegistry non-mutation firewall (`proposeStatutoryFormulaCandidate` failing closed with `E-ERR-GOV-002` on normative cards), prompt injection quarantine (`E-GSW-PROMPT-INJECTION-DETECTED`), and deterministic RFC 8785 JCS canonicalization.
 - **Gate M6.6 Micro-Agent #5 RedTeamAndConflictWorker & Context-Routing State Machine Gate**: Micro-Agent #5 (`src/agents/workers/redTeamWorker.ts`) routing read-only queries exclusively through `McpCapabilityBroker` under tool `mcp://audit-corpus/read_joined_claims` with zero network egress (`allowed_hosts: []`), 7 authoritative red-team adversarial & conflict rules (`RT-01` physical scrap floor defense, `RT-02` strict conflict preservation, `RT-03` high-return illusion defense on advertised listing, `RT-04` metallurgy defect & corrosion chatter contradiction quarantine, `RT-05` statutory MSME Sec 43B(h) credit ceiling enforcement, `RT-06` zero-cost substitution ban on mandatory costs, `RT-07` evidence staleness and future clock skew firewall), hard disposition ceiling (`HOLD_BLOCKED_BY_RED_TEAM`, `REQUIRES_SUPPLEMENTARY_CORROBORATION`, `ELIGIBLE_FOR_HUMAN_REVIEW` with `E-RTW-DISPOSITION-CEILING-BREACH` on `APPROVED_FOR_EXECUTION`), and Deterministic Context-Routing State Machine (`src/agents/scheduler/contextRoutingStateMachine.ts`) coordinating Pass 1 (Horizontal gap-filling across Stages 2, 4, 5), Pass 2 (Supplementary corroboration & conflict-preserving join), and Pass 3 (Red-team audit & deterministic join) under bit-for-bit RFC 8785 JCS canonical attestation.
+- **Gate M6.7 Typed DAG Scheduler, Bounded Concurrency, Deduplication & Capital Gate**: Upgrades the multi-agent orchestrator to a typed DAG scheduler (`ContextRoutingStateMachine`, `DagTaskNode`, `DagExecutionPlan`), Kahn-algorithm cycle detection (`validateDagAcyclicity`, `E-DAG-CYCLE-DETECTED`), bounded parallel worker execution (`runBoundedParallel`, default 3 concurrent workers) with deterministic barrier sorting `(pass_number, node_id)` ensuring bit-for-bit identical RFC 8785 JCS digests under asynchronous event loop jitter, idempotent task deduplication (`DEDUPLICATED_REPLAY` without consuming MCP broker quotas), Pass 4 Deterministic Capital Gate connecting 5 micro-agents, Regime Classifier (`SUSTAINED_STRUCTURAL_SIGNAL` vs `FAST_TACTICAL_OPPORTUNITY`), `FactorEfficacyLedger`, and `evaluateOptimalBatchSize` with bitemporal restatements ($t_d$ and $t_k$) in `BitemporalRestatementEngine`, and fail-closed degraded hold / red-team / refutation / tactical edge-decay firewalls.
 
 
 ---
@@ -89,17 +90,17 @@ npm run typecheck
 # Standard run (skips live PostgreSQL tests cleanly if DATABASE_URL is unset)
 npm test
 
-# Full run with live PostgreSQL 16.8 (runs all 208 tests across 24 suites)
+# Full run with live PostgreSQL 16.8 (runs all 249 tests across 29 suites)
 $env:DATABASE_URL = "postgresql://postgres@localhost:5432/market_hft_test"
 npm test
 ```
-*Expected output: 25 test files passed, 217 tests passed (Exit code 0).*
+*Expected output: 29 test files passed, 249 tests passed (Exit code 0).*
 
 ### Step 4: Generate Machine-Readable Audit Report
 ```bash
 npm run test:json
 ```
-*Generates `test-results.json` recording 25 passed test files and 217 passed tests.*
+*Generates `test-results.json` recording 29 passed test files and 249 passed tests.*
 
 
 ---

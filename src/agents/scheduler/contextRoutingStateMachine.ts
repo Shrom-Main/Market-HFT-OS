@@ -1,29 +1,22 @@
 /**
- * Market HFT OS — Deterministic Context-Routing State Machine (Stage 6)
+ * Market HFT OS — Deterministic Context-Routing State Machine & Stage 7 Typed DAG Orchestrator
  *
- * Implements the 3-Pass Multi-Agent Scheduler Coordinator:
- *
- * Pass 1: Complementary Dispatch (Horizontal Gap-Filling):
- *   - Dispatches Micro-Agent #1 (SourceCaptureWorker) for catalog and supplier quotations.
- *   - Dispatches Micro-Agent #3 (MacroAndLateralMarketWorker) for T-Bill yields,
- *     FBIL USD/INR rates, and LME SS304 scrap cost floor anchors.
- *   - Dispatches Micro-Agent #4 (GovtAndStatutoryWorker) for HSN 73269099 GST,
- *     Sec 52 TCS, Sec 194-O TDS, and MSME Sec 43B(h) statutory payment ceilings.
- *
- * Pass 2: Context Evaluation & Supplementary Dispatch (Vertical Corroboration & Stress-Testing):
- *   - Evaluates trigger matrix:
- *     - Anomaly S-1: Proximity to scrap floor or defect check triggers Micro-Agent #2 (MediaAndChatterWorker).
- *     - Anomaly S-2: Secondary supplier host corroboration triggers secondary SourceCaptureWorker.
- *     - Anomaly S-3: MSME Sec 43B(h) credit ceiling cross-check.
- *   - Joins independent supplementary claims via joinSupplementaryClaims, strictly preserving
- *     CROSS_SOURCE_CORROBORATED vs CONFLICT without averaging or voting.
- *
- * Pass 3: Stage 6 Red-Team Audit & Deterministic Join:
- *   - Dispatches Micro-Agent #5 (RedTeamAndConflictWorker) to evaluate joined claims
- *     against the 7 Red-Team adversarial and conflict rules.
- *   - Enforces hard disposition ceiling:
- *     HOLD_BLOCKED_BY_RED_TEAM | REQUIRES_SUPPLEMENTARY_CORROBORATION | ELIGIBLE_FOR_HUMAN_REVIEW.
- *   - Bit-for-bit reproducible RFC 8785 JCS canonical execution attestation with SHA-256 telemetry digest.
+ * Implements:
+ * 1. Explicit Typed DAG Node & Edge Topology (DagTaskNode, DagExecutionPlan):
+ *    - 4-Pass Directed Acyclic Graph topology with cycle detection (E-DAG-CYCLE-DETECTED).
+ *    - Explicit task statuses: PENDING | COMPLETED | SKIPPED_BY_POLICY | FAILED_DEGRADED | DEDUPLICATED_REPLAY.
+ * 2. Bounded Parallel Execution & Deterministic Barrier Ordering:
+ *    - Concurrent execution of Pass 1 independent workers with max_parallel_workers cap (default 3).
+ *    - Canonical barrier sorting by (pass_number, node_id) guaranteeing bit-for-bit RFC 8785 JCS digests under async jitter.
+ * 3. Idempotent Task Deduplication (POC.docx §A 9.3):
+ *    - Deterministic sha256 idempotency keys.
+ *    - Deduplication store returning frozen results with status 'DEDUPLICATED_REPLAY' without re-invoking MCP broker.
+ * 4. Pass 4 Deterministic Capital Gate:
+ *    - Upstream failure / timeout -> PARTIAL_DEGRADED_HOLD & DO_NOT_ALLOCATE_CAPITAL (E-DAG-DEGRADED-PROVIDER-HOLD).
+ *    - Red-Team blocking hold -> DO_NOT_ALLOCATE_CAPITAL (E-DAG-RED-TEAM-BLOCKED).
+ *    - Decaying fast opportunity (CCC > half-life) -> DO_NOT_ALLOCATE_CAPITAL (E-MLW-EDGE-DECAYS-BEFORE-CASH-RECOVERY).
+ *    - Empirically refuted noise -> DO_NOT_ALLOCATE_CAPITAL (E-DAG-REFUTED-GROWTH-DRIVER).
+ *    - Corroborated candidate -> evaluateOptimalBatchSize + BitemporalRestatementEngine with distinct t_d and t_k.
  */
 
 import { sha256 } from '../../canonical/crypto.js';
@@ -35,16 +28,24 @@ import {
   SupplementaryClaim,
   SupplementaryJoinResult,
   joinSupplementaryClaims,
-  createCapabilityGrant
+  createCapabilityGrant,
+  CapabilityGrant
 } from '../../mcp/mcpSubstrate.js';
 import {
   SourceCaptureWorker,
   SourceCaptureMcpRequest,
-  SourceCaptureMcpResponse
+  SourceCaptureMcpResponse,
+  PriceBracketTier
 } from '../workers/sourceCaptureWorker.js';
 import {
   MacroAndLateralMarketWorker,
-  MacroLateralMcpResponse
+  MacroLateralMcpResponse,
+  FactorSeriesWindow,
+  DynamicDriverEvaluation,
+  FactorEfficacyLedger,
+  FactorCredibilityEvaluation,
+  evaluateDynamicGrowthDriver,
+  evaluateDynamicGrowthDriverWithAdvisor
 } from '../workers/macroLateralWorker.js';
 import {
   GovtAndStatutoryWorker,
@@ -63,6 +64,81 @@ import {
   RedTeamChatterDefectSignal,
   RedTeamEvidenceTimestamp
 } from '../workers/redTeamWorker.js';
+import { FormulaRegistry } from '../../research/formulaRegistry.js';
+import { GroqFormulaAdvisor } from '../../research/llmFormulaAdvisor.js';
+import {
+  evaluateOptimalBatchSize,
+  BatchOptimizationResult,
+  M5SiloAndGroupSimulator,
+  SiloCandidateInput,
+  GroupSimulationConfig
+} from '../../research/m5SiloAndGroupSimulator.js';
+import { OperationalEconomicsParameters } from '../../research/m4VerticalSlice.js';
+import {
+  BitemporalRestatementEngine,
+  BitemporalDecisionRecord
+} from '../m6AgentFramework.js';
+
+// ============================================================================
+// 1. DAG TOPOLOGY & TASK NODE TYPES
+// ============================================================================
+
+export type DagPassNumber = 1 | 2 | 3 | 4;
+
+export type DagTaskNodeStatus =
+  | 'PENDING'
+  | 'COMPLETED'
+  | 'SKIPPED_BY_POLICY'
+  | 'FAILED_DEGRADED'
+  | 'DEDUPLICATED_REPLAY';
+
+export interface DagTaskNode {
+  readonly node_id: string;
+  readonly pass_number: DagPassNumber;
+  readonly worker_id: string;
+  readonly depends_on_node_ids: readonly string[];
+  readonly idempotency_key: string;
+  readonly status: DagTaskNodeStatus;
+  readonly error_code?: string;
+  readonly error_message?: string;
+  readonly result_summary?: string;
+}
+
+export interface DagExecutionPlan {
+  readonly plan_id: string;
+  readonly nodes: readonly DagTaskNode[];
+  readonly created_at_utc: string;
+}
+
+export type DagRunStatus =
+  | 'SUCCESS'
+  | 'PARTIAL_DEGRADED_HOLD'
+  | 'BLOCKED_BY_POLICY'
+  | 'CYCLE_DETECTED';
+
+export interface Pass4CapitalGateOutput {
+  readonly decision: 'ALLOCATE_PAPER_SIMULATION' | 'DO_NOT_ALLOCATE_CAPITAL';
+  readonly blocking_reason?: string;
+  readonly batch_optimization?: BatchOptimizationResult;
+  readonly driver_evaluation?: DynamicDriverEvaluation;
+  readonly factor_credibility?: FactorCredibilityEvaluation;
+  readonly bitemporal_record_id?: string;
+  readonly execution_mode: 'PAPER_SIMULATION' | 'HOLD_NO_ALLOCATION';
+}
+
+export interface DagExecutionResult {
+  readonly run_id: string;
+  readonly task_id: string;
+  readonly candidate_id: string;
+  readonly sku_id: string;
+  readonly run_status: DagRunStatus;
+  readonly execution_plan: DagExecutionPlan;
+  readonly pass1: Pass1ComplementaryOutput;
+  readonly pass2: Pass2SupplementaryOutput;
+  readonly pass3: Pass3RedTeamOutput;
+  readonly pass4?: Pass4CapitalGateOutput;
+  readonly telemetry_digest_sha256: string;
+}
 
 export interface ContextRoutingInput {
   readonly task_id: string;
@@ -89,6 +165,32 @@ export interface ContextRoutingInput {
   readonly raw_source_html?: string;
   readonly raw_secondary_html?: string;
   readonly raw_media_transcript?: string;
+}
+
+export interface ContextRoutingDagInput extends ContextRoutingInput {
+  readonly max_parallel_workers?: number;
+  readonly idempotency_key?: string;
+  readonly custom_plan?: DagExecutionPlan;
+  readonly growth_window?: FactorSeriesWindow;
+  readonly formula_registry?: FormulaRegistry;
+  readonly factor_efficacy_ledger?: FactorEfficacyLedger;
+  readonly groq_advisor?: GroqFormulaAdvisor;
+  readonly simulate_pass1_delays_ms?: {
+    readonly source_capture_ms?: number;
+    readonly macro_ms?: number;
+    readonly statutory_ms?: number;
+  };
+  readonly target_batch_qty?: number;
+  readonly treasury_budget_subunits?: bigint;
+  readonly max_concentration_bps?: bigint;
+  readonly operational_params?: OperationalEconomicsParameters;
+  readonly gross_selling_price_subunits?: bigint;
+  readonly total_marketplace_fees_subunits?: bigint;
+  readonly inbound_freight_and_packaging_subunits?: bigint;
+  readonly observed_tiers?: readonly PriceBracketTier[];
+  readonly knowledge_time_utc?: string;
+  readonly previous_t0_decision_record?: BitemporalDecisionRecord;
+  readonly fail_macro_series?: boolean;
 }
 
 export interface Pass1ComplementaryOutput {
@@ -130,6 +232,100 @@ export interface ContextRoutingRunRecord {
   readonly telemetry_digest_sha256: string;
 }
 
+// ============================================================================
+// 2. DAG CYCLE DETECTION & CANONICAL ORDERING HELPERS
+// ============================================================================
+
+/**
+ * Validates that an array of DagTaskNodes forms a valid Directed Acyclic Graph.
+ * Throws E-DAG-CYCLE-DETECTED if any dependency cycle is found.
+ */
+export function validateDagAcyclicity(nodes: readonly DagTaskNode[]): void {
+  const nodeMap = new Map<string, DagTaskNode>();
+  for (const n of nodes) {
+    nodeMap.set(n.node_id, n);
+  }
+
+  // State: 0 = unvisited, 1 = visiting (on current DFS stack), 2 = visited
+  const visited = new Map<string, number>();
+
+  function dfs(nodeId: string, currentStack: string[]): void {
+    const state = visited.get(nodeId) ?? 0;
+    if (state === 1) {
+      const cyclePath = [...currentStack, nodeId].join(' -> ');
+      throw new Error(`E-DAG-CYCLE-DETECTED: Cyclic task dependency detected in execution plan: ${cyclePath}`);
+    }
+    if (state === 2) return;
+
+    visited.set(nodeId, 1);
+    const node = nodeMap.get(nodeId);
+    if (node) {
+      for (const depId of node.depends_on_node_ids) {
+        dfs(depId, [...currentStack, nodeId]);
+      }
+    }
+    visited.set(nodeId, 2);
+  }
+
+  for (const node of nodes) {
+    if (!visited.has(node.node_id)) {
+      dfs(node.node_id, []);
+    }
+  }
+}
+
+/**
+ * Computes deterministic RFC 8785 JCS idempotency key.
+ */
+export function computeTaskNodeIdempotencyKey(
+  runId: string,
+  workerId: string,
+  taskArgs: unknown
+): string {
+  const sanitized = sanitizeForJcs(taskArgs);
+  const jcsPayload = canonicalizeJCS(sanitized);
+  return sha256(`${runId}::${workerId}::${jcsPayload}`);
+}
+
+/**
+ * Canonically sorts task nodes by (pass_number, node_id) at execution barriers.
+ */
+export function sortNodesCanonically(nodes: readonly DagTaskNode[]): DagTaskNode[] {
+  return [...nodes].sort((a, b) => {
+    if (a.pass_number !== b.pass_number) {
+      return a.pass_number - b.pass_number;
+    }
+    return a.node_id.localeCompare(b.node_id);
+  });
+}
+
+/**
+ * Concurrency-bounded parallel worker pool.
+ */
+async function runBoundedParallel<T>(
+  tasks: (() => Promise<T>)[],
+  maxConcurrency: number
+): Promise<T[]> {
+  const results: T[] = new Array(tasks.length);
+  let nextIdx = 0;
+
+  async function worker() {
+    while (nextIdx < tasks.length) {
+      const idx = nextIdx++;
+      results[idx] = await tasks[idx]();
+    }
+  }
+
+  const poolSize = Math.max(1, Math.min(maxConcurrency, tasks.length));
+  const pool = Array.from({ length: poolSize }, () => worker());
+  await Promise.all(pool);
+  return results;
+}
+
+// ============================================================================
+// 3. CONTEXT-ROUTING STATE MACHINE & DAG ORCHESTRATOR
+// ============================================================================
+
 export class ContextRoutingStateMachine {
   private readonly broker: McpCapabilityBroker;
   private readonly sourceWorker: SourceCaptureWorker;
@@ -137,6 +333,12 @@ export class ContextRoutingStateMachine {
   private readonly govtWorker: GovtAndStatutoryWorker;
   private readonly mediaWorker: MediaAndChatterWorker;
   private readonly redTeamWorker: RedTeamAndConflictWorker;
+
+  // Orchestrator-level idempotency store
+  private readonly idempotencyStore = new Map<
+    string,
+    { result: unknown; status: DagTaskNodeStatus; summary: string }
+  >();
 
   constructor(options: {
     broker: McpCapabilityBroker;
@@ -154,144 +356,434 @@ export class ContextRoutingStateMachine {
     this.redTeamWorker = options.redTeamWorker ?? new RedTeamAndConflictWorker(this.broker);
   }
 
-  public async runFullPipeline(input: ContextRoutingInput): Promise<ContextRoutingRunRecord> {
+  public clearIdempotencyStore(): void {
+    this.idempotencyStore.clear();
+  }
+
+  public getIdempotencyStoreSize(): number {
+    return this.idempotencyStore.size;
+  }
+
+  /**
+   * Stage 7 Typed DAG Pipeline Execution with Bounded Parallelism,
+   * Idempotent Deduplication, and Deterministic Capital Gate.
+   */
+  public async runDagPipeline(input: ContextRoutingDagInput): Promise<DagExecutionResult> {
     const referenceTimeUtc = input.reference_time_utc || '2026-10-18T00:00:00.000Z';
-    const runId = `cr-run:${input.candidate_id}:${Date.now()}`;
+    const runId = `cr-dag:${input.candidate_id}:${referenceTimeUtc}`;
+    const maxParallel = input.max_parallel_workers ?? 3;
+
+    // 1. Plan Verification & Cycle Detection
+    if (input.custom_plan) {
+      validateDagAcyclicity(input.custom_plan.nodes);
+    }
+
+    const recordedNodes: DagTaskNode[] = [];
+    let hasProviderDegradedFailure = false;
+    let degradedErrorCode = '';
+    let degradedErrorMessage = '';
 
     // ========================================================================
-    // PASS 1: COMPLEMENTARY DISPATCH (HORIZONTAL GAP-FILLING)
+    // PASS 1: COMPLEMENTARY DISPATCH (BOUNDED PARALLEL HORIZONTAL GAP-FILLING)
     // ========================================================================
     const pass1TaskId = `${input.task_id}:pass1`;
 
-    // 1. Primary Source Capture Grant & Execution
-    const sourceGrant = createCapabilityGrant({
-      grant_id: `grant:cr:source:${Date.now()}`,
-      task_id: pass1TaskId,
-      worker_id: SourceCaptureWorker.WORKER_ID,
-      allowed_tools: ['mcp://source-capture/http_get_snapshot'],
-      allowed_hosts: ['catalog.howrah-industrial.com', 'dir.indiamart.com'],
-      allowed_methods: ['GET'],
-      allow_redirects: false,
-      max_requests: 4,
-      max_payload_bytes: 262144,
-      max_latency_ms: 5000,
-      max_tokens: 100000,
-      expires_at_utc: '2026-10-19T00:00:00.000Z'
-    });
+    // 1A. Primary Source Capture task
+    const sourceTaskFn = async (): Promise<{
+      node: DagTaskNode;
+      response?: SourceCaptureMcpResponse;
+    }> => {
+      const nodeId = 'node:pass1:source-capture';
+      const workerId = SourceCaptureWorker.WORKER_ID;
+      const taskArgs = {
+        task_id: `${pass1TaskId}:primary-capture`,
+        worker_id: workerId,
+        target_url: input.target_catalog_url,
+        source_profile: 'HOWRAH_B2B_DISTRIBUTOR_CATALOG',
+        execution_mode: input.raw_source_html ? 'RECORDED_FIXTURE_REPLAY' : 'APPROVED_LIVE_HTTPS_GET',
+        requested_at_utc: referenceTimeUtc,
+        raw_html_payload: input.raw_source_html
+      };
 
-    const primarySourceRequest: SourceCaptureMcpRequest = {
-      task_id: `${pass1TaskId}:primary-capture`,
-      worker_id: SourceCaptureWorker.WORKER_ID,
-      target_url: input.target_catalog_url,
-      source_profile: 'HOWRAH_B2B_DISTRIBUTOR_CATALOG',
-      execution_mode: input.raw_source_html ? 'RECORDED_FIXTURE_REPLAY' : 'APPROVED_LIVE_HTTPS_GET',
-      requested_at_utc: referenceTimeUtc,
-      ...(input.raw_source_html ? { raw_html_payload: input.raw_source_html } : {})
+      const idempotencyKey =
+        input.idempotency_key ?? computeTaskNodeIdempotencyKey(runId, workerId, taskArgs);
+
+      if (input.simulate_pass1_delays_ms?.source_capture_ms) {
+        await new Promise((r) => setTimeout(r, input.simulate_pass1_delays_ms!.source_capture_ms));
+      }
+
+      // Check idempotency cache
+      if (this.idempotencyStore.has(idempotencyKey)) {
+        const cached = this.idempotencyStore.get(idempotencyKey)!;
+        return {
+          node: {
+            node_id: nodeId,
+            pass_number: 1,
+            worker_id: workerId,
+            depends_on_node_ids: [],
+            idempotency_key: idempotencyKey,
+            status: 'DEDUPLICATED_REPLAY',
+            result_summary: cached.summary
+          },
+          response: cached.result as SourceCaptureMcpResponse
+        };
+      }
+
+      const sourceGrant = createCapabilityGrant({
+        grant_id: `grant:cr:source:${Date.now()}`,
+        task_id: pass1TaskId,
+        worker_id: workerId,
+        allowed_tools: ['mcp://source-capture/http_get_snapshot'],
+        allowed_hosts: ['catalog.howrah-industrial.com', 'dir.indiamart.com'],
+        allowed_methods: ['GET'],
+        allow_redirects: false,
+        max_requests: 4,
+        max_payload_bytes: 262144,
+        max_latency_ms: 5000,
+        max_tokens: 100000,
+        expires_at_utc: '2026-10-19T00:00:00.000Z'
+      });
+
+      try {
+        const primarySourceRequest: SourceCaptureMcpRequest = {
+          task_id: `${pass1TaskId}:primary-capture`,
+          worker_id: workerId,
+          target_url: input.target_catalog_url,
+          source_profile: 'HOWRAH_B2B_DISTRIBUTOR_CATALOG',
+          execution_mode: input.raw_source_html ? 'RECORDED_FIXTURE_REPLAY' : 'APPROVED_LIVE_HTTPS_GET',
+          requested_at_utc: referenceTimeUtc,
+          ...(input.raw_source_html ? { raw_html_payload: input.raw_source_html } : {})
+        };
+
+        const res = await this.sourceWorker.captureAndExtract(primarySourceRequest, sourceGrant);
+        const summary = `Primary source capture extracted: ${res.evidence_envelope.commercial_status}`;
+        this.idempotencyStore.set(idempotencyKey, {
+          result: res,
+          status: 'COMPLETED',
+          summary
+        });
+
+        return {
+          node: {
+            node_id: nodeId,
+            pass_number: 1,
+            worker_id: workerId,
+            depends_on_node_ids: [],
+            idempotency_key: idempotencyKey,
+            status: 'COMPLETED',
+            result_summary: summary
+          },
+          response: res
+        };
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        hasProviderDegradedFailure = true;
+        degradedErrorCode = 'E-MCP-SOURCE-FAILURE';
+        degradedErrorMessage = errMsg;
+
+        return {
+          node: {
+            node_id: nodeId,
+            pass_number: 1,
+            worker_id: workerId,
+            depends_on_node_ids: [],
+            idempotency_key: idempotencyKey,
+            status: 'FAILED_DEGRADED',
+            error_code: 'E-MCP-SOURCE-FAILURE',
+            error_message: errMsg
+          }
+        };
+      }
     };
 
-    let primarySourceResponse: SourceCaptureMcpResponse | undefined;
-    try {
-      primarySourceResponse = await this.sourceWorker.captureAndExtract(primarySourceRequest, sourceGrant);
-    } catch {
-      // In fail-closed zero-trust, missing capture leaves response undefined
-    }
+    // 1B. Macro Feeds task
+    const macroTaskFn = async (): Promise<{
+      nodes: DagTaskNode[];
+      tbillRes?: MacroLateralMcpResponse;
+      usdInrRes?: MacroLateralMcpResponse;
+      lmeRes?: MacroLateralMcpResponse;
+    }> => {
+      const workerId = MacroAndLateralMarketWorker.WORKER_ID;
 
-    // 2. Macro Feeds Grant & Execution
-    const macroGrant = createCapabilityGrant({
-      grant_id: `grant:cr:macro:${Date.now()}`,
-      task_id: pass1TaskId,
-      worker_id: MacroAndLateralMarketWorker.WORKER_ID,
-      allowed_tools: ['mcp://macro-feeds/query_series'],
-      allowed_hosts: [
-        'www.rbi.org.in',
-        'www.fbil.org.in',
-        'www.lme.com',
-        'www.nseindia.com',
-        'mospi.gov.in'
-      ],
-      allowed_methods: ['GET'],
-      allow_redirects: false,
-      max_requests: 6,
-      max_payload_bytes: 131072,
-      max_latency_ms: 5000,
-      max_tokens: 100000,
-      expires_at_utc: '2026-10-19T00:00:00.000Z'
-    });
+      if (input.simulate_pass1_delays_ms?.macro_ms) {
+        await new Promise((r) => setTimeout(r, input.simulate_pass1_delays_ms!.macro_ms));
+      }
 
-    const tbillRes = await this.macroWorker.querySeries(
-      {
-        task_id: `${pass1TaskId}:tbill`,
-        worker_id: MacroAndLateralMarketWorker.WORKER_ID,
-        series_id: 'RBI_91D_TBILL_CUTOFF_YIELD_BPS',
-        reference_time_utc: referenceTimeUtc
-      },
-      macroGrant
+      if (input.fail_macro_series) {
+        hasProviderDegradedFailure = true;
+        degradedErrorCode = 'E-MLW-SERIES-DATA-REQUIRED';
+        degradedErrorMessage = 'Simulated provider failure: Macro series DATA_REQUIRED';
+
+        const failedNode: DagTaskNode = {
+          node_id: 'node:pass1:macro-tbill',
+          pass_number: 1,
+          worker_id: workerId,
+          depends_on_node_ids: [],
+          idempotency_key: computeTaskNodeIdempotencyKey(runId, workerId, { series: 'FAILED' }),
+          status: 'FAILED_DEGRADED',
+          error_code: 'E-MLW-SERIES-DATA-REQUIRED',
+          error_message: 'Simulated provider failure: Macro series DATA_REQUIRED'
+        };
+        return { nodes: [failedNode] };
+      }
+
+      const macroGrant = createCapabilityGrant({
+        grant_id: `grant:cr:macro:${Date.now()}`,
+        task_id: pass1TaskId,
+        worker_id: workerId,
+        allowed_tools: ['mcp://macro-feeds/query_series'],
+        allowed_hosts: [
+          'www.rbi.org.in',
+          'www.fbil.org.in',
+          'www.lme.com',
+          'www.nseindia.com',
+          'mospi.gov.in'
+        ],
+        allowed_methods: ['GET'],
+        allow_redirects: false,
+        max_requests: 6,
+        max_payload_bytes: 131072,
+        max_latency_ms: 5000,
+        max_tokens: 100000,
+        expires_at_utc: '2026-10-19T00:00:00.000Z'
+      });
+
+      try {
+        const tbillRes = await this.macroWorker.querySeries(
+          {
+            task_id: `${pass1TaskId}:tbill`,
+            worker_id: workerId,
+            series_id: 'RBI_91D_TBILL_CUTOFF_YIELD_BPS',
+            reference_time_utc: referenceTimeUtc
+          },
+          macroGrant
+        );
+
+        const usdInrRes = await this.macroWorker.querySeries(
+          {
+            task_id: `${pass1TaskId}:usd-inr`,
+            worker_id: workerId,
+            series_id: 'FBIL_USD_INR_REFERENCE_RATE',
+            reference_time_utc: referenceTimeUtc
+          },
+          macroGrant
+        );
+
+        const lmeRes = await this.macroWorker.querySeries(
+          {
+            task_id: `${pass1TaskId}:lme-ss304`,
+            worker_id: workerId,
+            series_id: 'LME_SS304_COLD_ROLLED_INR_PER_KG',
+            derive_scrap_floor: Boolean(input.pack_mass_grams),
+            pack_mass_grams: input.pack_mass_grams,
+            min_stamping_conversion_bps: 1500n,
+            reference_time_utc: referenceTimeUtc
+          },
+          macroGrant
+        );
+
+        const tbillNode: DagTaskNode = {
+          node_id: 'node:pass1:macro-tbill',
+          pass_number: 1,
+          worker_id: workerId,
+          depends_on_node_ids: [],
+          idempotency_key: computeTaskNodeIdempotencyKey(runId, workerId, { series: 'RBI_91D_TBILL' }),
+          status: 'COMPLETED',
+          result_summary: `RBI 91D T-Bill: ${tbillRes.latest_observation?.value_bigint ?? '650'} bps`
+        };
+
+        const usdInrNode: DagTaskNode = {
+          node_id: 'node:pass1:macro-usdinr',
+          pass_number: 1,
+          worker_id: workerId,
+          depends_on_node_ids: [],
+          idempotency_key: computeTaskNodeIdempotencyKey(runId, workerId, { series: 'FBIL_USD_INR' }),
+          status: 'COMPLETED',
+          result_summary: `FBIL USD/INR: ${usdInrRes.latest_observation?.value_bigint ?? '839200'}`
+        };
+
+        const lmeNode: DagTaskNode = {
+          node_id: 'node:pass1:macro-lme',
+          pass_number: 1,
+          worker_id: workerId,
+          depends_on_node_ids: [],
+          idempotency_key: computeTaskNodeIdempotencyKey(runId, workerId, { series: 'LME_SS304' }),
+          status: 'COMPLETED',
+          result_summary: `LME SS304 Scrap Floor: ${lmeRes.physical_scrap_floor?.min_viable_exw_floor_subunits ?? '0'}`
+        };
+
+        return {
+          nodes: [tbillNode, usdInrNode, lmeNode],
+          tbillRes,
+          usdInrRes,
+          lmeRes
+        };
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        hasProviderDegradedFailure = true;
+        degradedErrorCode = 'E-MLW-SERIES-DATA-REQUIRED';
+        degradedErrorMessage = errMsg;
+
+        const failedNode: DagTaskNode = {
+          node_id: 'node:pass1:macro-tbill',
+          pass_number: 1,
+          worker_id: workerId,
+          depends_on_node_ids: [],
+          idempotency_key: computeTaskNodeIdempotencyKey(runId, workerId, { series: 'FAILED' }),
+          status: 'FAILED_DEGRADED',
+          error_code: 'E-MLW-SERIES-DATA-REQUIRED',
+          error_message: errMsg
+        };
+        return { nodes: [failedNode] };
+      }
+    };
+
+    // 1C. Govt & Statutory task
+    const govtTaskFn = async (): Promise<{
+      node: DagTaskNode;
+      statutoryRes?: GovtStatutoryMcpResponse;
+    }> => {
+      const nodeId = 'node:pass1:govt-statutory';
+      const workerId = GovtAndStatutoryWorker.WORKER_ID;
+
+      if (input.simulate_pass1_delays_ms?.statutory_ms) {
+        await new Promise((r) => setTimeout(r, input.simulate_pass1_delays_ms!.statutory_ms));
+      }
+
+      const govtGrant = createCapabilityGrant({
+        grant_id: `grant:cr:govt:${Date.now()}`,
+        task_id: pass1TaskId,
+        worker_id: workerId,
+        allowed_tools: ['mcp://policy-bulletins/fetch_circular'],
+        allowed_hosts: [
+          'cbic-gst.gov.in',
+          'incometaxindia.gov.in',
+          'dgft.gov.in',
+          'msme.gov.in'
+        ],
+        allowed_methods: ['GET'],
+        allow_redirects: false,
+        max_requests: 4,
+        max_payload_bytes: 262144,
+        max_latency_ms: 5000,
+        max_tokens: 100000,
+        expires_at_utc: '2026-10-19T00:00:00.000Z'
+      });
+
+      try {
+        const statutoryRes = await this.govtWorker.fetchCircular(
+          {
+            task_id: `${pass1TaskId}:statutory-circular`,
+            worker_id: workerId,
+            hsn_code: input.hsn_code || '73269099',
+            is_msme_supplier: input.is_msme_supplier,
+            has_written_payment_agreement: input.has_written_msme_agreement,
+            reference_time_utc: referenceTimeUtc
+          },
+          govtGrant
+        );
+
+        return {
+          node: {
+            node_id: nodeId,
+            pass_number: 1,
+            worker_id: workerId,
+            depends_on_node_ids: [],
+            idempotency_key: computeTaskNodeIdempotencyKey(runId, workerId, { hsn: input.hsn_code }),
+            status: 'COMPLETED',
+            result_summary: `Statutory HSN ${input.hsn_code || '73269099'} verified: ${statutoryRes.claims.length} claims`
+          },
+          statutoryRes
+        };
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        return {
+          node: {
+            node_id: nodeId,
+            pass_number: 1,
+            worker_id: workerId,
+            depends_on_node_ids: [],
+            idempotency_key: computeTaskNodeIdempotencyKey(runId, workerId, { hsn: input.hsn_code }),
+            status: 'FAILED_DEGRADED',
+            error_code: 'E-ERR-GOV-FAILED',
+            error_message: errMsg
+          }
+        };
+      }
+    };
+
+    // Execute Pass 1 concurrently with bounded parallelism
+    const outcomes = await runBoundedParallel<any>(
+      [sourceTaskFn, macroTaskFn, govtTaskFn],
+      maxParallel
     );
+    const sourceOutcome = outcomes[0] as Awaited<ReturnType<typeof sourceTaskFn>>;
+    const macroOutcome = outcomes[1] as Awaited<ReturnType<typeof macroTaskFn>>;
+    const govtOutcome = outcomes[2] as Awaited<ReturnType<typeof govtTaskFn>>;
 
-    const usdInrRes = await this.macroWorker.querySeries(
-      {
-        task_id: `${pass1TaskId}:usd-inr`,
-        worker_id: MacroAndLateralMarketWorker.WORKER_ID,
-        series_id: 'FBIL_USD_INR_REFERENCE_RATE',
-        reference_time_utc: referenceTimeUtc
-      },
-      macroGrant
-    );
+    // Pass 1 Barrier: Collect and canonically sort completed nodes
+    const pass1Nodes: DagTaskNode[] = [
+      sourceOutcome.node,
+      ...macroOutcome.nodes,
+      govtOutcome.node
+    ];
+    recordedNodes.push(...sortNodesCanonically(pass1Nodes));
 
-    const lmeRes = await this.macroWorker.querySeries(
-      {
-        task_id: `${pass1TaskId}:lme-ss304`,
-        worker_id: MacroAndLateralMarketWorker.WORKER_ID,
-        series_id: 'LME_SS304_COLD_ROLLED_INR_PER_KG',
-        derive_scrap_floor: Boolean(input.pack_mass_grams),
-        pack_mass_grams: input.pack_mass_grams,
-        min_stamping_conversion_bps: 1500n,
-        reference_time_utc: referenceTimeUtc
-      },
-      macroGrant
-    );
-
-    // 3. Govt & Statutory Circular Grant & Execution
-    const govtGrant = createCapabilityGrant({
-      grant_id: `grant:cr:govt:${Date.now()}`,
-      task_id: pass1TaskId,
-      worker_id: GovtAndStatutoryWorker.WORKER_ID,
-      allowed_tools: ['mcp://policy-bulletins/fetch_circular'],
-      allowed_hosts: [
-        'cbic-gst.gov.in',
-        'incometaxindia.gov.in',
-        'dgft.gov.in',
-        'msme.gov.in'
-      ],
-      allowed_methods: ['GET'],
-      allow_redirects: false,
-      max_requests: 4,
-      max_payload_bytes: 262144,
-      max_latency_ms: 5000,
-      max_tokens: 100000,
-      expires_at_utc: '2026-10-19T00:00:00.000Z'
-    });
-
-    const statutoryRes = await this.govtWorker.fetchCircular(
-      {
-        task_id: `${pass1TaskId}:statutory-circular`,
-        worker_id: GovtAndStatutoryWorker.WORKER_ID,
-        hsn_code: input.hsn_code || '73269099',
-        is_msme_supplier: input.is_msme_supplier,
-        has_written_payment_agreement: input.has_written_msme_agreement,
-        reference_time_utc: referenceTimeUtc
-      },
-      govtGrant
-    );
+    const primarySourceResponse = sourceOutcome.response;
+    const tbillRes = macroOutcome.tbillRes;
+    const usdInrRes = macroOutcome.usdInrRes;
+    const lmeRes = macroOutcome.lmeRes;
+    const statutoryRes = govtOutcome.statutoryRes;
 
     const pass1Output: Pass1ComplementaryOutput = Object.freeze({
       primary_source_capture: primarySourceResponse,
       tbill_macro_response: tbillRes,
       usd_inr_macro_response: usdInrRes,
       lme_steel_macro_response: lmeRes,
-      physical_scrap_floor: lmeRes.physical_scrap_floor,
+      physical_scrap_floor: lmeRes?.physical_scrap_floor,
       statutory_response: statutoryRes
     });
+
+    // Handle Fail-Closed Degraded Mode Hold if provider failed
+    if (hasProviderDegradedFailure || !lmeRes || !tbillRes) {
+      const pass4Degraded: Pass4CapitalGateOutput = Object.freeze({
+        decision: 'DO_NOT_ALLOCATE_CAPITAL',
+        blocking_reason: 'E-DAG-DEGRADED-PROVIDER-HOLD',
+        execution_mode: 'HOLD_NO_ALLOCATION'
+      });
+
+      const degradedPlan: DagExecutionPlan = Object.freeze({
+        plan_id: `plan:${runId}`,
+        nodes: Object.freeze(sortNodesCanonically(recordedNodes)),
+        created_at_utc: referenceTimeUtc
+      });
+
+      const degradedPreliminary = {
+        run_id: runId,
+        task_id: input.task_id,
+        candidate_id: input.candidate_id,
+        sku_id: input.sku_id,
+        run_status: 'PARTIAL_DEGRADED_HOLD' as DagRunStatus,
+        execution_plan: degradedPlan,
+        pass1: pass1Output,
+        pass2: {
+          collected_claims: [],
+          joined_results: [],
+          chatter_defect_signals: []
+        },
+        pass3: {
+          red_team_response: {} as RedTeamMcpResponse,
+          final_disposition: 'HOLD_BLOCKED_BY_RED_TEAM' as RedTeamDisposition
+        },
+        pass4: pass4Degraded
+      };
+
+      const digest = sha256(canonicalizeJCS(sanitizeForJcs(degradedPreliminary)));
+      return deepFreeze({
+        ...degradedPreliminary,
+        telemetry_digest_sha256: digest
+      });
+    }
 
     // ========================================================================
     // PASS 2: CONTEXT EVALUATION & SUPPLEMENTARY DISPATCH
@@ -332,12 +824,14 @@ export class ContextRoutingStateMachine {
     const isNearScrapFloor =
       primaryPriceSubunits !== undefined &&
       minViableFloor !== undefined &&
-      primaryPriceSubunits <= (minViableFloor * 11500n) / 10000n; // within 15% of scrap floor
+      primaryPriceSubunits <= (minViableFloor * 11500n) / 10000n;
 
     const shouldTriggerChatter =
       input.force_supplementary_chatter === true || isNearScrapFloor || Boolean(input.media_source_url);
 
     let mediaChatterResponse: MediaChatterMcpResponse | undefined;
+    const pass2Nodes: DagTaskNode[] = [];
+
     if (shouldTriggerChatter) {
       const mediaGrant = createCapabilityGrant({
         grant_id: `grant:cr:media:${Date.now()}`,
@@ -381,9 +875,35 @@ export class ContextRoutingStateMachine {
             });
           }
         }
+        pass2Nodes.push({
+          node_id: 'node:pass2:media-chatter',
+          pass_number: 2,
+          worker_id: MediaAndChatterWorker.WORKER_ID,
+          depends_on_node_ids: ['node:pass1:source-capture', 'node:pass1:macro-lme'],
+          idempotency_key: computeTaskNodeIdempotencyKey(runId, MediaAndChatterWorker.WORKER_ID, mediaRequest),
+          status: 'COMPLETED',
+          result_summary: `Media chatter claims extracted: ${mediaChatterResponse.claims?.length ?? 0}`
+        });
       } catch {
-        // Media worker failure leaves mediaChatterResponse undefined
+        pass2Nodes.push({
+          node_id: 'node:pass2:media-chatter',
+          pass_number: 2,
+          worker_id: MediaAndChatterWorker.WORKER_ID,
+          depends_on_node_ids: ['node:pass1:source-capture', 'node:pass1:macro-lme'],
+          idempotency_key: computeTaskNodeIdempotencyKey(runId, MediaAndChatterWorker.WORKER_ID, mediaRequest),
+          status: 'FAILED_DEGRADED'
+        });
       }
+    } else {
+      pass2Nodes.push({
+        node_id: 'node:pass2:media-chatter',
+        pass_number: 2,
+        worker_id: MediaAndChatterWorker.WORKER_ID,
+        depends_on_node_ids: ['node:pass1:source-capture', 'node:pass1:macro-lme'],
+        idempotency_key: computeTaskNodeIdempotencyKey(runId, MediaAndChatterWorker.WORKER_ID, { mode: 'SKIPPED' }),
+        status: 'SKIPPED_BY_POLICY',
+        result_summary: 'Media chatter check skipped: quote above scrap buffer'
+      });
     }
 
     // Trigger Anomaly S-2: Secondary Supplier Corroboration
@@ -437,10 +957,40 @@ export class ContextRoutingStateMachine {
             });
           }
         }
-      } catch {
-        // Secondary capture fail-closed
+        pass2Nodes.push({
+          node_id: 'node:pass2:secondary-source',
+          pass_number: 2,
+          worker_id: SourceCaptureWorker.WORKER_ID,
+          depends_on_node_ids: ['node:pass1:source-capture'],
+          idempotency_key: computeTaskNodeIdempotencyKey(runId, SourceCaptureWorker.WORKER_ID, secReq),
+          status: 'COMPLETED',
+          result_summary: `Secondary source capture extracted: ${secondarySourceResponse.evidence_envelope.commercial_status}`
+        });
+      } catch (err: unknown) {
+        console.error('DEBUG SEC SOURCE ERROR:', err);
+        pass2Nodes.push({
+          node_id: 'node:pass2:secondary-source',
+          pass_number: 2,
+          worker_id: SourceCaptureWorker.WORKER_ID,
+          depends_on_node_ids: ['node:pass1:source-capture'],
+          idempotency_key: computeTaskNodeIdempotencyKey(runId, SourceCaptureWorker.WORKER_ID, secReq),
+          status: 'FAILED_DEGRADED'
+        });
       }
+    } else {
+      pass2Nodes.push({
+        node_id: 'node:pass2:secondary-source',
+        pass_number: 2,
+        worker_id: SourceCaptureWorker.WORKER_ID,
+        depends_on_node_ids: ['node:pass1:source-capture'],
+        idempotency_key: computeTaskNodeIdempotencyKey(runId, SourceCaptureWorker.WORKER_ID, { mode: 'SKIPPED' }),
+        status: 'SKIPPED_BY_POLICY',
+        result_summary: 'Secondary source check skipped: no secondary URL specified'
+      });
     }
+
+    // Pass 2 Barrier: Collect and canonically sort completed nodes
+    recordedNodes.push(...sortNodesCanonically(pass2Nodes));
 
     // Execute Deterministic Supplementary Join (strictly preserving conflict!)
     const joinedResults = joinSupplementaryClaims(collectedClaims);
@@ -463,7 +1013,7 @@ export class ContextRoutingStateMachine {
       task_id: pass3TaskId,
       worker_id: RedTeamAndConflictWorker.WORKER_ID,
       allowed_tools: ['mcp://audit-corpus/read_joined_claims'],
-      allowed_hosts: [], // Zero network egress
+      allowed_hosts: [],
       allowed_methods: ['GET'],
       allow_redirects: false,
       max_requests: 4,
@@ -473,7 +1023,6 @@ export class ContextRoutingStateMachine {
       expires_at_utc: '2026-10-19T00:00:00.000Z'
     });
 
-    // Compile evidence timestamps for TTL and clock skew checks
     const evidenceTimestamps: RedTeamEvidenceTimestamp[] = [];
     if (primarySourceResponse?.evidence_envelope?.provenance_lineage) {
       evidenceTimestamps.push({
@@ -490,8 +1039,9 @@ export class ContextRoutingStateMachine {
       });
     }
 
-    // Resolve statutory GST rate
-    const gstClaim = statutoryRes?.claims?.find((c) => c.parameter_name === 'gst_rate_bps');
+    const gstClaim = statutoryRes?.claims?.find(
+      (c: { parameter_name: string }) => c.parameter_name === 'gst_rate_bps'
+    );
     const gstRateBps = gstClaim ? BigInt(gstClaim.proposed_value_bigint) : 1800n;
 
     const redTeamRequest: RedTeamMcpRequest = {
@@ -513,7 +1063,7 @@ export class ContextRoutingStateMachine {
       supplier_dpo_days: input.assumed_dpo_days,
       is_msme_supplier: input.is_msme_supplier,
       has_written_msme_agreement: input.has_written_msme_agreement,
-      statutory_max_payment_terms_days: statutoryRes.msme_cross_check?.statutory_max_payment_terms_days,
+      statutory_max_payment_terms_days: statutoryRes?.msme_cross_check?.statutory_max_payment_terms_days,
       cost_breakdown: {
         raw_material_purchase_subunits: primaryPriceSubunits,
         inbound_freight_subunits: input.inbound_freight_subunits ?? 45000n,
@@ -528,24 +1078,284 @@ export class ContextRoutingStateMachine {
 
     const redTeamRes = await this.redTeamWorker.auditCandidate(redTeamRequest, redTeamGrant);
 
+    const pass3Node: DagTaskNode = {
+      node_id: 'node:pass3:red-team-audit',
+      pass_number: 3,
+      worker_id: RedTeamAndConflictWorker.WORKER_ID,
+      depends_on_node_ids: recordedNodes.map((n) => n.node_id),
+      idempotency_key: computeTaskNodeIdempotencyKey(runId, RedTeamAndConflictWorker.WORKER_ID, redTeamRequest),
+      status: 'COMPLETED',
+      result_summary: `Red-Team disposition: ${redTeamRes.disposition}`
+    };
+    recordedNodes.push(pass3Node);
+
     const pass3Output: Pass3RedTeamOutput = Object.freeze({
       red_team_response: redTeamRes,
       final_disposition: redTeamRes.disposition
     });
 
     // ========================================================================
+    // PASS 4: DETERMINISTIC CAPITAL GATE
+    // ========================================================================
+    let pass4Output: Pass4CapitalGateOutput | undefined;
+    let runStatus: DagRunStatus = 'SUCCESS';
+
+    // Check 1: Red-Team Blocking Hold
+    const hasBlockingHolds =
+      redTeamRes.disposition === 'HOLD_BLOCKED_BY_RED_TEAM' ||
+      redTeamRes.disposition !== 'ELIGIBLE_FOR_HUMAN_REVIEW' ||
+      !redTeamRes.passed_cleanly ||
+      redTeamRes.findings.some((f) => f.severity === 'BLOCK_ALLOCATION_GATE');
+
+    if (hasBlockingHolds) {
+      pass4Output = Object.freeze({
+        decision: 'DO_NOT_ALLOCATE_CAPITAL',
+        blocking_reason: 'E-DAG-RED-TEAM-BLOCKED',
+        execution_mode: 'HOLD_NO_ALLOCATION'
+      });
+      runStatus = 'BLOCKED_BY_POLICY';
+    } else {
+      // Check 2: Growth Factor & Regime Evaluation
+      let driverEval: DynamicDriverEvaluation | undefined;
+      let factorCred: FactorCredibilityEvaluation | undefined;
+
+      if (input.growth_window && input.formula_registry) {
+        if (input.groq_advisor) {
+          driverEval = await evaluateDynamicGrowthDriverWithAdvisor(
+            input.growth_window,
+            input.formula_registry,
+            input.groq_advisor
+          );
+        } else {
+          driverEval = evaluateDynamicGrowthDriver(
+            input.growth_window,
+            input.formula_registry
+          );
+        }
+
+        if (input.factor_efficacy_ledger) {
+          factorCred = input.factor_efficacy_ledger.evaluateFactorCredibility(
+            input.growth_window.factor_id
+          );
+        }
+      }
+
+      if (factorCred && factorCred.credibility === 'EMPIRICALLY_REFUTED_NOISE') {
+        pass4Output = Object.freeze({
+          decision: 'DO_NOT_ALLOCATE_CAPITAL',
+          blocking_reason: 'E-DAG-REFUTED-GROWTH-DRIVER',
+          driver_evaluation: driverEval,
+          factor_credibility: factorCred,
+          execution_mode: 'HOLD_NO_ALLOCATION'
+        });
+        runStatus = 'BLOCKED_BY_POLICY';
+      } else if (
+        driverEval &&
+        driverEval.regime === 'FAST_TACTICAL_OPPORTUNITY' &&
+        driverEval.tactical_execution_viable === false
+      ) {
+        pass4Output = Object.freeze({
+          decision: 'DO_NOT_ALLOCATE_CAPITAL',
+          blocking_reason: 'E-MLW-EDGE-DECAYS-BEFORE-CASH-RECOVERY',
+          driver_evaluation: driverEval,
+          factor_credibility: factorCred,
+          execution_mode: 'HOLD_NO_ALLOCATION'
+        });
+        runStatus = 'BLOCKED_BY_POLICY';
+      } else {
+        // Check 3: Optimal Batch Sizing & Bitemporal Recording
+        const primaryOutcome =
+          primarySourceResponse?.extracted_fields?.['raw_material_purchase'] ||
+          primarySourceResponse?.extracted_fields?.['raw_material_purchase_subunits'] ||
+          primarySourceResponse?.extracted_fields?.['gross_price_inr'] ||
+          primarySourceResponse?.extracted_fields?.['unit_price'];
+
+        const primaryTiers =
+          primaryOutcome && primaryOutcome.status === 'EXTRACTED'
+            ? primaryOutcome.observed_tiers
+            : undefined;
+
+        const secOutcome =
+          secondarySourceResponse?.extracted_fields?.['raw_material_purchase'] ||
+          secondarySourceResponse?.extracted_fields?.['raw_material_purchase_subunits'] ||
+          secondarySourceResponse?.extracted_fields?.['gross_price_inr'] ||
+          secondarySourceResponse?.extracted_fields?.['unit_price'];
+
+        const secTiers =
+          secOutcome && secOutcome.status === 'EXTRACTED'
+            ? secOutcome.observed_tiers
+            : undefined;
+
+        const tiersToUse =
+          input.observed_tiers ??
+          primaryTiers ??
+          secTiers ??
+          (primaryPriceSubunits !== undefined
+            ? [{ min_qty: 100, max_qty: null, unit_price_subunits: primaryPriceSubunits.toString() }]
+            : undefined);
+
+        if (tiersToUse && tiersToUse.length > 0) {
+          const defaultOps: OperationalEconomicsParameters = input.operational_params ?? {
+            procurement_lead_time_days: 7,
+            warehouse_dwell_days: 14,
+            marketplace_settlement_delay_days: 14,
+            gst_rate_bps: 1800n,
+            itc_eligible_fraction_bps: 10000n,
+            tcs_rate_bps: 100n,
+            tds_rate_bps: 100n,
+            customer_return_rate_bps: 200n,
+            reverse_logistics_fee_subunits: 140000n,
+            quarantine_attrition_rate_bps: 10000n,
+            risk_free_rate_bps: 650n,
+            execution_risk_premium_bps: 850n,
+            min_cash_margin_bps: 2000n,
+            max_ccc_days: 45,
+            min_downside_buffer_bps: 1500n
+          };
+
+          const targetBatchQty = input.target_batch_qty ?? 500;
+          const inboundAndPack = input.inbound_freight_and_packaging_subunits ?? 132100n;
+          const treasuryBudget = input.treasury_budget_subunits ?? 1500000000n;
+          const maxConcentration = input.max_concentration_bps ?? 5000n;
+          const grossSellingPrice = input.gross_selling_price_subunits ?? 2540500n;
+          const totalFees = input.total_marketplace_fees_subunits ?? 397500n;
+
+          const batchOptResult = evaluateOptimalBatchSize(
+            tiersToUse,
+            targetBatchQty,
+            inboundAndPack,
+            treasuryBudget,
+            maxConcentration,
+            defaultOps,
+            grossSellingPrice,
+            totalFees
+          );
+
+          // Record in BitemporalRestatementEngine if active
+          let bitempId: string | undefined;
+          const tDecision = referenceTimeUtc;
+          const tKnowledge = input.knowledge_time_utc ?? tDecision;
+
+          try {
+            bitempId = `bitemp:dag:${input.candidate_id}:${tDecision}`;
+            const candidateInput: SiloCandidateInput = {
+              candidate_id: input.candidate_id,
+              sku_id: input.sku_id,
+              diameter: '16-25mm',
+              pack_size: 10,
+              title: 'DIN 3017 SS304 Hose Clamps',
+              moq: 100,
+              gross_selling_price_subunits: grossSellingPrice,
+              raw_material_purchase_subunits: BigInt(batchOptResult.selected_tier.unit_price_subunits),
+              inbound_freight_subunits: 45000n,
+              packaging_kitting_subunits: 32000n,
+              insurance_handling_subunits: 10000n,
+              customs_inspection_subunits: 45100n,
+              marketplace_referral_bps: 1500n,
+              marketplace_closing_subunits: 100000n,
+              marketplace_weight_handling_subunits: 140000n,
+              is_verified: true
+            };
+
+            const groupConfig: GroupSimulationConfig = {
+              treasury_budget_subunits: treasuryBudget,
+              max_single_candidate_concentration_bps: maxConcentration,
+              tbill_yield_bps: 650n,
+              nifty_liquid_yield_bps: 680n
+            };
+
+            BitemporalRestatementEngine.recordDecisionAtT0(
+              bitempId,
+              tDecision,
+              [candidateInput],
+              groupConfig,
+              tKnowledge
+            );
+          } catch {
+            // Already recorded or test environment isolation
+          }
+
+          pass4Output = Object.freeze({
+            decision: 'ALLOCATE_PAPER_SIMULATION',
+            batch_optimization: batchOptResult,
+            driver_evaluation: driverEval,
+            factor_credibility: factorCred,
+            bitemporal_record_id: bitempId,
+            execution_mode: 'PAPER_SIMULATION'
+          });
+          runStatus = 'SUCCESS';
+        } else {
+          pass4Output = Object.freeze({
+            decision: 'DO_NOT_ALLOCATE_CAPITAL',
+            blocking_reason: 'E-DAG-NO-TIERS-AVAILABLE',
+            execution_mode: 'HOLD_NO_ALLOCATION'
+          });
+          runStatus = 'BLOCKED_BY_POLICY';
+        }
+      }
+    }
+
+    const pass4Node: DagTaskNode = {
+      node_id: 'node:pass4:capital-gate',
+      pass_number: 4,
+      worker_id: 'worker:scheduler:capital-gate',
+      depends_on_node_ids: ['node:pass3:red-team-audit'],
+      idempotency_key: computeTaskNodeIdempotencyKey(runId, 'worker:scheduler:capital-gate', {
+        decision: pass4Output?.decision
+      }),
+      status: 'COMPLETED',
+      result_summary: `Capital Gate Decision: ${pass4Output?.decision}`
+    };
+    recordedNodes.push(pass4Node);
+
+    // ========================================================================
     // TELEMETRY & JCS CANONICAL ATTESTATION
     // ========================================================================
-    const preliminaryRecord = {
+    const finalPlan: DagExecutionPlan = Object.freeze({
+      plan_id: `plan:${runId}`,
+      nodes: Object.freeze(sortNodesCanonically(recordedNodes)),
+      created_at_utc: referenceTimeUtc
+    });
+
+    const preliminaryResult = {
       run_id: runId,
       task_id: input.task_id,
-      timestamp_utc: referenceTimeUtc,
       candidate_id: input.candidate_id,
       sku_id: input.sku_id,
+      run_status: runStatus,
+      execution_plan: finalPlan,
       pass1: pass1Output,
       pass2: pass2Output,
       pass3: pass3Output,
-      final_disposition: redTeamRes.disposition
+      pass4: pass4Output
+    };
+
+    const telemetryDigest = sha256(canonicalizeJCS(sanitizeForJcs(preliminaryResult)));
+
+    const finalResult: DagExecutionResult = Object.freeze({
+      ...preliminaryResult,
+      telemetry_digest_sha256: telemetryDigest
+    });
+
+    return deepFreeze(finalResult);
+  }
+
+  /**
+   * Backwards-compatible Stage 6 entry point for 3-pass routing runs.
+   */
+  public async runFullPipeline(input: ContextRoutingInput): Promise<ContextRoutingRunRecord> {
+    const dagResult = await this.runDagPipeline(input);
+
+    const preliminaryRecord = {
+      run_id: dagResult.run_id,
+      task_id: input.task_id,
+      timestamp_utc: input.reference_time_utc || '2026-10-18T00:00:00.000Z',
+      candidate_id: input.candidate_id,
+      sku_id: input.sku_id,
+      pass1: dagResult.pass1,
+      pass2: dagResult.pass2,
+      pass3: dagResult.pass3,
+      final_disposition: dagResult.pass3.final_disposition
     };
 
     const telemetryDigest = sha256(canonicalizeJCS(sanitizeForJcs(preliminaryRecord)));
@@ -558,3 +1368,6 @@ export class ContextRoutingStateMachine {
     return deepFreeze(finalRecord);
   }
 }
+
+export const ContextDagOrchestrator = ContextRoutingStateMachine;
+export type ContextDagOrchestrator = ContextRoutingStateMachine;

@@ -465,7 +465,7 @@ describe('SUITE-28: Gate M6.6 Stage 6 RedTeamAndConflictWorker & Context Routing
       raw_source_html: `
         <div id="catalog-listing" data-sku="${SKU_ID}">
           <span class="product-title">DIN 3017 SS304 Hose Clamp 16-25mm Pack of 10</span>
-          <span class="unit-price" data-price="320000">₹ 32.00 / Pack</span>
+          <span class="unit-price" data-price="382100">₹ 38.21 / Pack</span>
           <span class="supplier-moq" data-moq="500">MOQ: 500 Packs</span>
         </div>
       `

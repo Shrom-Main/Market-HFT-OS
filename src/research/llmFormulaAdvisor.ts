@@ -438,7 +438,9 @@ Do not include any markdown wrappers or commentary, only the raw JSON object.`;
     }
 
     const expected_output = parsed.canonical_test_vector?.expected_output !== undefined
-      ? Number(parsed.canonical_test_vector.expected_output)
+      ? (typeof parsed.canonical_test_vector.expected_output === 'number'
+          ? Math.round(parsed.canonical_test_vector.expected_output)
+          : Math.round(Number(parsed.canonical_test_vector.expected_output) || 1000))
       : 1000;
 
     return {
@@ -475,7 +477,10 @@ Do not include any markdown wrappers or commentary, only the raw JSON object.`;
     }
 
     // 3. Evaluate canonical test vector in sandboxed mode (allowCandidate: true)
-    const expected = BigInt(registered_card.canonical_test_vector.expected_output);
+    const rawExp = registered_card.canonical_test_vector.expected_output;
+    const expected = typeof rawExp === 'number'
+      ? BigInt(Math.round(rawExp))
+      : BigInt(Math.round(Number(rawExp)));
     try {
       const computed = registry.evaluateFormula(
         registered_card.formula_id,

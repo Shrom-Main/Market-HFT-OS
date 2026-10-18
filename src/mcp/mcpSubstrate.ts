@@ -236,6 +236,11 @@ export class McpCapabilityBroker {
     return this.runLedger;
   }
 
+  public getUsage(grantId: string): { requests_made: number; tokens_used: number } | undefined {
+    const usage = this.usageRecords.get(grantId);
+    return usage ? { ...usage } : undefined;
+  }
+
   /**
    * Deterministically validates target host against SSRF and private IP ranges.
    */

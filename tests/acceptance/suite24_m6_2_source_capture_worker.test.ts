@@ -85,7 +85,7 @@ describe('SUITE-24: Gate M6.2 Stage 2 SourceCaptureWorker Acceptance', () => {
       max_payload_bytes: 524288,
       max_latency_ms: 5000,
       max_tokens: 100000,
-      expires_at_utc: '2026-10-18T00:00:00.000Z'
+      expires_at_utc: '2026-12-31T23:59:59.000Z'
     });
 
     worker = new SourceCaptureWorker(broker, standardGrant);
@@ -315,7 +315,7 @@ describe('SUITE-24: Gate M6.2 Stage 2 SourceCaptureWorker Acceptance', () => {
       max_payload_bytes: 524288,
       max_latency_ms: 5000,
       max_tokens: 100000,
-      expires_at_utc: '2026-10-18T00:00:00.000Z'
+      expires_at_utc: '2026-12-31T23:59:59.000Z'
     });
 
     // 1. file:// scheme denied
@@ -400,7 +400,7 @@ describe('SUITE-24: Gate M6.2 Stage 2 SourceCaptureWorker Acceptance', () => {
       max_payload_bytes: 524288,
       max_latency_ms: 5000,
       max_tokens: 200000,
-      expires_at_utc: '2026-10-18T00:00:00.000Z'
+      expires_at_utc: '2026-12-31T23:59:59.000Z'
     });
 
     // 1. IPv4 loopback
