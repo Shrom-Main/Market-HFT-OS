@@ -380,6 +380,7 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 | **DEC-016** | Real-money fidelity and dual-ledger reconciliation module | 2026-10-10 | Real vs paper money ratio tracked; bank statement / settlement reconciliation module on dashboard |
 | **DEC-017** | Secret environment variable configuration for GitHub operations | 2026-10-10 | `GithubPersonalAccessTokenFORAG.env` used for remote operations; never read, printed, or tracked in git |
 | **DEC-018** | Governed MCP Broker & 5-Worker Specialist Architecture Hardening | 2026-10-18 | Authorizes Gate M6.1–M6.8 as bounded research extension under paper-only (DRY_RUN) constraints; enforces wire-level MCP lifecycle, positive manifests, streaming bytes limit, DNS rebinding prevention, honest evidence provenance, DAG plan execution, and provider certification. |
+| **DEC-019** | 8-Workspace Read-Only Operator Terminal, 3-Tier Kill Switch, Governed Confirmation Gate, HMAC & Egress Telemetry, Worker Certification Scoreboard & 12-Point Platform Release Gate | 2026-10-18 | Establishes the strictly read-only Operator Terminal projection layer across 8 workspaces (Command Center, Opportunity Radar, Evidence Workbench, Economic & Simulation Sandbox, Capital Allocation & Queue, Strategy & Factor Lifecycle, Risk & Exposure Monitor, Statutory & Audit Ledger); enforces anti-vanity profit firewall (`E-M9-VANITY-PROFIT-FORBIDDEN`); exposes HMAC-SHA256 capability grant and DNS-pinned egress telemetry; exposes Adala-style GoldenExtractionBench worker precision/recall certification; implements 3-tier kill switch with $\ge 15$-character governed confirmation rationale; formats two-level error envelopes with secret scrubbing; renders self-contained HTML5/SVG dark-mode workstation; and evaluates the 12-point platform release gate into canonical RFC 8785 JCS SHA-256 certificate. |
 
 ---
 
@@ -408,7 +409,7 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 
 ---
 
-## 13. Requirement-to-Code-and-Test Traceability Matrix (Gates M6.1–M6.8)
+## 13. Requirement-to-Code-and-Test Traceability Matrix (Gates M6.1–M6.9)
 
 *Default classification: Commitment.*
 
@@ -422,6 +423,7 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 | **M6.6** | Micro-Agent #5: RedTeamConflictWorker, 7-Rule Invariant Sieve, Hallucination Spotter & Counter-Factual Sensitivity | `src/agents/workers/redTeamWorker.ts` (`RedTeamConflictWorker`, `executeRedTeamSieve`) | `suite28_m6_6_red_team_conflict_worker.test.ts` (8 tests) |
 | **M6.7** | Signal Bus, Evidence Promotion, Context Routing State Machine & Bounded DAG Cooperation | `src/agents/cooperation/contextRoutingStateMachine.ts`, `src/research/m5SignalAndEvidenceEngine.ts` | `suite29_m6_7_context_dag_and_cooperation.test.ts` (8 tests) |
 | **M6.8** | MCP Protocol Wire Lifecycle, Constrained HTTPS Egress, First-Class Evidence Origin Firewall, Provider Certification Bench & Plan-Driven Wave Execution | `src/mcp/mcpSubstrate.ts`, `src/agents/evaluation/goldenExtractionBench.ts`, `src/research/llmFormulaAdvisor.ts`, `src/agents/cooperation/contextRoutingStateMachine.ts` | `suite30_m6_8_mcp_hardening_and_worker_certification.test.ts` (10 tests) |
+| **M6.9** | 8-Workspace Read-Only Operator Terminal, 3-Tier Kill Switch, Governed Confirmation Gate, Telemetry, Two-Level Error Presentation & 12-Point Release Gate | `src/mcp/contracts/operatorTerminalContract.ts`, `src/terminal/operatorTerminalController.ts` (`OperatorTerminalController`, `KillSwitchController`, `executeGovernedOperatorAction`, `renderOperatorTerminalHtml`, `evaluateTwelvePointPlatformReadiness`) | `suite31_m6_9_operator_terminal_and_release_gate.test.ts` (8 tests) |
 
 ---
 

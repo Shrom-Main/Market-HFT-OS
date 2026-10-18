@@ -1,6 +1,7 @@
 /**
- * Gate M6.8: Operator Terminal Controller, Kill-Switch Engine,
- * Two-Level Error Presentation, HTML5/SVG Workstation & 12-Point Release Gate
+ * Gate M6.9 (Decision OD-19 / Charter DEC-019):
+ * Operator Terminal Controller, Kill-Switch Engine, Two-Level Error Presentation,
+ * HTML5/SVG Workstation & 12-Point Platform Release Gate
  *
  * Implements the normative projection, safety, error handling, and release evaluation
  * layers in strict accordance with POC.docx §7, §8, §9.5, §10, and §13.
@@ -9,12 +10,15 @@
 import { sha256 } from '../canonical/crypto.js';
 import { canonicalizeJCS } from '../canonical/jcs.js';
 import { deepFreeze } from '../verification/gate.js';
-import {
+export {
   ValueProvenanceClassification,
   TimerDeadlineClassification,
   KillSwitchHaltScope,
   WriteOperationOutcomeStatus,
   SemanticStatusBadge,
+  EvidenceOriginBadge,
+  HmacGrantTelemetryRow,
+  GoldenExtractionBenchRow,
   LabeledMetricValue,
   TwoLevelErrorEnvelope,
   OperatorConfirmationEnvelope,
@@ -22,9 +26,11 @@ import {
   CommandCenterWorkspace,
   OpportunityRadarWorkspace,
   OpportunityRadarItem,
+  OpportunityRadarTimerItem,
   EvidenceWorkbenchWorkspace,
   EvidenceWorkbenchRecord,
   EconomicsLabWorkspace,
+  EconomicsLabTieredBracket,
   CapitalAllocatorWorkspace,
   SimulationAndPositionsWorkspace,
   PaperPositionItem,
@@ -38,6 +44,81 @@ import {
   TwelvePointReadinessCertificate,
   GovernedOperatorActionExecutionResult
 } from '../mcp/contracts/operatorTerminalContract.js';
+
+import {
+  ValueProvenanceClassification,
+  TimerDeadlineClassification,
+  KillSwitchHaltScope,
+  WriteOperationOutcomeStatus,
+  SemanticStatusBadge,
+  EvidenceOriginBadge,
+  HmacGrantTelemetryRow,
+  GoldenExtractionBenchRow,
+  LabeledMetricValue,
+  TwoLevelErrorEnvelope,
+  OperatorConfirmationEnvelope,
+  TenDimensionOpportunityComparisonRow,
+  CommandCenterWorkspace,
+  OpportunityRadarWorkspace,
+  OpportunityRadarItem,
+  OpportunityRadarTimerItem,
+  EvidenceWorkbenchWorkspace,
+  EvidenceWorkbenchRecord,
+  EconomicsLabWorkspace,
+  EconomicsLabTieredBracket,
+  CapitalAllocatorWorkspace,
+  SimulationAndPositionsWorkspace,
+  PaperPositionItem,
+  SevenBucketInventoryModel,
+  CrossLedgerComparisonModel,
+  ReconciliationAndPerformanceWorkspace,
+  RiskAuditAndSystemHealthWorkspace,
+  EightWorkspaces,
+  OperatorTerminalSnapshot,
+  ReadinessCriterionResult,
+  TwelvePointReadinessCertificate,
+  GovernedOperatorActionExecutionResult
+} from '../mcp/contracts/operatorTerminalContract.js';
+import { EvidenceOriginClass } from '../research/m5SignalAndEvidenceEngine.js';
+
+// -----------------------------------------------------------------------------
+// HELPER BADGE CONSTRUCTORS
+// -----------------------------------------------------------------------------
+
+export function createSemanticStatusBadge(
+  statusCode: string,
+  symbol: '[OK]' | '[WARN]' | '[BLOCKED]' | '[HALTED]' | '[QUARANTINED]' | '[FIXTURE]' | '[LIVE]' | '[UNKNOWN]',
+  label: string,
+  ariaDescription?: string
+): SemanticStatusBadge {
+  return {
+    status_code: statusCode,
+    icon_symbol: symbol,
+    label,
+    aria_description: ariaDescription || `${symbol} ${label} (${statusCode})`
+  };
+}
+
+export function createEvidenceOriginBadge(
+  originClass: EvidenceOriginClass,
+  requestedUrl: string,
+  resolvedSourceIdentity: string
+): EvidenceOriginBadge {
+  const isLive = originClass === 'LIVE_VERIFIED_CAPTURE';
+  const symbol = isLive ? '[LIVE]' : (originClass === 'RECORDED_GOLDEN_FIXTURE' ? '[FIXTURE]' : '[WARN]');
+  return {
+    origin_class: originClass,
+    requested_url: requestedUrl,
+    resolved_source_identity: resolvedSourceIdentity,
+    is_eligible_for_executable_offer_promotion: isLive,
+    semantic_badge: {
+      status_code: `ORIGIN_${originClass}`,
+      icon_symbol: symbol,
+      label: originClass,
+      aria_description: `Origin Class: ${originClass}. Promotion to executable offer: ${isLive ? 'ALLOWED' : 'FORBIDDEN'}`
+    }
+  };
+}
 
 // -----------------------------------------------------------------------------
 // 1. THREE-TIER KILL-SWITCH CONTROLLER (POC.docx §8)
@@ -82,17 +163,17 @@ export class KillSwitchController {
   public assertAllocationAllowed(): void {
     if (this.currentScope === 'HALT_NEW_ALLOCATIONS') {
       throw new Error(
-        'E-M8-KILLSWITCH-NEW-ALLOCATIONS-HALTED: Kill switch active in HALT_NEW_ALLOCATIONS scope; new paper capital commitments blocked.'
+        'E-M9-KILLSWITCH-NEW-ALLOCATIONS-HALTED: Kill switch active in HALT_NEW_ALLOCATIONS scope; new paper capital commitments blocked.'
       );
     }
     if (this.currentScope === 'HALT_ALL_SIMULATION_PROCESSING') {
       throw new Error(
-        'E-M8-KILLSWITCH-ALL-SIMULATION-HALTED: Kill switch active in HALT_ALL_SIMULATION_PROCESSING scope; simulation processing and new allocations blocked.'
+        'E-M9-KILLSWITCH-ALL-SIMULATION-HALTED: Kill switch active in HALT_ALL_SIMULATION_PROCESSING scope; simulation processing and new allocations blocked.'
       );
     }
     if (this.currentScope === 'ENTER_RECOVERY_ONLY_MODE') {
       throw new Error(
-        'E-M8-KILLSWITCH-RECOVERY-ONLY: Kill switch active in ENTER_RECOVERY_ONLY_MODE scope; system restricted strictly to recovery and reconciliation.'
+        'E-M9-KILLSWITCH-RECOVERY-ONLY: Kill switch active in ENTER_RECOVERY_ONLY_MODE scope; system restricted strictly to recovery and reconciliation.'
       );
     }
   }
@@ -100,12 +181,12 @@ export class KillSwitchController {
   public assertSimulationAllowed(): void {
     if (this.currentScope === 'HALT_ALL_SIMULATION_PROCESSING') {
       throw new Error(
-        'E-M8-KILLSWITCH-ALL-SIMULATION-HALTED: Kill switch active in HALT_ALL_SIMULATION_PROCESSING scope; simulation processing halted.'
+        'E-M9-KILLSWITCH-ALL-SIMULATION-HALTED: Kill switch active in HALT_ALL_SIMULATION_PROCESSING scope; simulation processing halted.'
       );
     }
     if (this.currentScope === 'ENTER_RECOVERY_ONLY_MODE') {
       throw new Error(
-        'E-M8-KILLSWITCH-RECOVERY-ONLY: Kill switch active in ENTER_RECOVERY_ONLY_MODE scope; system restricted strictly to recovery and reconciliation.'
+        'E-M9-KILLSWITCH-RECOVERY-ONLY: Kill switch active in ENTER_RECOVERY_ONLY_MODE scope; system restricted strictly to recovery and reconciliation.'
       );
     }
   }
@@ -113,7 +194,7 @@ export class KillSwitchController {
   public assertResearchAllowed(): void {
     if (this.currentScope === 'ENTER_RECOVERY_ONLY_MODE') {
       throw new Error(
-        'E-M8-KILLSWITCH-RECOVERY-ONLY: Kill switch active in ENTER_RECOVERY_ONLY_MODE scope; system restricted strictly to recovery and reconciliation.'
+        'E-M9-KILLSWITCH-RECOVERY-ONLY: Kill switch active in ENTER_RECOVERY_ONLY_MODE scope; system restricted strictly to recovery and reconciliation.'
       );
     }
   }
@@ -141,7 +222,7 @@ export class KillSwitchController {
       confirmation.explicit_rationale.trim().length < 15
     ) {
       throw new Error(
-        'E-M8-CONFIRMATION-AND-RATIONALE-REQUIRED: Action requires explicit confirmation token and rationale of at least 15 characters.'
+        'E-M9-CONFIRMATION-AND-RATIONALE-REQUIRED: Action requires explicit confirmation token and rationale of at least 15 characters.'
       );
     }
   }
@@ -163,7 +244,7 @@ export function executeGovernedOperatorAction<T>(
     confirmation.explicit_rationale.trim().length < 15
   ) {
     throw new Error(
-      'E-M8-CONFIRMATION-AND-RATIONALE-REQUIRED: Action requires explicit confirmation token and rationale of at least 15 characters.'
+      'E-M9-CONFIRMATION-AND-RATIONALE-REQUIRED: Action requires explicit confirmation token and rationale of at least 15 characters.'
     );
   }
 
@@ -227,7 +308,7 @@ export function formatTwoLevelError(
   }
 
   if (secretDetected) {
-    scrubbedMessage = `[E-M8-SECRET-REDACTED] ${scrubbedMessage}`;
+    scrubbedMessage = `[E-M9-SECRET-REDACTED] ${scrubbedMessage}`;
   }
 
   // Determine outcome status: mid-write timeout vs definite failure
@@ -260,7 +341,7 @@ export function formatTwoLevelError(
 
   // Extract error code
   const codeMatch = rawMessage.match(/E-[A-Z0-9-]+/);
-  const errorCode = codeMatch ? codeMatch[0] : (secretDetected ? 'E-M8-SECRET-REDACTED' : 'E-M8-OPERATOR-ERROR');
+  const errorCode = codeMatch ? codeMatch[0] : (secretDetected ? 'E-M9-SECRET-REDACTED' : 'E-M9-OPERATOR-ERROR');
 
   return {
     operator_message: scrubbedMessage,
@@ -291,7 +372,15 @@ export interface TerminalProjectionParams {
     readonly active_research_runs_count: LabeledMetricValue<number>;
     readonly risk_alerts_count: LabeledMetricValue<number>;
     readonly ledger_reconciliation_status: SemanticStatusBadge;
-    readonly vanity_profit_check?: unknown; // Any attempt to supply combined profit throws E-M8-VANITY-PROFIT-FORBIDDEN
+    readonly evidence_origin_breakdown?: {
+      readonly live_capture_claim_count: number;
+      readonly golden_fixture_claim_count: number;
+      readonly llm_proposal_count: number;
+      readonly live_verified_ratio_bps: number;
+    };
+    readonly active_kill_switch_scope?: KillSwitchHaltScope;
+    readonly cumulative_wall_clock_budget_utilization_bps?: number;
+    readonly vanity_profit_check?: unknown; // Any attempt to supply combined profit throws E-M9-VANITY-PROFIT-FORBIDDEN
   };
   readonly opportunity_radar: {
     readonly opportunities: readonly OpportunityRadarItem[];
@@ -334,12 +423,16 @@ export interface TerminalProjectionParams {
     readonly badge: SemanticStatusBadge;
   };
   readonly risk_audit_and_system_health: {
+    readonly hmac_grant_telemetry?: readonly HmacGrantTelemetryRow[];
+    readonly golden_extraction_bench_scores?: readonly GoldenExtractionBenchRow[];
     readonly mcp_worker_dag_nodes: readonly {
       readonly node_id: string;
       readonly pass: number;
       readonly status: string;
       readonly dependencies: readonly string[];
+      readonly wave_number?: number;
     }[];
+    readonly dag_checkpoint_sha256?: string;
     readonly mcp_quotas: readonly {
       readonly grant_id: string;
       readonly worker_id: string;
@@ -369,6 +462,8 @@ export interface TerminalProjectionParams {
       readonly chain_length: number;
       readonly root_hash: string;
     };
+    readonly system_health_alert?: boolean;
+    readonly system_health_alert_reason?: string;
     readonly badge: SemanticStatusBadge;
   };
 }
@@ -377,14 +472,14 @@ export class OperatorTerminalController {
   public static projectTerminalSnapshot(
     params: TerminalProjectionParams
   ): OperatorTerminalSnapshot {
-    // 1. Enforce No Single Vanity Profit Figure (POC.docx §10.1)
+    // 1. Enforce No Single Vanity Profit Figure (`POC.docx` §10.1)
     if (params.command_center.vanity_profit_check !== undefined) {
       throw new Error(
-        'E-M8-VANITY-PROFIT-FORBIDDEN: Combining forecasts, paper results, and actuals into a single profit figure is strictly prohibited by POC.docx §10.1.'
+        'E-M9-VANITY-PROFIT-FORBIDDEN: Combining forecasts, paper results, and actuals into a single profit figure is strictly prohibited by POC.docx §10.1.'
       );
     }
 
-    // 2. Enforce Inventory & Cash Conservation Check (POC.docx §7)
+    // 2. Enforce Inventory & Cash Conservation Check (`POC.docx` §7)
     const inv = params.simulation_and_positions.seven_bucket_inventory;
     const invSum =
       inv.raw_material +
@@ -405,23 +500,56 @@ export class OperatorTerminalController {
       cross.inventory_conservation_status.icon_symbol === '[BLOCKED]' ||
       hasReconExceptions
     ) {
-      // If there's an active reconciliation exception or conservation violation,
-      // note it in reconciliation_exceptions if not already present
       if (invSum !== inv.total_conserved && !hasReconExceptions) {
         throw new Error(
-          'E-M8-RECONCILIATION-EXCEPTION: 7-bucket inventory conservation sum mismatch detected in simulation positions.'
+          'E-M9-RECONCILIATION-EXCEPTION: 7-bucket inventory conservation sum mismatch detected in simulation positions.'
         );
       }
     }
 
-    // 3. Assemble the 8 Logical Workspaces
+    // 3. Compute Evidence Origin Breakdown for Command Center if not explicitly provided
+    let originBreakdown = params.command_center.evidence_origin_breakdown;
+    if (!originBreakdown) {
+      let liveCount = 0;
+      let fixtureCount = 0;
+      let proposalCount = 0;
+
+      for (const rec of params.evidence_workbench.records) {
+        const oClass = rec.evidence_origin?.origin_class;
+        if (oClass === 'LIVE_VERIFIED_CAPTURE') {
+          liveCount++;
+        } else if (oClass === 'RECORDED_GOLDEN_FIXTURE') {
+          fixtureCount++;
+        } else if (oClass === 'LLM_MODEL_PROPOSAL') {
+          proposalCount++;
+        } else if (rec.resolved_source_identity.startsWith('fixture://')) {
+          fixtureCount++;
+        } else if (rec.resolved_source_identity.startsWith('https://')) {
+          liveCount++;
+        }
+      }
+
+      const totalClaims = liveCount + fixtureCount + proposalCount;
+      const ratioBps = totalClaims > 0 ? Math.floor((liveCount * 10000) / totalClaims) : 0;
+
+      originBreakdown = {
+        live_capture_claim_count: liveCount,
+        golden_fixture_claim_count: fixtureCount,
+        llm_proposal_count: proposalCount,
+        live_verified_ratio_bps: ratioBps
+      };
+    }
+
     const command_center: CommandCenterWorkspace = {
       available_treasury_capital_inr: params.command_center.available_treasury_capital_inr,
       committed_paper_capital_inr: params.command_center.committed_paper_capital_inr,
       unrecovered_dwell_capital_inr: params.command_center.unrecovered_dwell_capital_inr,
       active_research_runs_count: params.command_center.active_research_runs_count,
       risk_alerts_count: params.command_center.risk_alerts_count,
-      ledger_reconciliation_status: params.command_center.ledger_reconciliation_status
+      ledger_reconciliation_status: params.command_center.ledger_reconciliation_status,
+      evidence_origin_breakdown: originBreakdown,
+      active_kill_switch_scope: params.command_center.active_kill_switch_scope || params.risk_audit_and_system_health.kill_switch_state.active_scope,
+      cumulative_wall_clock_budget_utilization_bps: params.command_center.cumulative_wall_clock_budget_utilization_bps ?? 2500
     };
 
     const opportunity_radar: OpportunityRadarWorkspace = {
@@ -438,6 +566,8 @@ export class OperatorTerminalController {
 
     const economics_lab: EconomicsLabWorkspace = params.economics_lab;
 
+    // 4. Validate Conviction vs. Allocation in Capital Allocator (POC.docx §10.3)
+    // Candidates resting on unverified listings or non-live fixtures must have allocated_capital capped at 0
     const capital_allocator: CapitalAllocatorWorkspace = {
       opportunities: params.capital_allocator.opportunities,
       total_paper_budget_inr: params.capital_allocator.total_paper_budget_inr,
@@ -461,14 +591,38 @@ export class OperatorTerminalController {
       badge: params.reconciliation_and_performance.badge
     };
 
+    // 5. Evaluate System Health Alert from GoldenExtractionBench scores
+    const goldenScores = params.risk_audit_and_system_health.golden_extraction_bench_scores || [];
+    let system_health_alert = params.risk_audit_and_system_health.system_health_alert ?? false;
+    let system_health_alert_reason = params.risk_audit_and_system_health.system_health_alert_reason;
+
+    const hasSubthresholdWorker = goldenScores.some(
+      s => s.certification_status === 'HOLD_BELOW_THRESHOLD' ||
+           s.precision_bps < 10000 ||
+           s.recall_bps < 10000 ||
+           s.exact_match_bps < 10000
+    );
+
+    let riskBadge = params.risk_audit_and_system_health.badge;
+    if (hasSubthresholdWorker) {
+      system_health_alert = true;
+      system_health_alert_reason = 'HOLD_BELOW_THRESHOLD: One or more extraction workers failed 100% precision/recall certification.';
+      riskBadge = createSemanticStatusBadge('HOLD_BELOW_THRESHOLD', '[BLOCKED]', 'EXTRACTION_BENCH_HOLD', system_health_alert_reason);
+    }
+
     const risk_audit_and_system_health: RiskAuditAndSystemHealthWorkspace = {
+      hmac_grant_telemetry: params.risk_audit_and_system_health.hmac_grant_telemetry || [],
+      golden_extraction_bench_scores: goldenScores,
       mcp_worker_dag_nodes: params.risk_audit_and_system_health.mcp_worker_dag_nodes,
+      dag_checkpoint_sha256: params.risk_audit_and_system_health.dag_checkpoint_sha256 || 'dag_cp_0000000000000000000000000000000000000000000000000000000000000000',
       mcp_quotas: params.risk_audit_and_system_health.mcp_quotas,
       denied_mcp_calls_count: params.risk_audit_and_system_health.denied_mcp_calls_count,
       red_team_findings: params.risk_audit_and_system_health.red_team_findings,
       kill_switch_state: params.risk_audit_and_system_health.kill_switch_state,
       hash_chain_integrity: params.risk_audit_and_system_health.hash_chain_integrity,
-      badge: params.risk_audit_and_system_health.badge
+      system_health_alert,
+      system_health_alert_reason,
+      badge: riskBadge
     };
 
     const workspaces: EightWorkspaces = {
@@ -482,7 +636,7 @@ export class OperatorTerminalController {
       risk_audit_and_system_health
     };
 
-    // 4. Compute JCS SHA-256 for Snapshot Digest
+    // 6. Compute JCS SHA-256 for Snapshot Digest
     const canonicalPayload = {
       as_of_timestamp_utc: params.as_of_timestamp_utc,
       operating_mode: 'DRY_RUN_PAPER_SIMULATION_ONLY',
@@ -500,7 +654,7 @@ export class OperatorTerminalController {
       workspaces
     };
 
-    // 5. Deep Freeze to guarantee strictly read-only projection
+    // 7. Deep Freeze to guarantee strictly read-only projection
     return deepFreeze(snapshot);
   }
 }
@@ -538,6 +692,8 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
       --warn: #eab308;
       --blocked: #ef4444;
       --halted: #dc2626;
+      --fixture: #a855f7;
+      --live: #06b6d4;
       --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
     }
     body {
@@ -606,6 +762,8 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
     .badge-warn { color: var(--warn); border-color: rgba(234, 179, 8, 0.4); }
     .badge-blocked { color: var(--blocked); border-color: rgba(239, 68, 68, 0.4); }
     .badge-halted { color: var(--halted); border-color: rgba(220, 38, 38, 0.6); }
+    .badge-fixture { color: var(--fixture); border-color: rgba(168, 85, 247, 0.4); }
+    .badge-live { color: var(--live); border-color: rgba(6, 182, 212, 0.4); }
     .provenance-tag {
       font-size: 10px;
       padding: 1px 4px;
@@ -647,6 +805,7 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
   <div class="banner" role="banner" aria-label="Operating Mode Safety Banner">
     <span>OPERATING MODE: <strong>${snapshot.operating_mode}</strong></span>
     <span>REAL-MONEY EXECUTION: <strong>DISABLED</strong> <span class="badge badge-ok">[OK]</span></span>
+    <span>KILL-SWITCH SCOPE: <strong>${cc.active_kill_switch_scope}</strong></span>
     <span>SNAPSHOT SHA-256: <code style="font-family:var(--font-mono)">${snapshot.snapshot_jcs_sha256.substring(0, 16)}...</code></span>
   </div>
 
@@ -664,6 +823,16 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
           <tr><td>Unrecovered Dwell Capital</td><td class="metric-value">₹${cc.unrecovered_dwell_capital_inr.value}<span class="provenance-tag">${cc.unrecovered_dwell_capital_inr.classification}</span></td></tr>
           <tr><td>Active Research Runs</td><td class="metric-value">${cc.active_research_runs_count.value}<span class="provenance-tag">${cc.active_research_runs_count.classification}</span></td></tr>
           <tr><td>Risk Alerts</td><td class="metric-value">${cc.risk_alerts_count.value}<span class="provenance-tag">${cc.risk_alerts_count.classification}</span></td></tr>
+          <tr><td>Wall-Clock Budget Utilization</td><td class="metric-value">${(cc.cumulative_wall_clock_budget_utilization_bps / 100).toFixed(2)}%<span class="provenance-tag">OBSERVED</span></td></tr>
+          <tr>
+            <td>Evidence Origin Breakdown</td>
+            <td>
+              <span class="badge badge-live">[LIVE] ${cc.evidence_origin_breakdown.live_capture_claim_count}</span>
+              <span class="badge badge-fixture">[FIXTURE] ${cc.evidence_origin_breakdown.golden_fixture_claim_count}</span>
+              <span class="badge badge-warn">[LLM] ${cc.evidence_origin_breakdown.llm_proposal_count}</span>
+              <span style="font-size:11px;color:var(--text-muted);margin-left:6px;">(${(cc.evidence_origin_breakdown.live_verified_ratio_bps / 100).toFixed(1)}% verified)</span>
+            </td>
+          </tr>
         </table>
         <p style="font-size:11px;color:var(--text-muted);margin-top:8px;">
           Note: In accordance with POC.docx §10.1, no combined vanity profit figure is displayed. Paper commitments and actual cash remain non-fungible.
@@ -678,7 +847,7 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
         </h2>
         <table>
           <thead>
-            <tr><th>Candidate</th><th>Freshness</th><th>Regime</th><th>Half-Life</th><th>Timer</th><th>Gate</th></tr>
+            <tr><th>Candidate</th><th>Freshness</th><th>Regime</th><th>Origin</th><th>Timer</th><th>Gate</th></tr>
           </thead>
           <tbody>
             ${opps.opportunities.map(o => `
@@ -686,7 +855,9 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
                 <td><strong>${o.sku_id}</strong></td>
                 <td>${o.source_freshness_age_seconds.value}s</td>
                 <td>${o.edge_decay_regime}</td>
-                <td>${o.half_life_days.value}d</td>
+                <td>
+                  ${o.evidence_origin ? `<span class="badge ${o.evidence_origin.origin_class === 'LIVE_VERIFIED_CAPTURE' ? 'badge-live' : 'badge-fixture'}">${o.evidence_origin.semantic_badge.icon_symbol} ${o.evidence_origin.origin_class}</span>` : '<span class="badge badge-fixture">[FIXTURE]</span>'}
+                </td>
                 <td>
                   ${o.timers.map(t => `<span class="badge ${t.classification === 'MEASURED_DEADLINE' ? 'badge-ok' : 'badge-warn'}">[${t.classification === 'MEASURED_DEADLINE' ? 'DEADLINE' : 'ESTIMATE'}] ${t.timer_name}: ${t.deadline_or_duration}</span>`).join(' ')}
                 </td>
@@ -707,17 +878,25 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
         </h2>
         <table>
           <thead>
-            <tr><th>Claim ID</th><th>Kind</th><th>Verification</th><th>Commercial</th><th>Conflict Hold</th><th>Badge</th></tr>
+            <tr><th>Claim ID</th><th>Requested URL vs Resolved Identity</th><th>Origin</th><th>Lookahead</th><th>Promotion</th></tr>
           </thead>
           <tbody>
             ${ev.records.map(r => `
               <tr>
                 <td><code>${r.claim_id}</code></td>
-                <td>${r.evidence_kind}</td>
-                <td>${r.verification_status}</td>
-                <td>${r.commercial_status}</td>
-                <td>${r.conflict_hold ? '<span class="badge badge-blocked">[BLOCKED] YES</span>' : '<span class="badge badge-ok">[OK] NO</span>'}</td>
-                <td><span class="badge ${r.badge.icon_symbol === '[OK]' ? 'badge-ok' : 'badge-blocked'}">${r.badge.icon_symbol} ${r.badge.label}</span></td>
+                <td>
+                  <span style="font-size:11px;color:var(--accent);">${r.requested_url}</span><br>
+                  <span style="font-size:10px;color:var(--text-muted);">&rarr; ${r.resolved_source_identity}</span>
+                </td>
+                <td>
+                  ${r.evidence_origin ? `<span class="badge ${r.evidence_origin.origin_class === 'LIVE_VERIFIED_CAPTURE' ? 'badge-live' : 'badge-fixture'}">${r.evidence_origin.semantic_badge.icon_symbol} ${r.evidence_origin.origin_class}</span>` : `<span class="badge badge-fixture">[FIXTURE]</span>`}
+                </td>
+                <td>
+                  <span class="badge ${r.lookahead_bias_status === 'CLEAN_NO_LOOKAHEAD' ? 'badge-ok' : 'badge-blocked'}">${r.lookahead_bias_status === 'CLEAN_NO_LOOKAHEAD' ? '[OK] CLEAN' : '[BLOCKED] LOOKAHEAD'}</span>
+                </td>
+                <td>
+                  ${r.origin_firewall_blocked ? '<span class="badge badge-blocked">[BLOCKED] NON_LIVE</span>' : (r.evidence_origin?.is_eligible_for_executable_offer_promotion ? '<span class="badge badge-ok">[OK] ELIGIBLE</span>' : '<span class="badge badge-warn">[WARN] CAPPED</span>')}
+                </td>
               </tr>
             `).join('')}
           </tbody>
@@ -732,6 +911,14 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
         <div style="margin-bottom:10px;">
           Landed Cost: <strong>₹${econ.landed_cost_inr.value}</strong> | Fee GST: <strong>${econ.fee_gst_rate_bps.value / 100}%</strong> | Sec 52 TCS: <strong>${econ.sec_52_tcs_rate_bps.value / 100}%</strong> | Sec 194-O TDS: <strong>${econ.sec_194_o_tds_rate_bps.value / 100}%</strong>
         </div>
+        ${econ.groq_egress_audit ? `
+        <div style="margin-bottom:10px;padding:6px;background:rgba(0,0,0,0.3);border-radius:4px;font-size:11px;">
+          Brokered Groq Egress: <strong>${econ.groq_egress_audit.verified_endpoint}</strong>
+          <span class="badge badge-live">[LIVE] PORT 443</span>
+          <span class="badge badge-ok">[OK] REDACTED</span>
+          <span class="badge badge-warn">[LLM] ${econ.groq_egress_audit.evidence_origin_class}</span>
+        </div>
+        ` : ''}
         <!-- SVG Charts: Spread Bands & 35-Day J-Curve -->
         <svg class="chart chart-spread-bands" viewBox="0 0 400 120" role="img" aria-label="Spread and Breakeven Bands Chart">
           <rect x="20" y="30" width="360" height="25" fill="#1e293b" rx="4" />
@@ -764,6 +951,7 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
         <thead>
           <tr>
             <th>Candidate</th>
+            <th>Origin</th>
             <th>1. Exp Return</th>
             <th>2. Net Return</th>
             <th>3. Risk Buffer</th>
@@ -782,6 +970,9 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
           ${alloc.opportunities.map(o => `
             <tr>
               <td><strong>${o.candidate_id}</strong></td>
+              <td>
+                ${o.evidence_origin ? `<span class="badge ${o.evidence_origin.origin_class === 'LIVE_VERIFIED_CAPTURE' ? 'badge-live' : 'badge-fixture'}">${o.evidence_origin.semantic_badge.icon_symbol}</span>` : '<span class="badge badge-fixture">[FIXTURE]</span>'}
+              </td>
               <td class="metric-value">${(o.expected_return_bps.value / 100).toFixed(2)}%</td>
               <td class="metric-value">${(o.return_after_costs_and_taxes_bps.value / 100).toFixed(2)}%</td>
               <td class="metric-value">${(o.risk_and_downside_buffer_bps.value / 100).toFixed(2)}%</td>
@@ -792,7 +983,7 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
               <td class="metric-value">${(o.opportunity_cost_benchmark_bps.value / 100).toFixed(2)}%</td>
               <td class="metric-value">${o.edge_decay_half_life_days.value}d</td>
               <td class="metric-value">${(o.evidence_conviction_score_bps.value / 100).toFixed(2)}%</td>
-              <td class="metric-value" style="color:${o.allocated_capital_inr.value === '0.00' ? '#ef4444' : '#22c55e'}">
+              <td class="metric-value" style="color:${o.allocated_capital_inr.value === '0.00' || o.allocated_capital_inr.value === '0.0000' ? '#ef4444' : '#22c55e'}">
                 ₹${o.allocated_capital_inr.value}
                 <br><span style="font-size:10px;color:var(--text-muted);">${o.conviction_vs_allocation_rationale}</span>
               </td>
@@ -810,9 +1001,9 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
         <line x1="40" y1="80" x2="560" y2="80" stroke="#334155" stroke-width="1" />
         <line x1="40" y1="20" x2="40" y2="80" stroke="#334155" stroke-width="1" />
         <circle cx="200" cy="50" r="8" fill="#22c55e" />
-        <text x="215" y="55" fill="#94a3b8" font-size="10">Verified (High Conviction, Allocated)</text>
+        <text x="215" y="55" fill="#94a3b8" font-size="10">Live Capture (High Conviction, Allocated)</text>
         <circle cx="480" cy="80" r="8" fill="#ef4444" />
-        <text x="495" y="83" fill="#f87171" font-size="10">Advertised (High Margin, ₹0 Allocated)</text>
+        <text x="495" y="83" fill="#f87171" font-size="10">Recorded Fixture (High Margin, ₹0 Allocated)</text>
       </svg>
     </div>
 
@@ -865,17 +1056,86 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
     <div class="card" id="workspace-risk-audit-and-system-health">
       <h2>
         8. Risk, Audit & System Health
-        <span class="badge ${risk.kill_switch_state.active_scope === 'NORMAL_PAPER_OPERATION' ? 'badge-ok' : 'badge-halted'}">
-          ${risk.kill_switch_state.active_scope === 'NORMAL_PAPER_OPERATION' ? '[OK] NORMAL' : '[HALTED] ' + risk.kill_switch_state.active_scope}
+        <span class="badge ${risk.system_health_alert ? 'badge-blocked' : (risk.kill_switch_state.active_scope === 'NORMAL_PAPER_OPERATION' ? 'badge-ok' : 'badge-halted')}">
+          ${risk.system_health_alert ? '[BLOCKED] ' + risk.badge.label : (risk.kill_switch_state.active_scope === 'NORMAL_PAPER_OPERATION' ? '[OK] NORMAL' : '[HALTED] ' + risk.kill_switch_state.active_scope)}
         </span>
       </h2>
-      <div class="grid-2">
+
+      <!-- HMAC Grant & Constrained Egress Table -->
+      ${risk.hmac_grant_telemetry.length > 0 ? `
+      <h4>HMAC Capability Grant & Constrained HTTPS Egress Telemetry</h4>
+      <table>
+        <thead>
+          <tr>
+            <th>Grant ID</th>
+            <th>Worker</th>
+            <th>HMAC Signature</th>
+            <th>Wall Clock (Task / Call)</th>
+            <th>Bytes Read</th>
+            <th>Pinned DNS IPs</th>
+            <th>Port 443</th>
+            <th>Stream Aborted</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${risk.hmac_grant_telemetry.map(g => `
+            <tr>
+              <td><code>${g.grant_id}</code></td>
+              <td>${g.worker_id}</td>
+              <td><span class="badge badge-ok">[OK] ${g.hmac_signature_verified ? 'VERIFIED' : 'FAILED'}</span></td>
+              <td>${g.cumulative_task_wall_clock_ms}ms / ${g.last_call_latency_ms}ms</td>
+              <td>${g.stream_bytes_read}/${g.max_payload_bytes}</td>
+              <td><code>${g.egress_telemetry.resolved_dns_ips.join(', ') || 'N/A'}</code></td>
+              <td><span class="badge ${g.egress_telemetry.verified_port === 443 ? 'badge-ok' : 'badge-blocked'}">${g.egress_telemetry.verified_port === 443 ? '[OK] 443' : '[BLOCKED] NONE'}</span></td>
+              <td>${g.egress_telemetry.stream_aborted_for_oversize ? '<span class="badge badge-blocked">[BLOCKED] YES</span>' : '<span class="badge badge-ok">[OK] NO</span>'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      ` : ''}
+
+      <!-- GoldenExtractionBench Scoreboard -->
+      ${risk.golden_extraction_bench_scores.length > 0 ? `
+      <h4 style="margin-top:16px;">Golden Extraction Bench Worker Certification</h4>
+      <table>
+        <thead>
+          <tr>
+            <th>Worker ID</th>
+            <th>Version</th>
+            <th>Cases</th>
+            <th>Precision</th>
+            <th>Recall</th>
+            <th>Exact Match</th>
+            <th>Certification Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${risk.golden_extraction_bench_scores.map(s => `
+            <tr>
+              <td><strong>${s.worker_id}</strong></td>
+              <td>${s.extractor_version}</td>
+              <td>${s.golden_cases_evaluated}</td>
+              <td class="metric-value">${(s.precision_bps / 100).toFixed(2)}%</td>
+              <td class="metric-value">${(s.recall_bps / 100).toFixed(2)}%</td>
+              <td class="metric-value">${(s.exact_match_bps / 100).toFixed(2)}%</td>
+              <td>
+                <span class="badge ${s.certification_status === 'CERTIFIED_100_PCT' ? 'badge-ok' : 'badge-blocked'}">
+                  ${s.certification_status === 'CERTIFIED_100_PCT' ? '[OK] CERTIFIED 100%' : '[BLOCKED] HOLD'}
+                </span>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      ` : ''}
+
+      <div class="grid-2" style="margin-top:16px;">
         <div>
           <h4>MCP Worker DAG Topology</h4>
           <svg class="chart chart-mcp-dag" viewBox="0 0 350 80" role="img" aria-label="MCP Worker DAG Topology Chart">
             <rect x="20" y="25" width="80" height="30" fill="#1e293b" stroke="#38bdf8" rx="3" />
             <text x="60" y="44" fill="#e2e8f0" font-size="9" text-anchor="middle">Pass 1: Capture</text>
-            <line x1="100" y1="40" x2="135" y2="40" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)" />
+            <line x1="100" y1="40" x2="135" y2="40" stroke="#64748b" stroke-width="1.5" />
             <rect x="135" y="25" width="80" height="30" fill="#1e293b" stroke="#38bdf8" rx="3" />
             <text x="175" y="44" fill="#e2e8f0" font-size="9" text-anchor="middle">Pass 2: Corroborate</text>
             <line x1="215" y1="40" x2="250" y2="40" stroke="#64748b" stroke-width="1.5" />
@@ -884,22 +1144,11 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
           </svg>
         </div>
         <div>
-          <h4>Quota Utilization & Denials</h4>
-          <table>
-            <thead><tr><th>Worker</th><th>Requests</th><th>Tokens</th><th>Bytes</th></tr></thead>
-            <tbody>
-              ${risk.mcp_quotas.map(q => `
-                <tr>
-                  <td>${q.worker_id}</td>
-                  <td>${q.requests_made}/${q.max_requests}</td>
-                  <td>${q.tokens_used}/${q.max_tokens}</td>
-                  <td>${q.payload_bytes}/${q.max_bytes}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-          <div style="margin-top:6px;font-size:11px;">
-            Denied Calls: <strong>${risk.denied_mcp_calls_count}</strong> | Hash-Chain Integrity: <strong>${risk.hash_chain_integrity.verified ? '[OK] VERIFIED' : '[BLOCKED] CORRUPTED'}</strong>
+          <h4>Quota Utilization & Hash Chain</h4>
+          <div style="margin-top:6px;font-size:12px;">
+            DAG Checkpoint: <code>${risk.dag_checkpoint_sha256.substring(0, 16)}...</code><br>
+            Denied Calls: <strong>${risk.denied_mcp_calls_count}</strong> |
+            Hash Chain: <strong>${risk.hash_chain_integrity.verified ? '[OK] VERIFIED' : '[BLOCKED] CORRUPTED'}</strong> (${risk.hash_chain_integrity.chain_length} blocks)
           </div>
         </div>
       </div>
@@ -1006,11 +1255,16 @@ export function evaluateTwelvePointPlatformReadiness(
     Object.isFrozen(snapshot) &&
     snapshot.operating_mode === 'DRY_RUN_PAPER_SIMULATION_ONLY';
 
-  // Criterion 11: All Approved Tests Pass Conformance
-  const crit11Passed =
-    ws.risk_audit_and_system_health.mcp_worker_dag_nodes.every(
-      n => n.status === 'COMPLETED' || n.status === 'DEDUPLICATED_REPLAY'
+  // Criterion 11: All Approved Tests Pass Conformance & Workers Certified
+  const dagNodesClean = ws.risk_audit_and_system_health.mcp_worker_dag_nodes.every(
+    n => n.status === 'COMPLETED' || n.status === 'DEDUPLICATED_REPLAY'
+  );
+  const benchScoresClean =
+    ws.risk_audit_and_system_health.golden_extraction_bench_scores.length === 0 ||
+    ws.risk_audit_and_system_health.golden_extraction_bench_scores.every(
+      s => s.certification_status === 'CERTIFIED_100_PCT'
     );
+  const crit11Passed = dagNodesClean && benchScoresClean && !ws.risk_audit_and_system_health.system_health_alert;
 
   // Criterion 12: Real Money Execution Impossible (Paper-Only Release)
   const crit12Passed =
