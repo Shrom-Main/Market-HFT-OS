@@ -43,8 +43,10 @@ import {
   FormulaCardInput
 } from '../../research/formulaRegistry.js';
 import {
+  GOVT_STATUTORY_TOOL_POLICY
+} from '../../mcp/contracts/govtStatutoryContract.js';
+import type {
   GovtStatutoryToolPolicy,
-  GOVT_STATUTORY_TOOL_POLICY,
   StatutoryCitation,
   StatutoryRuleClaim,
   StatutoryAuthority,
@@ -56,9 +58,9 @@ import {
   CandidateFormulaProposal
 } from '../../mcp/contracts/govtStatutoryContract.js';
 
-export {
+export { GOVT_STATUTORY_TOOL_POLICY };
+export type {
   GovtStatutoryToolPolicy,
-  GOVT_STATUTORY_TOOL_POLICY,
   StatutoryCitation,
   StatutoryRuleClaim,
   StatutoryAuthority,

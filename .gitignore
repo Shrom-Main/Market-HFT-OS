@@ -27,8 +27,10 @@ Alpaca_Key.env
 # Build outputs, caches, and runtime artifacts
 node_modules/
 dist/
+!dist/POC-001_Standalone_Workstation.html
 build/
 *.log
+__pycache__/
 
 # Operating system files
 .DS_Store

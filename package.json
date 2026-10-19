@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "sync": "python scripts/sync_repos.py --once",
     "sync:push": "python scripts/sync_repos.py --once --push-only",
-    "workstation": "tsx src/cli/workstationCli.ts"
+    "workstation": "tsx src/cli/workstationCli.ts",
+    "workstation:export": "tsx src/cli/exportStandaloneHtml.ts"
   },
   "dependencies": {
     "json-canonicalize": "3.0.1",

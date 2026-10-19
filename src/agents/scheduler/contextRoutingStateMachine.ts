@@ -504,7 +504,7 @@ export class ContextRoutingStateMachine {
         max_payload_bytes: 262144,
         max_latency_ms: 5000,
         max_tokens: 100000,
-        expires_at_utc: '2026-10-19T00:00:00.000Z'
+        expires_at_utc: '2026-12-31T23:59:59.000Z'
       });
 
       try {
@@ -608,7 +608,7 @@ export class ContextRoutingStateMachine {
         max_payload_bytes: 131072,
         max_latency_ms: 5000,
         max_tokens: 100000,
-        expires_at_utc: '2026-10-19T00:00:00.000Z'
+        expires_at_utc: '2026-12-31T23:59:59.000Z'
       });
 
       try {
@@ -730,7 +730,7 @@ export class ContextRoutingStateMachine {
         max_payload_bytes: 262144,
         max_latency_ms: 5000,
         max_tokens: 100000,
-        expires_at_utc: '2026-10-19T00:00:00.000Z'
+        expires_at_utc: '2026-12-31T23:59:59.000Z'
       });
 
       try {
@@ -908,7 +908,7 @@ export class ContextRoutingStateMachine {
         max_payload_bytes: 262144,
         max_latency_ms: 5000,
         max_tokens: 100000,
-        expires_at_utc: '2026-10-19T00:00:00.000Z'
+        expires_at_utc: '2026-12-31T23:59:59.000Z'
       });
 
       const mediaUrl =
@@ -984,7 +984,7 @@ export class ContextRoutingStateMachine {
         max_payload_bytes: 262144,
         max_latency_ms: 5000,
         max_tokens: 100000,
-        expires_at_utc: '2026-10-19T00:00:00.000Z'
+        expires_at_utc: '2026-12-31T23:59:59.000Z'
       });
 
       const secReq: SourceCaptureMcpRequest = {
@@ -1083,7 +1083,7 @@ export class ContextRoutingStateMachine {
       max_payload_bytes: 262144,
       max_latency_ms: 4000,
       max_tokens: 100000,
-      expires_at_utc: '2026-10-19T00:00:00.000Z'
+      expires_at_utc: '2026-12-31T23:59:59.000Z'
     });
 
     const evidenceTimestamps: RedTeamEvidenceTimestamp[] = [];

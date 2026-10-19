@@ -95,7 +95,7 @@ describe('SUITE-27: Gate M6.5 Stage 5 GovtAndStatutoryWorker & Formula Non-Mutat
       max_payload_bytes: 262144,
       max_latency_ms: 5000,
       max_tokens: 100000,
-      expires_at_utc: '2026-10-19T00:00:00.000Z'
+      expires_at_utc: '2026-12-31T23:59:59.000Z'
     });
 
     worker = new GovtAndStatutoryWorker(broker, standardGrant);
@@ -403,7 +403,7 @@ describe('SUITE-27: Gate M6.5 Stage 5 GovtAndStatutoryWorker & Formula Non-Mutat
       max_payload_bytes: 262144,
       max_latency_ms: 5000,
       max_tokens: 100000,
-      expires_at_utc: '2026-10-19T00:00:00.000Z'
+      expires_at_utc: '2026-12-31T23:59:59.000Z'
     });
 
     const badHostWorker = new GovtAndStatutoryWorker(broker, badHostGrant);

@@ -854,7 +854,7 @@ describe('SUITE-31: Gate M6.9 Comprehensive MCP Protocol Hardening & Terminal Ce
       max_latency_ms: 2000,
       max_tokens: 10000,
       max_task_wall_clock_ms: 1500,
-      expires_at_utc: '2026-10-19T00:00:00.000Z'
+      expires_at_utc: '2026-12-31T23:59:59.000Z'
     });
 
     // 1. Unsigned grant is rejected by broker configured with hmacSecret
@@ -938,7 +938,7 @@ describe('SUITE-31: Gate M6.9 Comprehensive MCP Protocol Hardening & Terminal Ce
         max_latency_ms: 2000,
         max_tokens: 10000,
         max_task_wall_clock_ms: 0,
-        expires_at_utc: '2026-10-19T00:00:00.000Z'
+        expires_at_utc: '2026-12-31T23:59:59.000Z'
       }),
       hmacSecret
     );

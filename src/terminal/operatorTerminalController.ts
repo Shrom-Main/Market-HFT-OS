@@ -10,7 +10,7 @@
 import { sha256 } from '../canonical/crypto.js';
 import { canonicalizeJCS } from '../canonical/jcs.js';
 import { deepFreeze } from '../verification/gate.js';
-export {
+export type {
   ValueProvenanceClassification,
   TimerDeadlineClassification,
   KillSwitchHaltScope,
@@ -45,7 +45,7 @@ export {
   GovernedOperatorActionExecutionResult
 } from '../mcp/contracts/operatorTerminalContract.js';
 
-import {
+import type {
   ValueProvenanceClassification,
   TimerDeadlineClassification,
   KillSwitchHaltScope,
@@ -938,6 +938,14 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
     <span>SNAPSHOT SHA-256: <code style="font-family:var(--font-mono)">${snapshot.snapshot_jcs_sha256.substring(0, 16)}...</code></span>
   </div>
 
+  <div id="standalone-mode-banner" style="display:none;background:#1e1b4b;border-bottom:1px solid #4338ca;color:#c7d2fe;padding:10px 20px;font-size:12px;justify-content:space-between;align-items:center;">
+    <span>
+      <strong style="color:#a5b4fc;">[STANDALONE OFFLINE VIEW]</strong>
+      Viewing exported snapshot. For live WebSocket telemetry, real-time recalculations, and governed operator actions, launch <a href="http://127.0.0.1:4310" target="_blank" style="color:#38bdf8;font-weight:600;text-decoration:underline;">http://127.0.0.1:4310</a> or double-click <code>POC-001-Workstation.exe</code> / <code>start_workstation.bat</code>.
+    </span>
+    <span class="badge badge-fixture" style="margin-left:10px;">STATIC PROJECTION</span>
+  </div>
+
   <div class="container">
     <!-- NAVIGATION BAR (WORKSPACE TABS) -->
     <nav class="nav-bar" role="tablist" aria-label="Operator Workspaces">
@@ -1370,6 +1378,23 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
   </div>
   <script>
     (function() {
+      // 0. Dual-Mode Detection (http://127.0.0.1:4310 loopback daemon vs. file:/// standalone snapshot)
+      var isFileMode = (typeof window !== 'undefined' && window.location && window.location.protocol === 'file:');
+      var daemonOrigin = 'http://127.0.0.1:4310';
+      var apiBase = isFileMode ? daemonOrigin : '';
+
+      if (isFileMode) {
+        var standaloneBanner = document.getElementById('standalone-mode-banner');
+        if (standaloneBanner) {
+          standaloneBanner.style.display = 'flex';
+        }
+        var wsInd = document.getElementById('ws-indicator');
+        if (wsInd) {
+          wsInd.className = 'badge badge-fixture';
+          wsInd.textContent = '[WS: OFFLINE SNAPSHOT]';
+        }
+      }
+
       // 1. Tab Navigation & Workspace Filtering
       var tabButtons = document.querySelectorAll('.nav-btn');
       var allCards = document.querySelectorAll('.card[id^="workspace-"]');
@@ -1521,10 +1546,10 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
             var url = '';
             var body = {};
             if (currentAction.type === 'kill-switch') {
-              url = '/api/actions/kill-switch';
+              url = apiBase + '/api/actions/kill-switch';
               body = { target_scope: currentAction.target_scope, rationale: rationale };
             } else if (currentAction.type === 'run-dag') {
-              url = '/api/actions/run-dag';
+              url = apiBase + '/api/actions/run-dag';
               body = { rationale: rationale };
             }
 
@@ -1544,7 +1569,10 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
               closeModal();
             }
           } catch (err) {
-            showError('Network or server error during action dispatch', String(err));
+            var errSummary = isFileMode
+              ? 'Action Unavailable in Offline View: Live operator transitions require the loopback daemon. Launch http://127.0.0.1:4310 or double-click POC-001-Workstation.exe / start_workstation.bat.'
+              : 'Network or server error during action dispatch';
+            showError(errSummary, String(err));
           } finally {
             modalConfirmBtn.textContent = 'Confirm Transition';
             updateRationaleValidation();
@@ -1569,7 +1597,7 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
             var cost = Number(whatIfCost.value || 0);
             var formulaId = whatIfFormulaId.value;
 
-            var res = await fetch('/api/actions/what-if-formula', {
+            var res = await fetch(apiBase + '/api/actions/what-if-formula', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -1594,7 +1622,10 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
                 '<div style="color:var(--text-muted);margin-top:6px;font-size:10px;">Zero State Mutation Enforced: Projection remains purely server-evaluated candidate AST.</div>';
             }
           } catch (err) {
-            whatIfResult.innerHTML = '<span style="color:var(--blocked);">Network error during evaluation: ' + String(err) + '</span>';
+            var errMsg = isFileMode
+              ? 'What-If Sandbox requires live loopback daemon. Start POC-001-Workstation.exe or start_workstation.bat to evaluate candidate rational AST formulas.'
+              : 'Network error during evaluation: ' + String(err);
+            whatIfResult.innerHTML = '<span style="color:var(--blocked);">' + errMsg + '</span>';
           }
         });
       }
@@ -1607,8 +1638,9 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
 
       function connectWs() {
         if (reconnectTimer) clearTimeout(reconnectTimer);
-        var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        var wsUrl = protocol + '//' + window.location.host + '/ws';
+        var wsUrl = isFileMode 
+          ? 'ws://127.0.0.1:4310/ws' 
+          : ((window.location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + window.location.host + '/ws');
 
         try {
           ws = new WebSocket(wsUrl);
@@ -1639,29 +1671,33 @@ export function renderOperatorTerminalHtml(snapshot: OperatorTerminalSnapshot): 
 
           ws.onclose = function() {
             if (wsIndicator) {
-              wsIndicator.className = 'badge badge-blocked';
-              wsIndicator.textContent = '[WS: DISCONNECTED]';
+              wsIndicator.className = isFileMode ? 'badge badge-fixture' : 'badge badge-blocked';
+              wsIndicator.textContent = isFileMode ? '[WS: OFFLINE SNAPSHOT]' : '[WS: DISCONNECTED]';
             }
             reconnectTimer = setTimeout(connectWs, 3000);
           };
 
           ws.onerror = function() {
             if (wsIndicator) {
-              wsIndicator.className = 'badge badge-blocked';
-              wsIndicator.textContent = '[WS: ERROR]';
+              wsIndicator.className = isFileMode ? 'badge badge-fixture' : 'badge badge-blocked';
+              wsIndicator.textContent = isFileMode ? '[WS: OFFLINE SNAPSHOT]' : '[WS: ERROR]';
             }
           };
         } catch (e) {
           if (wsIndicator) {
-            wsIndicator.className = 'badge badge-blocked';
-            wsIndicator.textContent = '[WS: ERROR]';
+            wsIndicator.className = isFileMode ? 'badge badge-fixture' : 'badge badge-blocked';
+            wsIndicator.textContent = isFileMode ? '[WS: OFFLINE SNAPSHOT]' : '[WS: ERROR]';
           }
           reconnectTimer = setTimeout(connectWs, 3000);
         }
       }
 
-      if (typeof window !== 'undefined' && window.location && window.location.host) {
-        connectWs();
+      if (typeof window !== 'undefined' && window.location) {
+        if (isFileMode) {
+          connectWs();
+        } else if (window.location.host) {
+          connectWs();
+        }
       }
     })();
   </script>

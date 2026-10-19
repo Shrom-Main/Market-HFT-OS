@@ -117,7 +117,7 @@ describe('SUITE-25: Gate M6.3 Stage 3 MediaAndChatterWorker Acceptance', () => {
       max_payload_bytes: 524288,
       max_latency_ms: 5000,
       max_tokens: 100000,
-      expires_at_utc: '2026-10-19T00:00:00.000Z'
+      expires_at_utc: '2026-12-31T23:59:59.000Z'
     });
 
     worker = new MediaAndChatterWorker(broker, standardGrant);
@@ -339,7 +339,7 @@ describe('SUITE-25: Gate M6.3 Stage 3 MediaAndChatterWorker Acceptance', () => {
       max_payload_bytes: 262144,
       max_latency_ms: 4000,
       max_tokens: 100000,
-      expires_at_utc: '2026-10-19T00:00:00.000Z'
+      expires_at_utc: '2026-12-31T23:59:59.000Z'
     });
 
     const hostWorker = new MediaAndChatterWorker(broker, unapprovedHostGrant);
@@ -367,7 +367,7 @@ describe('SUITE-25: Gate M6.3 Stage 3 MediaAndChatterWorker Acceptance', () => {
       max_payload_bytes: 262144,
       max_latency_ms: 4000,
       max_tokens: 100000,
-      expires_at_utc: '2026-10-19T00:00:00.000Z'
+      expires_at_utc: '2026-12-31T23:59:59.000Z'
     });
 
     const quotaWorker = new MediaAndChatterWorker(broker, quotaGrant);

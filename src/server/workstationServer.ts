@@ -16,7 +16,7 @@ import http from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { WorkstationStateManager } from './workstationStateManager.js';
 import { renderOperatorTerminalHtml, formatTwoLevelError } from '../terminal/operatorTerminalController.js';
-import {
+import type {
   KillSwitchHaltScope,
   OperatorConfirmationEnvelope,
   TwoLevelErrorEnvelope

@@ -21,7 +21,7 @@ import {
   createEvidenceOriginBadge,
   TerminalProjectionParams
 } from '../terminal/operatorTerminalController.js';
-import {
+import type {
   OperatorTerminalSnapshot,
   OperatorConfirmationEnvelope,
   TwelvePointReadinessCertificate,

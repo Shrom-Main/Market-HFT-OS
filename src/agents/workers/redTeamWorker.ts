@@ -42,8 +42,10 @@ import { derivePhysicalScrapFloor } from './macroLateralWorker.js';
 import { evaluateMsmePaymentTermLimit } from './govtStatutoryWorker.js';
 import { deepFreeze } from '../../verification/gate.js';
 import {
+  RED_TEAM_TOOL_POLICY
+} from '../../mcp/contracts/redTeamContract.js';
+import type {
   RedTeamToolPolicy,
-  RED_TEAM_TOOL_POLICY,
   RedTeamRuleId,
   RedTeamFindingSeverity,
   RedTeamDisposition,
@@ -56,9 +58,9 @@ import {
   RedTeamMcpResponse
 } from '../../mcp/contracts/redTeamContract.js';
 
-export {
+export { RED_TEAM_TOOL_POLICY };
+export type {
   RedTeamToolPolicy,
-  RED_TEAM_TOOL_POLICY,
   RedTeamRuleId,
   RedTeamFindingSeverity,
   RedTeamDisposition,

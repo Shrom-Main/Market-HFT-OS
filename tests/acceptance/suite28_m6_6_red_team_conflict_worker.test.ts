@@ -88,7 +88,7 @@ describe('SUITE-28: Gate M6.6 Stage 6 RedTeamAndConflictWorker & Context Routing
       max_payload_bytes: 262144,
       max_latency_ms: 4000,
       max_tokens: 100000,
-      expires_at_utc: '2026-10-19T00:00:00.000Z'
+      expires_at_utc: '2026-12-31T23:59:59.000Z'
     });
 
     redTeamWorker = new RedTeamAndConflictWorker(broker, standardGrant);
