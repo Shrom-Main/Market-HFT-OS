@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+@layer base {
+  * {
+    border-color: rgba(51, 65, 85, 0.4);
+  }
+  body {
+    background-color: #020617;
+    color: #f8fafc;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  code, pre, .font-mono {
+    font-family: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+}
+
+/* Custom Financial / Bloomberg Terminal Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #020617;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Glassmorphism & Glow Utilities */
+.glass-panel {
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(51, 65, 85, 0.45);
+}
+
+.terminal-glow-cyan {
+  box-shadow: 0 0 24px -6px rgba(6, 182, 212, 0.2);
+}
+
+.terminal-glow-emerald {
+  box-shadow: 0 0 24px -6px rgba(16, 185, 129, 0.2);
+}
+
+.terminal-glow-amber {
+  box-shadow: 0 0 24px -6px rgba(245, 158, 11, 0.2);
+}
+
+.terminal-glow-rose {
+  box-shadow: 0 0 24px -6px rgba(244, 63, 94, 0.2);
+}

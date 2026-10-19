@@ -28,6 +28,8 @@ Alpaca_Key.env
 node_modules/
 dist/
 !dist/POC-001_Standalone_Workstation.html
+!dist/client/
+!dist/client/**
 build/
 *.log
 __pycache__/

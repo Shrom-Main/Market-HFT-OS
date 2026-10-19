@@ -7,6 +7,8 @@
  * layers in strict accordance with POC.docx §7, §8, §9.5, §10, and §13.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
 import { sha256 } from '../canonical/crypto.js';
 import { canonicalizeJCS } from '../canonical/jcs.js';
 import { deepFreeze } from '../verification/gate.js';
@@ -1007,12 +1009,30 @@ export function renderOperatorTerminalHtml(
   const signals: readonly SignalProcessingTraceRecord[] = options?.signals || [];
   const products: readonly ProductObservationItem[] = options?.products || (new ProductObservationDeckRegistry()).getAllProducts();
 
+  let clientAssetsHead = '';
+  let clientAssetsBody = '';
+  try {
+    const assetsDir = path.resolve(process.cwd(), 'dist/client/assets');
+    if (fs.existsSync(assetsDir)) {
+      const files = fs.readdirSync(assetsDir);
+      const jsFile = files.find((f: string) => f.startsWith('index-') && f.endsWith('.js'));
+      const cssFile = files.find((f: string) => f.startsWith('index-') && f.endsWith('.css'));
+      if (jsFile && cssFile) {
+        clientAssetsHead = `<link rel="stylesheet" href="/assets/${cssFile}">`;
+        clientAssetsBody = `<div id="root"></div>\n  <script type="module" src="/assets/${jsFile}"></script>`;
+      }
+    }
+  } catch {
+    // Fallback gracefully if assets not built
+  }
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Market HFT OS — Governed Research & Trading Workstation</title>
+  ${clientAssetsHead}
   <style>
     :root {
       --bg: #0b0f19;
@@ -1297,6 +1317,7 @@ export function renderOperatorTerminalHtml(
   </style>
 </head>
 <body>
+  ${clientAssetsBody}
   <div class="banner" role="banner" aria-label="Operating Mode Safety Banner">
     <span>OPERATING MODE: <strong>${snapshot.operating_mode}</strong></span>
     <span>REAL-MONEY EXECUTION: <strong>DISABLED</strong> <span class="badge badge-ok">[OK]</span></span>

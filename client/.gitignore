@@ -1,0 +1,3 @@
+# Client Dependencies & Local Caches
+node_modules/
+.vite/

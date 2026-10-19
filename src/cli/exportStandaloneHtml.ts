@@ -39,8 +39,27 @@ export function exportStandaloneHtml(targetPath?: string): { filePath: string; b
     products: deck.products
   });
 
-  fs.writeFileSync(outputPath, html, 'utf8');
-  const byteLength = Buffer.byteLength(html, 'utf8');
+  let inlinedHtml = html;
+  try {
+    const assetsDir = path.resolve(process.cwd(), 'dist/client/assets');
+    if (fs.existsSync(assetsDir)) {
+      const files = fs.readdirSync(assetsDir);
+      const jsFile = files.find((f: string) => f.startsWith('index-') && f.endsWith('.js'));
+      const cssFile = files.find((f: string) => f.startsWith('index-') && f.endsWith('.css'));
+      if (jsFile && cssFile) {
+        const cssContent = fs.readFileSync(path.join(assetsDir, cssFile), 'utf8');
+        const jsContent = fs.readFileSync(path.join(assetsDir, jsFile), 'utf8');
+        inlinedHtml = inlinedHtml
+          .replace(`<link rel="stylesheet" href="/assets/${cssFile}">`, `<style>\n${cssContent}\n</style>`)
+          .replace(`<script type="module" src="/assets/${jsFile}"></script>`, `<script type="module">\n${jsContent}\n</script>`);
+      }
+    }
+  } catch {
+    // Keep original if inlining fails
+  }
+
+  fs.writeFileSync(outputPath, inlinedHtml, 'utf8');
+  const byteLength = Buffer.byteLength(inlinedHtml, 'utf8');
 
   console.log('================================================================================');
   console.log(' MARKET HFT OS — STANDALONE OFFLINE WORKSTATION EXPORT (Gate M7.0)');
