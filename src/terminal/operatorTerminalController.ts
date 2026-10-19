@@ -15,11 +15,18 @@ import type {
   SS304VariantRow,
   SignalProcessingTraceRecord
 } from '../mcp/contracts/signalIngestionContract.js';
+import type {
+  ProductObservationItem
+} from '../mcp/contracts/productObservationContract.js';
+import {
+  ProductObservationDeckRegistry
+} from '../research/productObservationDeckRegistry.js';
 
 export interface RenderOperatorTerminalOptions {
   readonly connectors?: readonly SourceConnectorHealthRow[];
   readonly variants?: readonly SS304VariantRow[];
   readonly signals?: readonly SignalProcessingTraceRecord[];
+  readonly products?: readonly ProductObservationItem[];
 }
 
 export type {
@@ -998,6 +1005,7 @@ export function renderOperatorTerminalHtml(
   ];
 
   const signals: readonly SignalProcessingTraceRecord[] = options?.signals || [];
+  const products: readonly ProductObservationItem[] = options?.products || (new ProductObservationDeckRegistry()).getAllProducts();
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -1308,7 +1316,7 @@ export function renderOperatorTerminalHtml(
     <!-- NAVIGATION BAR (WORKSPACE TABS) -->
     <nav class="nav-bar" role="tablist" aria-label="Operator Workspaces">
       <button class="nav-btn active" role="tab" aria-selected="true" data-tab="all">All Workspaces</button>
-      <button class="nav-btn" role="tab" aria-selected="false" data-tab="workspace-0">0. Signal Console</button>
+      <button class="nav-btn" role="tab" aria-selected="false" data-tab="workspace-0">0. Signal Console &amp; Observation Deck</button>
       <button class="nav-btn" role="tab" aria-selected="false" data-tab="workspace-command-center">1. Command Center</button>
       <button class="nav-btn" role="tab" aria-selected="false" data-tab="workspace-opportunity-radar">2. Opportunity Radar</button>
       <button class="nav-btn" role="tab" aria-selected="false" data-tab="workspace-evidence-workbench">3. Evidence Workbench</button>
@@ -1360,12 +1368,167 @@ export function renderOperatorTerminalHtml(
       </div>
     </div>
 
-    <!-- WORKSPACE 0: SIGNAL CONSOLE & SURVEILLANCE FEED -->
+    <!-- WORKSPACE 0: SIGNAL INGESTION & PRODUCT OBSERVATION DECK -->
     <div class="card" id="workspace-0" style="margin-bottom:20px;">
       <h2>
-        0. Signal Ingestion &amp; Source Surveillance Console
-        <span class="badge badge-ok">[OK] 5 SPECIALISTS ACTIVE</span>
+        <span>0. Signal Ingestion &amp; Product Observation Deck</span>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <span class="badge badge-ok">[OK] 5 SPECIALISTS ACTIVE</span>
+          <span class="badge badge-live">[LIVE] ${products.length} PRODUCTS TRACKED</span>
+          <span class="badge badge-ok">[PURSUE] ${products.filter(p => p.strategy.strategic_decision === 'PURSUE').length} OPPORTUNITIES</span>
+        </div>
       </h2>
+
+      <!-- SECTION A: MULTI-PRODUCT OBSERVATION DECK & GRIEVANCE MINING -->
+      <div style="margin-bottom:20px;background:#0b0f19;border:1px solid var(--border);border-radius:6px;padding:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
+          <div>
+            <h3 style="margin:0 0 4px 0;font-size:14px;color:var(--accent);display:flex;align-items:center;gap:8px;">
+              <span>Product Observation Deck &amp; Grievance Mining</span>
+              <span class="badge badge-fixture">[CATEGORY-AGNOSTIC MULTI-PRODUCT ARBITRAGE]</span>
+            </h3>
+            <p style="margin:0;font-size:11px;color:var(--text-muted);max-width:850px;line-height:1.4;">
+              Studying what competitors sell (volume velocity, gross revenue, ASP), mining customer review grievances (1-star / 2-star defect teardowns &amp; customer pain points), engineering operational remediations to eliminate returns, and formulating governed strategic arbitrage theses across commercial archetypes. <em>SS304 DIN 3017 is the guiding reference opportunity.</em>
+            </p>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button class="action-btn" type="button" id="btn-toggle-push-product" style="font-size:11px;padding:4px 10px;background:#1e293b;border-color:var(--accent);color:var(--accent);">+ Push Product to Deck</button>
+          </div>
+        </div>
+
+        <!-- Category & Archetype Filter Pills -->
+        <div style="margin-bottom:12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+          <span style="font-size:11px;color:var(--text-muted);font-weight:600;">Filter Archetype:</span>
+          <button class="action-btn prod-filter-btn active" type="button" data-filter="ALL" style="padding:2px 8px;font-size:10px;">All Products (${products.length})</button>
+          <button class="action-btn prod-filter-btn" type="button" data-filter="CLUSTER_MRO_STANDARDIZED" style="padding:2px 8px;font-size:10px;">Cluster MRO (${products.filter(p => p.commercial_archetype === 'CLUSTER_MRO_STANDARDIZED').length})</button>
+          <button class="action-btn prod-filter-btn" type="button" data-filter="TECHNICAL_COMPLIANCE" style="padding:2px 8px;font-size:10px;">Technical / BIS (${products.filter(p => p.commercial_archetype === 'TECHNICAL_COMPLIANCE').length})</button>
+          <button class="action-btn prod-filter-btn" type="button" data-filter="SEASONAL_D2C_VISUAL" style="padding:2px 8px;font-size:10px;">Seasonal D2C (${products.filter(p => p.commercial_archetype === 'SEASONAL_D2C_VISUAL').length})</button>
+          <button class="action-btn prod-filter-btn" type="button" data-filter="D2C_CONSUMABLE" style="padding:2px 8px;font-size:10px;">D2C Consumables (${products.filter(p => p.commercial_archetype === 'D2C_CONSUMABLE').length})</button>
+          <button class="action-btn prod-filter-btn" type="button" data-filter="MRO_INDUSTRIAL" style="padding:2px 8px;font-size:10px;">Heavy Fasteners (${products.filter(p => p.commercial_archetype === 'MRO_INDUSTRIAL').length})</button>
+          <button class="action-btn prod-filter-btn" type="button" data-filter="REPLACEMENT_PARTS" style="padding:2px 8px;font-size:10px;">Replacement Seals (${products.filter(p => p.commercial_archetype === 'REPLACEMENT_PARTS').length})</button>
+        </div>
+
+        <!-- Multi-Product Catalog Table -->
+        <div style="overflow-x:auto;">
+          <table id="product-observation-deck-table">
+            <thead>
+              <tr>
+                <th>Product &amp; Archetype</th>
+                <th>What's Selling (Sell-Side)</th>
+                <th>Buyer Grievance Mining (What Buyers Note)</th>
+                <th>Engineered Operational Edge (Quality Fix)</th>
+                <th>Upstream Sourcing Spread</th>
+                <th>Decision &amp; Thesis</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${products.map(p => `
+                <tr data-product-id="${escapeHtml(p.product_id)}" data-archetype="${escapeHtml(p.commercial_archetype)}" data-category="${escapeHtml(p.category)}">
+                  <td style="max-width:200px;">
+                    <strong>${escapeHtml(p.name)}</strong>
+                    <br><code style="font-size:10px;color:var(--text-muted);">${escapeHtml(p.sku_id)}</code>
+                    <br><span style="font-size:10px;color:#94a3b8;">${escapeHtml(p.category)}</span>
+                    <br><span class="badge ${p.is_guiding_reference ? 'badge-ok' : 'badge-fixture'}" style="margin-top:4px;font-size:9px;">${p.is_guiding_reference ? '[GUIDING REFERENCE]' : escapeHtml(p.commercial_archetype)}</span>
+                  </td>
+                  <td style="font-size:11px;min-width:180px;">
+                    <strong>${escapeHtml(p.sell_side.primary_marketplace)}</strong> (BSR #${p.sell_side.best_seller_rank})
+                    <br><span class="metric-value" style="color:var(--text);">~${p.sell_side.monthly_sales_volume_est.toLocaleString()} units/mo</span>
+                    <br><span style="color:var(--accent);font-size:10px;">₹${(p.sell_side.monthly_gross_revenue_inr_est / 100000).toFixed(2)} Lakhs/mo</span>
+                    <br><span style="color:#64748b;font-size:10px;">Retail ASP: <strong>₹${p.sell_side.prevailing_retail_asp_inr}</strong> (${escapeHtml(p.sell_side.dominant_pack_formats[0] || 'Unit')})</span>
+                  </td>
+                  <td style="font-size:11px;min-width:240px;max-width:280px;">
+                    <span class="badge badge-blocked" style="font-size:9px;margin-bottom:3px;">${p.overall_negative_review_pct}% Negative Reviews</span>
+                    ${p.buyer_grievances.slice(0, 2).map(g => `
+                      <div style="margin-top:4px;padding:4px;background:#131b2e;border-left:2px solid ${g.severity === 'CRITICAL' ? '#ef4444' : '#eab308'};border-radius:2px;">
+                        <span style="font-weight:600;color:#e2e8f0;font-size:10px;">${escapeHtml(g.summary)}</span>
+                        <div style="font-style:italic;color:#94a3b8;font-size:9px;margin-top:1px;">&ldquo;${escapeHtml(g.representative_quote.length > 70 ? g.representative_quote.slice(0, 67) + '...' : g.representative_quote)}&rdquo;</div>
+                      </div>
+                    `).join('')}
+                  </td>
+                  <td style="font-size:11px;min-width:220px;max-width:260px;">
+                    <div style="color:#38bdf8;font-weight:600;font-size:10px;margin-bottom:2px;">Remediation Edge:</div>
+                    <div style="color:#cbd5e1;font-size:10px;line-height:1.3;">
+                      ${escapeHtml(p.buyer_grievances[0]?.engineered_remediation || p.strategy.proposed_strategy)}
+                    </div>
+                  </td>
+                  <td style="font-size:11px;min-width:170px;">
+                    <span style="color:var(--text-muted);font-size:10px;">Hub:</span> <strong>${escapeHtml(p.upstream_supply.hub_name)}</strong>
+                    <br><span style="color:var(--text-muted);font-size:10px;">Cost:</span> <span class="metric-value">₹${p.upstream_supply.factory_gate_quote_inr.toFixed(2)}</span>
+                    <br><span style="color:var(--ok);font-size:10px;">Spread:</span> <strong style="color:var(--ok);">+₹${p.strategy.target_gross_spread_inr.toFixed(2)}</strong>
+                    <br><span style="color:var(--accent);font-size:10px;">RoWC:</span> <span class="metric-value">${(p.strategy.estimated_annualized_rowc_bps / 100).toFixed(0)}%</span>
+                  </td>
+                  <td style="min-width:140px;">
+                    <span class="badge ${p.strategy.strategic_decision === 'PURSUE' ? 'badge-ok' : (p.strategy.strategic_decision === 'VALIDATE_FURTHER' ? 'badge-warn' : (p.strategy.strategic_decision === 'MONITOR' ? 'badge-live' : 'badge-blocked'))}">
+                      ${p.strategy.strategic_decision === 'PURSUE' ? '[OK] PURSUE' : escapeHtml(p.strategy.strategic_decision)}
+                    </span>
+                    <br><span style="font-size:9px;color:var(--text-muted);display:inline-block;margin-top:4px;">${escapeHtml(p.strategy.research_case_status)}</span>
+                  </td>
+                  <td style="min-width:110px;">
+                    <button class="action-btn btn-inspect-product" type="button" data-product-id="${escapeHtml(p.product_id)}" style="padding:2px 8px;font-size:10px;margin-bottom:4px;width:100%;text-align:center;">[Inspect Teardown]</button>
+                    <button class="action-btn action-btn-primary btn-dispatch-product-research" type="button" data-product-id="${escapeHtml(p.product_id)}" style="padding:2px 8px;font-size:10px;width:100%;text-align:center;">Dispatch Research</button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+
+        <!-- "Push Product to Observation Deck" Ingestion Form (Collapsible) -->
+        <div id="push-product-form-container" style="display:none;margin-top:16px;padding:12px;background:#1e293b;border:1px solid var(--accent);border-radius:6px;">
+          <h4 style="margin:0 0 8px 0;color:var(--accent);font-size:12px;">Push New Product Observation to Deck</h4>
+          <form id="push-product-form" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:11px;">
+            <div>
+              <label for="push-prod-name" style="display:block;color:var(--text-muted);margin-bottom:2px;">Product Title:</label>
+              <input id="push-prod-name" type="text" placeholder="e.g. Stainless Steel Wire Ties" style="width:100%;box-sizing:border-box;background:#0b0f19;border:1px solid var(--border);color:var(--text);padding:4px;border-radius:3px;" required />
+            </div>
+            <div>
+              <label for="push-prod-category" style="display:block;color:var(--text-muted);margin-bottom:2px;">Category:</label>
+              <input id="push-prod-category" type="text" placeholder="e.g. Industrial Fasteners &amp; Hardware" style="width:100%;box-sizing:border-box;background:#0b0f19;border:1px solid var(--border);color:var(--text);padding:4px;border-radius:3px;" required />
+            </div>
+            <div>
+              <label for="push-prod-archetype" style="display:block;color:var(--text-muted);margin-bottom:2px;">Commercial Archetype:</label>
+              <select id="push-prod-archetype" style="width:100%;background:#0b0f19;border:1px solid var(--border);color:var(--text);padding:4px;border-radius:3px;">
+                <option value="CLUSTER_MRO_STANDARDIZED">CLUSTER_MRO_STANDARDIZED</option>
+                <option value="TECHNICAL_COMPLIANCE">TECHNICAL_COMPLIANCE</option>
+                <option value="SEASONAL_D2C_VISUAL">SEASONAL_D2C_VISUAL</option>
+                <option value="D2C_CONSUMABLE">D2C_CONSUMABLE</option>
+                <option value="MRO_INDUSTRIAL">MRO_INDUSTRIAL</option>
+                <option value="REPLACEMENT_PARTS">REPLACEMENT_PARTS</option>
+              </select>
+            </div>
+            <div>
+              <label for="push-retail-asp" style="display:block;color:var(--text-muted);margin-bottom:2px;">Marketplace Retail ASP (₹):</label>
+              <input id="push-retail-asp" type="number" step="0.01" placeholder="499.00" style="width:100%;box-sizing:border-box;background:#0b0f19;border:1px solid var(--border);color:var(--text);padding:4px;border-radius:3px;" required />
+            </div>
+            <div>
+              <label for="push-wholesale-cost" style="display:block;color:var(--text-muted);margin-bottom:2px;">Upstream Factory Quote (₹):</label>
+              <input id="push-wholesale-cost" type="number" step="0.01" placeholder="180.00" style="width:100%;box-sizing:border-box;background:#0b0f19;border:1px solid var(--border);color:var(--text);padding:4px;border-radius:3px;" required />
+            </div>
+            <div>
+              <label for="push-supply-hub" style="display:block;color:var(--text-muted);margin-bottom:2px;">Manufacturing Hub:</label>
+              <input id="push-supply-hub" type="text" placeholder="e.g. Jamnagar Precision Cluster" style="width:100%;box-sizing:border-box;background:#0b0f19;border:1px solid var(--border);color:var(--text);padding:4px;border-radius:3px;" required />
+            </div>
+            <div style="grid-column:span 2;">
+              <label for="push-observed-grievance" style="display:block;color:var(--text-muted);margin-bottom:2px;">Observed Customer Review Grievance (Pain Point &amp; Quote):</label>
+              <input id="push-observed-grievance" type="text" placeholder="e.g. Ties snap when bent around sharp sheet metal edges in high vibration" style="width:100%;box-sizing:border-box;background:#0b0f19;border:1px solid var(--border);color:var(--text);padding:4px;border-radius:3px;" required />
+            </div>
+            <div>
+              <label for="push-strategic-decision" style="display:block;color:var(--text-muted);margin-bottom:2px;">Initial Decision:</label>
+              <select id="push-strategic-decision" style="width:100%;background:#0b0f19;border:1px solid var(--border);color:var(--text);padding:4px;border-radius:3px;">
+                <option value="PURSUE">PURSUE</option>
+                <option value="VALIDATE_FURTHER">VALIDATE_FURTHER</option>
+                <option value="MONITOR">MONITOR</option>
+                <option value="REJECT">REJECT</option>
+              </select>
+            </div>
+            <div style="grid-column:span 3;display:flex;justify-content:space-between;align-items:center;margin-top:6px;">
+              <span id="push-prod-feedback" style="font-size:11px;color:var(--text-muted);">Ready to push observation to deck.</span>
+              <button class="action-btn action-btn-primary" type="submit">Push to Deck</button>
+            </div>
+          </form>
+        </div>
+      </div>
 
       <div class="grid-2">
         <!-- Sub-panel 1: Source Connectors Health -->
@@ -2342,6 +2505,8 @@ export function renderOperatorTerminalHtml(
       // Lineage Drawer elements
       var drawer = document.getElementById('lineage-drawer');
       var btnCloseDrawer = document.getElementById('btn-close-drawer');
+      var drawerTitle = document.getElementById('drawer-title');
+      var drawerTraceMeta = document.getElementById('drawer-trace-meta');
       var drawerTraceId = document.getElementById('drawer-trace-id');
       var drawerTraceTime = document.getElementById('drawer-trace-time');
       var drawerTraceChannel = document.getElementById('drawer-trace-channel');
@@ -2349,26 +2514,25 @@ export function renderOperatorTerminalHtml(
       var drawerPayloadHash = document.getElementById('drawer-payload-hash');
       var drawerTraceHash = document.getElementById('drawer-trace-hash');
       var drawerStepper = document.getElementById('drawer-stepper');
+      var drawerCustomContent = document.getElementById('drawer-custom-content');
 
-      function openDrawerWithTrace(trace) {
-        if (!drawer) return;
-        if (drawerTraceId) drawerTraceId.textContent = trace.trace_id;
-        if (drawerTraceTime) drawerTraceTime.textContent = trace.received_at_utc;
-        if (drawerTraceChannel) drawerTraceChannel.textContent = trace.channel;
-        if (drawerTraceStatus) {
-          var st = trace.status;
-          var cls = st === 'PROCESSED' ? 'badge-ok' : (st.indexOf('QUARANTINED') !== -1 ? 'badge-blocked' : (st === 'DUPLICATE_IGNORED' ? 'badge-warn' : 'badge-halted'));
-          drawerTraceStatus.innerHTML = '<span class="badge ' + cls + '">' + st + '</span>';
-        }
-        if (drawerPayloadHash) drawerPayloadHash.textContent = trace.payload_sha256;
-        if (drawerTraceHash) drawerTraceHash.textContent = trace.trace_record_jcs_sha256 || 'N/A';
+      function escapeClientHtml(str) {
+        if (!str) return '';
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
 
-        if (drawerStepper) {
-          drawerStepper.innerHTML = '';
-          (trace.stages || []).forEach(function(s) {
-            var stepEl = document.createElement('div');
       function openDrawerWithTrace(trace) {
         if (!drawer || !trace) return;
+        if (drawerTitle) drawerTitle.textContent = '6-Stage Signal Lineage Trace';
+        if (drawerTraceMeta) drawerTraceMeta.style.display = 'block';
+        if (drawerStepper) drawerStepper.style.display = 'flex';
+        if (drawerCustomContent) drawerCustomContent.style.display = 'none';
+
         if (drawerTraceId) drawerTraceId.textContent = trace.trace_id || '--';
         if (drawerTraceTime) drawerTraceTime.textContent = trace.created_at_utc || '--';
         if (drawerTraceChannel) drawerTraceChannel.textContent = trace.channel || '--';
@@ -2586,10 +2750,379 @@ export function renderOperatorTerminalHtml(
           }
         });
       }
+
+      // -----------------------------------------------------------------------
+      // 7. Multi-Product Observation Deck, Grievance Mining Drawer & Research Dispatch
+      // -----------------------------------------------------------------------
+      var PRODUCTS_DATA = ${JSON.stringify(products)};
+      window.__PRODUCT_OBSERVATIONS__ = PRODUCTS_DATA;
+
+      function openDrawerWithProduct(prod) {
+        if (!drawer || !prod) return;
+        if (drawerTitle) drawerTitle.textContent = 'Product Teardown: ' + prod.name;
+        if (drawerTraceMeta) drawerTraceMeta.style.display = 'none';
+        if (drawerStepper) drawerStepper.style.display = 'none';
+        if (drawerPayloadHash) drawerPayloadHash.textContent = prod.product_id;
+        if (drawerTraceHash) drawerTraceHash.textContent = prod.jcs_sha256 || 'N/A';
+
+        if (drawerCustomContent) {
+          drawerCustomContent.style.display = 'block';
+          var isGuiding = prod.is_guiding_reference;
+          var decisionCls = prod.strategy.strategic_decision === 'PURSUE' ? 'badge-ok' : (prod.strategy.strategic_decision === 'VALIDATE_FURTHER' ? 'badge-warn' : (prod.strategy.strategic_decision === 'MONITOR' ? 'badge-live' : 'badge-blocked'));
+          var decisionLabel = prod.strategy.strategic_decision === 'PURSUE' ? '[OK] PURSUE' : prod.strategy.strategic_decision;
+
+          var grievancesHtml = (prod.buyer_grievances || []).map(function(g) {
+            var sevCls = g.severity === 'CRITICAL' ? 'badge-blocked' : (g.severity === 'HIGH' ? 'badge-warn' : 'badge-live');
+            return '<div style="margin-top:10px;padding:10px;background:#0b0f19;border:1px solid var(--border);border-left:3px solid ' + (g.severity === 'CRITICAL' ? '#ef4444' : (g.severity === 'HIGH' ? '#eab308' : '#38bdf8')) + ';border-radius:4px;">' +
+              '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+                '<strong style="font-size:12px;color:var(--text);">' + escapeClientHtml(g.summary) + '</strong>' +
+                '<div>' +
+                  '<span class="badge ' + sevCls + '" style="font-size:9px;margin-right:4px;">' + g.severity + '</span>' +
+                  '<span style="font-size:10px;color:var(--text-muted);">' + g.frequency_pct + '% freq</span>' +
+                '</div>' +
+              '</div>' +
+              '<div style="font-size:10px;color:var(--text-muted);margin:2px 0;">Category: ' + escapeClientHtml(g.category) + ' | Failure Mode: ' + escapeClientHtml(g.failure_mode) + '</div>' +
+              '<div style="font-style:italic;color:#cbd5e1;font-size:11px;margin:6px 0;padding:6px;background:rgba(0,0,0,0.3);border-radius:3px;">&ldquo;' + escapeClientHtml(g.representative_quote) + '&rdquo;</div>' +
+              '<div style="margin-top:6px;padding:6px;background:#131c2e;border-radius:3px;">' +
+                '<div style="color:#38bdf8;font-weight:600;font-size:10px;">ENGINEERED QUALITY REMEDIATION (OPERATIONAL EDGE):</div>' +
+                '<div style="color:#e2e8f0;font-size:11px;margin-top:2px;line-height:1.3;">' + escapeClientHtml(g.engineered_remediation) + '</div>' +
+              '</div>' +
+            '</div>';
+          }).join('');
+
+          drawerCustomContent.innerHTML = 
+            '<div style="margin-bottom:16px;">' +
+              '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">' +
+                '<div>' +
+                  '<code style="font-size:11px;color:var(--text-muted);">' + escapeClientHtml(prod.sku_id) + '</code>' +
+                  '<div style="font-size:11px;color:#94a3b8;margin-top:2px;">Category: <strong>' + escapeClientHtml(prod.category) + '</strong></div>' +
+                '</div>' +
+                '<div style="display:flex;gap:4px;flex-direction:column;align-items:flex-end;">' +
+                  (isGuiding ? '<span class="badge badge-ok">[GUIDING REFERENCE]</span>' : '<span class="badge badge-fixture">[OPPORTUNITY CANDIDATE]</span>') +
+                  '<span class="badge ' + decisionCls + '">' + decisionLabel + '</span>' +
+                '</div>' +
+              '</div>' +
+              '<span class="badge badge-fixture" style="font-size:10px;">ARCHETYPE: ' + escapeClientHtml(prod.commercial_archetype) + '</span>' +
+            '</div>' +
+
+            '<!-- Section 1: Sell-Side Dynamics -->' +
+            '<div style="margin-bottom:16px;padding:12px;background:#0b0f19;border:1px solid var(--border);border-radius:6px;">' +
+              '<h4 style="margin:0 0 8px 0;font-size:12px;color:var(--accent);border-bottom:1px solid #1e293b;padding-bottom:4px;">1. Sell-Side Dynamics ("What Others Are Selling")</h4>' +
+              '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;">' +
+                '<div>Primary Marketplace: <strong>' + escapeClientHtml(prod.sell_side.primary_marketplace) + '</strong></div>' +
+                '<div>Best Seller Rank: <strong>#' + prod.sell_side.best_seller_rank + '</strong></div>' +
+                '<div>Est Monthly Volume: <strong class="metric-value">~' + prod.sell_side.monthly_sales_volume_est.toLocaleString() + ' units</strong></div>' +
+                '<div>Est Monthly Gross: <strong style="color:var(--ok);">₹' + (prod.sell_side.monthly_gross_revenue_inr_est / 100000).toFixed(2) + ' Lakhs</strong></div>' +
+                '<div>Prevailing Retail ASP: <strong>₹' + prod.sell_side.prevailing_retail_asp_inr.toFixed(2) + '</strong></div>' +
+                '<div>Active Competitors: <strong>' + prod.sell_side.competitor_count + ' sellers</strong></div>' +
+              '</div>' +
+              '<div style="font-size:10px;color:var(--text-muted);margin-top:8px;">' +
+                '<div>Top Brands: ' + escapeClientHtml((prod.sell_side.top_competitor_brands || []).join(', ')) + '</div>' +
+                '<div>Dominant Formats: ' + escapeClientHtml((prod.sell_side.dominant_pack_formats || []).join(', ')) + '</div>' +
+              '</div>' +
+            '</div>' +
+
+            '<!-- Section 2: Buyer Review Grievance Mining -->' +
+            '<div style="margin-bottom:16px;padding:12px;background:#0b0f19;border:1px solid var(--border);border-radius:6px;">' +
+              '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;border-bottom:1px solid #1e293b;padding-bottom:4px;">' +
+                '<h4 style="margin:0;font-size:12px;color:var(--accent);">2. Buyer Review Grievance Mining ("What Buyers Note")</h4>' +
+                '<span class="badge badge-blocked">' + prod.overall_negative_review_pct + '% Negative Reviews</span>' +
+              '</div>' +
+              '<p style="margin:0 0 8px 0;font-size:11px;color:var(--text-muted);">' +
+                'Mined from 1-star &amp; 2-star verified buyer teardowns. Pinpoints exact structural failure modes and formulates the operational edge to eliminate return rates.' +
+              '</p>' +
+              grievancesHtml +
+            '</div>' +
+
+            '<!-- Section 3: Upstream Sourcing Cluster & Spreads -->' +
+            '<div style="margin-bottom:16px;padding:12px;background:#0b0f19;border:1px solid var(--border);border-radius:6px;">' +
+              '<h4 style="margin:0 0 8px 0;font-size:12px;color:var(--accent);border-bottom:1px solid #1e293b;padding-bottom:4px;">3. Upstream Sourcing Cluster &amp; Financial Spread</h4>' +
+              '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;">' +
+                '<div>Cluster Hub: <strong>' + escapeClientHtml(prod.upstream_supply.hub_name) + '</strong></div>' +
+                '<div>Factory Gate Quote: <strong>₹' + prod.upstream_supply.factory_gate_quote_inr.toFixed(2) + '</strong></div>' +
+                '<div>MOQ: <strong>' + prod.upstream_supply.minimum_order_quantity.toLocaleString() + ' units</strong></div>' +
+                '<div>Lead Time: <strong>' + prod.upstream_supply.lead_time_days + ' days</strong></div>' +
+                '<div>Est Landed Cost: <strong>₹' + prod.upstream_supply.per_unit_landed_cost_est_inr.toFixed(2) + '</strong></div>' +
+                '<div>Target Gross Spread: <strong style="color:var(--ok);">+₹' + prod.strategy.target_gross_spread_inr.toFixed(2) + '</strong></div>' +
+                '<div>Contribution Margin: <strong class="metric-value">' + (prod.strategy.target_contribution_margin_bps / 100).toFixed(1) + '%</strong></div>' +
+                '<div>Annualized RoWC: <strong class="metric-value" style="color:var(--accent);">' + (prod.strategy.estimated_annualized_rowc_bps / 100).toFixed(0) + '%</strong></div>' +
+                '<div style="grid-column:span 2;">Cash Conversion Cycle (CCC): <strong>' + prod.strategy.cash_conversion_cycle_days + ' days</strong></div>' +
+              '</div>' +
+            '</div>' +
+
+            '<!-- Section 4: Governed Strategic Arbitrage Thesis -->' +
+            '<div style="margin-bottom:16px;padding:12px;background:#0b0f19;border:1px solid var(--border);border-radius:6px;">' +
+              '<h4 style="margin:0 0 8px 0;font-size:12px;color:var(--accent);border-bottom:1px solid #1e293b;padding-bottom:4px;">4. Governed Strategic Arbitrage Thesis</h4>' +
+              '<div style="margin-bottom:8px;">' +
+                '<div style="color:#22c55e;font-weight:600;font-size:11px;">BULL CASE THESIS:</div>' +
+                '<div style="color:#cbd5e1;font-size:11px;margin-top:2px;">' + escapeClientHtml(prod.strategy.bull_case_thesis) + '</div>' +
+              '</div>' +
+              '<div style="margin-bottom:8px;">' +
+                '<div style="color:#f87171;font-weight:600;font-size:11px;">BEAR CASE / DOWNSIDE RISK:</div>' +
+                '<div style="color:#cbd5e1;font-size:11px;margin-top:2px;">' + escapeClientHtml(prod.strategy.bear_case_thesis) + '</div>' +
+              '</div>' +
+              '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:11px;color:var(--text-muted);border-top:1px solid #1e293b;padding-top:8px;">' +
+                '<span>Min Capital Required: <strong style="color:var(--text);">₹' + (prod.strategy.min_capital_requirement_inr).toLocaleString() + '</strong></span>' +
+                '<span>Status: <strong style="color:var(--accent);">' + escapeClientHtml(prod.strategy.research_case_status) + '</strong></span>' +
+              '</div>' +
+              '<button class="action-btn action-btn-primary btn-drawer-dispatch" type="button" data-product-id="' + escapeClientHtml(prod.product_id) + '" style="width:100%;padding:8px;margin-top:12px;font-size:11px;">Dispatch Specialist Research Workflow</button>' +
+              '<div id="drawer-dispatch-feedback" style="font-size:10px;color:var(--text-muted);margin-top:4px;text-align:center;"></div>' +
+            '</div>';
+
+          var btnDrawerDispatch = drawerCustomContent.querySelector('.btn-drawer-dispatch');
+          if (btnDrawerDispatch) {
+            btnDrawerDispatch.onclick = async function() {
+              btnDrawerDispatch.disabled = true;
+              btnDrawerDispatch.textContent = 'Dispatching...';
+              var fb = document.getElementById('drawer-dispatch-feedback');
+              if (fb) fb.textContent = 'Contacting server to dispatch specialist workers...';
+              try {
+                var res = await fetch(apiBase + '/api/products/research', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ product_id: prod.product_id })
+                });
+                var data = await res.json();
+                if (res.ok) {
+                  btnDrawerDispatch.textContent = '[RESEARCH ACTIVE]';
+                  btnDrawerDispatch.style.background = 'var(--ok)';
+                  if (fb) {
+                    fb.textContent = 'Dispatched: ' + (data.status || 'ACTIVE') + ' (' + data.message + ')';
+                    fb.style.color = 'var(--ok)';
+                  }
+                } else {
+                  btnDrawerDispatch.disabled = false;
+                  btnDrawerDispatch.textContent = 'Dispatch Specialist Research Workflow';
+                  var errMsg = (data && data.error && data.error.operator_summary) ? data.error.operator_summary : (data && data.error ? data.error : 'Dispatch failed');
+                  if (fb) {
+                    fb.textContent = 'Error: ' + errMsg;
+                    fb.style.color = 'var(--blocked)';
+                  }
+                }
+              } catch (err) {
+                btnDrawerDispatch.disabled = false;
+                btnDrawerDispatch.textContent = 'Dispatch Specialist Research Workflow';
+                if (fb) {
+                  fb.textContent = 'Network error: ' + String(err);
+                  fb.style.color = 'var(--blocked)';
+                }
+              }
+            };
+          }
+        }
+        drawer.style.display = 'flex';
+      }
+
+      function attachProductEventListeners() {
+        document.querySelectorAll('.btn-inspect-product').forEach(function(btn) {
+          btn.onclick = function() {
+            var prodId = btn.getAttribute('data-product-id');
+            if (!prodId) return;
+            var prod = PRODUCTS_DATA.find(function(p) { return p.product_id === prodId; });
+            if (prod) {
+              openDrawerWithProduct(prod);
+            } else {
+              fetch(apiBase + '/api/products/detail?id=' + encodeURIComponent(prodId))
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                  if (d.product) openDrawerWithProduct(d.product);
+                })
+                .catch(function(err) { showError('Failed to load product detail', String(err)); });
+            }
+          };
+        });
+
+        document.querySelectorAll('.btn-dispatch-product-research').forEach(function(btn) {
+          btn.onclick = async function() {
+            var prodId = btn.getAttribute('data-product-id');
+            if (!prodId) return;
+            btn.disabled = true;
+            btn.textContent = 'Dispatching...';
+            try {
+              var res = await fetch(apiBase + '/api/products/research', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ product_id: prodId })
+              });
+              var data = await res.json();
+              if (res.ok) {
+                btn.textContent = '[RESEARCH ACTIVE]';
+                btn.style.background = 'var(--ok)';
+                alert('Specialist Research Workflow Dispatched!\n\nProduct: ' + (data.product ? data.product.name : prodId) + '\nStatus: ' + (data.status || 'ACTIVE') + '\nMessage: ' + data.message);
+              } else {
+                btn.disabled = false;
+                btn.textContent = 'Dispatch Research';
+                var errMsg = (data && data.error && data.error.operator_summary) ? data.error.operator_summary : (data && data.error ? data.error : 'Dispatch failed');
+                showError(errMsg, data);
+              }
+            } catch (err) {
+              btn.disabled = false;
+              btn.textContent = 'Dispatch Research';
+              showError('Network error dispatching research', String(err));
+            }
+          };
+        });
+      }
+      attachProductEventListeners();
+
+      // Archetype filter buttons
+      document.querySelectorAll('.prod-filter-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          document.querySelectorAll('.prod-filter-btn').forEach(function(b) {
+            b.classList.remove('active');
+            b.style.background = '#1e293b';
+            b.style.color = 'var(--text)';
+          });
+          btn.classList.add('active');
+          btn.style.background = 'var(--accent)';
+          btn.style.color = '#0b0f19';
+          var filter = btn.getAttribute('data-filter');
+          var rows = document.querySelectorAll('#product-observation-deck-table tbody tr');
+          rows.forEach(function(row) {
+            if (filter === 'ALL' || row.getAttribute('data-archetype') === filter) {
+              row.style.display = '';
+            } else {
+              row.style.display = 'none';
+            }
+          });
+        });
+      });
+
+      // Push product to deck form toggle & submit
+      var btnTogglePush = document.getElementById('btn-toggle-push-product');
+      var pushFormContainer = document.getElementById('push-product-form-container');
+      if (btnTogglePush && pushFormContainer) {
+        btnTogglePush.addEventListener('click', function() {
+          if (pushFormContainer.style.display === 'none' || !pushFormContainer.style.display) {
+            pushFormContainer.style.display = 'block';
+            btnTogglePush.textContent = 'Hide Push Form';
+          } else {
+            pushFormContainer.style.display = 'none';
+            btnTogglePush.textContent = '+ Push Product to Deck';
+          }
+        });
+      }
+
+      var pushProductForm = document.getElementById('push-product-form');
+      var pushProdFeedback = document.getElementById('push-prod-feedback');
+      if (pushProductForm) {
+        pushProductForm.addEventListener('submit', async function(e) {
+          e.preventDefault();
+          if (pushProdFeedback) {
+            pushProdFeedback.textContent = 'Ingesting product observation...';
+            pushProdFeedback.style.color = 'var(--accent)';
+          }
+
+          var name = document.getElementById('push-prod-name').value;
+          var category = document.getElementById('push-prod-category').value;
+          var archetype = document.getElementById('push-prod-archetype').value;
+          var retailAsp = parseFloat(document.getElementById('push-retail-asp').value) || 0;
+          var wholesaleCost = parseFloat(document.getElementById('push-wholesale-cost').value) || 0;
+          var supplyHub = document.getElementById('push-supply-hub').value;
+          var grievance = document.getElementById('push-observed-grievance').value;
+          var decision = document.getElementById('push-strategic-decision').value;
+
+          var payload = {
+            name: name,
+            category: category,
+            commercial_archetype: archetype,
+            retail_asp_inr: retailAsp,
+            upstream_factory_quote_inr: wholesaleCost,
+            upstream_hub_name: supplyHub,
+            observed_grievance: grievance,
+            strategic_decision: decision
+          };
+
+          try {
+            var res = await fetch(apiBase + '/api/products/observe', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            var data = await res.json();
+            if (!res.ok) {
+              var errMsg = (data && data.error && data.error.operator_summary) ? data.error.operator_summary : (data && data.error ? data.error : 'Failed to ingest product observation');
+              if (pushProdFeedback) {
+                pushProdFeedback.textContent = 'Error: ' + errMsg;
+                pushProdFeedback.style.color = 'var(--blocked)';
+              }
+              showError(errMsg, data);
+            } else {
+              var newProd = data.product;
+              if (pushProdFeedback) {
+                pushProdFeedback.textContent = 'Successfully ingested product "' + newProd.name + '" into deck (' + newProd.strategy.strategic_decision + ')';
+                pushProdFeedback.style.color = 'var(--ok)';
+              }
+              PRODUCTS_DATA.push(newProd);
+
+              var tbody = document.querySelector('#product-observation-deck-table tbody');
+              if (tbody) {
+                var tr = document.createElement('tr');
+                tr.setAttribute('data-product-id', newProd.product_id);
+                tr.setAttribute('data-archetype', newProd.commercial_archetype);
+                tr.setAttribute('data-category', newProd.category);
+                tr.innerHTML = 
+                  '<td style="max-width:200px;">' +
+                    '<strong>' + escapeClientHtml(newProd.name) + '</strong>' +
+                    '<br><code style="font-size:10px;color:var(--text-muted);">' + escapeClientHtml(newProd.sku_id) + '</code>' +
+                    '<br><span style="font-size:10px;color:#94a3b8;">' + escapeClientHtml(newProd.category) + '</span>' +
+                    '<br><span class="badge badge-fixture" style="margin-top:4px;font-size:9px;">' + escapeClientHtml(newProd.commercial_archetype) + '</span>' +
+                  '</td>' +
+                  '<td style="font-size:11px;min-width:180px;">' +
+                    '<strong>' + escapeClientHtml(newProd.sell_side.primary_marketplace) + '</strong> (BSR #' + newProd.sell_side.best_seller_rank + ')' +
+                    '<br><span class="metric-value">~' + newProd.sell_side.monthly_sales_volume_est.toLocaleString() + ' units/mo</span>' +
+                    '<br><span style="color:var(--accent);font-size:10px;">₹' + (newProd.sell_side.monthly_gross_revenue_inr_est / 100000).toFixed(2) + ' Lakhs/mo</span>' +
+                    '<br><span style="color:#64748b;font-size:10px;">Retail ASP: <strong>₹' + newProd.sell_side.prevailing_retail_asp_inr + '</strong></span>' +
+                  '</td>' +
+                  '<td style="font-size:11px;min-width:240px;max-width:280px;">' +
+                    '<span class="badge badge-blocked" style="font-size:9px;margin-bottom:3px;">' + newProd.overall_negative_review_pct + '% Negative Reviews</span>' +
+                    (newProd.buyer_grievances || []).slice(0, 2).map(function(g) {
+                      return '<div style="margin-top:4px;padding:4px;background:#131b2e;border-left:2px solid ' + (g.severity === 'CRITICAL' ? '#ef4444' : '#eab308') + ';border-radius:2px;">' +
+                        '<span style="font-weight:600;color:#e2e8f0;font-size:10px;">' + escapeClientHtml(g.summary) + '</span>' +
+                        '<div style="font-style:italic;color:#94a3b8;font-size:9px;margin-top:1px;">&ldquo;' + escapeClientHtml(g.representative_quote.length > 70 ? g.representative_quote.slice(0, 67) + '...' : g.representative_quote) + '&rdquo;</div>' +
+                      '</div>';
+                    }).join('') +
+                  '</td>' +
+                  '<td style="font-size:11px;min-width:220px;max-width:260px;">' +
+                    '<div style="color:#38bdf8;font-weight:600;font-size:10px;margin-bottom:2px;">Remediation Edge:</div>' +
+                    '<div style="color:#cbd5e1;font-size:10px;line-height:1.3;">' +
+                      escapeClientHtml((newProd.buyer_grievances && newProd.buyer_grievances[0] && newProd.buyer_grievances[0].engineered_remediation) || newProd.strategy.proposed_strategy) +
+                    '</div>' +
+                  '</td>' +
+                  '<td style="font-size:11px;min-width:170px;">' +
+                    '<span style="color:var(--text-muted);font-size:10px;">Hub:</span> <strong>' + escapeClientHtml(newProd.upstream_supply.hub_name) + '</strong>' +
+                    '<br><span style="color:var(--text-muted);font-size:10px;">Cost:</span> <span class="metric-value">₹' + newProd.upstream_supply.factory_gate_quote_inr.toFixed(2) + '</span>' +
+                    '<br><span style="color:var(--ok);font-size:10px;">Spread:</span> <strong style="color:var(--ok);">+₹' + newProd.strategy.target_gross_spread_inr.toFixed(2) + '</strong>' +
+                    '<br><span style="color:var(--accent);font-size:10px;">RoWC:</span> <span class="metric-value">' + (newProd.strategy.estimated_annualized_rowc_bps / 100).toFixed(0) + '%</span>' +
+                  '</td>' +
+                  '<td style="min-width:140px;">' +
+                    '<span class="badge ' + (newProd.strategy.strategic_decision === 'PURSUE' ? 'badge-ok' : (newProd.strategy.strategic_decision === 'VALIDATE_FURTHER' ? 'badge-warn' : (newProd.strategy.strategic_decision === 'MONITOR' ? 'badge-live' : 'badge-blocked'))) + '">' +
+                      (newProd.strategy.strategic_decision === 'PURSUE' ? '[OK] PURSUE' : escapeClientHtml(newProd.strategy.strategic_decision)) +
+                    '</span>' +
+                    '<br><span style="font-size:9px;color:var(--text-muted);display:inline-block;margin-top:4px;">' + escapeClientHtml(newProd.strategy.research_case_status) + '</span>' +
+                  '</td>' +
+                  '<td style="min-width:110px;">' +
+                    '<button class="action-btn btn-inspect-product" type="button" data-product-id="' + escapeClientHtml(newProd.product_id) + '" style="padding:2px 8px;font-size:10px;margin-bottom:4px;width:100%;text-align:center;">[Inspect Teardown]</button>' +
+                    '<button class="action-btn action-btn-primary btn-dispatch-product-research" type="button" data-product-id="' + escapeClientHtml(newProd.product_id) + '" style="padding:2px 8px;font-size:10px;width:100%;text-align:center;">Dispatch Research</button>' +
+                  '</td>';
+                tbody.insertBefore(tr, tbody.firstChild);
+                attachProductEventListeners();
+              }
+              pushProductForm.reset();
+            }
+          } catch (err) {
+            if (pushProdFeedback) {
+              pushProdFeedback.textContent = 'Network error: ' + String(err);
+              pushProdFeedback.style.color = 'var(--blocked)';
+            }
+            showError('Network error submitting product observation', String(err));
+          }
+        });
+      }
     })();
   </script>
 
-  <!-- 6-HOP LINEAGE SLIDE-OVER DRAWER -->
+  <!-- 6-HOP LINEAGE & PRODUCT TEARDOWN SLIDE-OVER DRAWER -->
   <div id="lineage-drawer" class="drawer-backdrop" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
     <div class="drawer-panel">
       <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);padding-bottom:12px;">
@@ -2605,9 +3138,12 @@ export function renderOperatorTerminalHtml(
       <div class="stepper" id="drawer-stepper">
         <!-- 6 Stage steps inserted here by client script -->
       </div>
+      <div id="drawer-custom-content" style="display:none;margin-top:12px;">
+        <!-- Product Teardown inserted here by client script -->
+      </div>
       <div style="margin-top:auto;padding-top:16px;border-top:1px solid var(--border);font-size:10px;color:var(--text-muted);">
-        <div>Payload SHA-256: <code id="drawer-payload-hash" style="color:#94a3b8;">--</code></div>
-        <div>Trace SHA-256: <code id="drawer-trace-hash" style="color:#94a3b8;">--</code></div>
+        <div>Payload SHA-256 / Product ID: <code id="drawer-payload-hash" style="color:#94a3b8;">--</code></div>
+        <div>Trace SHA-256 / JCS Hash: <code id="drawer-trace-hash" style="color:#94a3b8;">--</code></div>
       </div>
     </div>
   </div>

@@ -97,11 +97,20 @@ import type {
   WorkerAndRedTeamStageTrace,
   EconomicAndGateImpactStageTrace
 } from '../mcp/contracts/signalIngestionContract.js';
+import {
+  ProductObservationDeckRegistry
+} from '../research/productObservationDeckRegistry.js';
+import type {
+  ProductObservationItem,
+  ProductObservationDeckResponse,
+  PushProductObservationRequest,
+  ResearchProductRequest
+} from '../mcp/contracts/productObservationContract.js';
 import { sha256 } from '../canonical/crypto.js';
 import { canonicalizeJCS } from '../canonical/jcs.js';
 
 export interface WorkstationStateEvent {
-  readonly type: 'SNAPSHOT_INITIAL' | 'SNAPSHOT_UPDATED' | 'KILL_SWITCH_CHANGED' | 'DAG_RUN_COMPLETED' | 'WHAT_IF_EVALUATED' | 'SIGNAL_INGESTED';
+  readonly type: 'SNAPSHOT_INITIAL' | 'SNAPSHOT_UPDATED' | 'KILL_SWITCH_CHANGED' | 'DAG_RUN_COMPLETED' | 'WHAT_IF_EVALUATED' | 'SIGNAL_INGESTED' | 'PRODUCT_OBSERVED' | 'PRODUCT_RESEARCHED';
   readonly snapshot_jcs_sha256: string;
   readonly kill_switch_scope: KillSwitchHaltScope;
   readonly timestamp_utc: string;
@@ -155,6 +164,9 @@ export class WorkstationStateManager {
   private ss304Variants: SS304VariantRow[] = [];
   private fullJCurveSeries: readonly { day: number; cumulative_cash_flow_inr: string }[] = [];
 
+  // Gate M7.2 Product Observation Deck & Grievance Mining Registry
+  private productObservationDeck: ProductObservationDeckRegistry;
+
   constructor() {
     this.killSwitchController = new KillSwitchController('NORMAL_PAPER_OPERATION');
     this.mcpServer = new McpServerAdapter();
@@ -164,6 +176,7 @@ export class WorkstationStateManager {
     });
     this.formulaRegistry = new FormulaRegistry();
     this.factorLedger = new FactorEfficacyLedger();
+    this.productObservationDeck = new ProductObservationDeckRegistry();
 
     // Register all 5 MCP specialist workers on mcpServer
     registerSourceCaptureTool(this.mcpServer);
@@ -399,6 +412,80 @@ export class WorkstationStateManager {
 
   public getSignalTrace(traceId: string): SignalProcessingTraceRecord | undefined {
     return this.signalTraces.get(traceId);
+  }
+
+  public getProductObservationDeck(): ProductObservationDeckResponse {
+    return this.productObservationDeck.getDeckResponse();
+  }
+
+  public getProductById(productId: string): ProductObservationItem | undefined {
+    return this.productObservationDeck.getProductById(productId);
+  }
+
+  public pushProductObservation(request: PushProductObservationRequest): ProductObservationItem {
+    const item = this.productObservationDeck.pushProductObservation(request);
+    this.currentSnapshot = this.projectAuthoritativeSnapshot();
+    this.notifyListeners({
+      type: 'PRODUCT_OBSERVED',
+      kill_switch_scope: this.killSwitchController.getState().active_scope,
+      snapshot_jcs_sha256: this.currentSnapshot.snapshot_jcs_sha256,
+      timestamp_utc: new Date().toISOString(),
+      details: {
+        product_id: item.product_id,
+        name: item.name,
+        category: item.category
+      }
+    });
+    return item;
+  }
+
+  public async researchProduct(request: ResearchProductRequest): Promise<ProductObservationItem> {
+    const product = this.productObservationDeck.getProductById(request.product_id);
+    if (!product) {
+      throw new Error(`E-PROD-NOT-FOUND: Product ${request.product_id} not found in observation deck.`);
+    }
+
+    if (this.killSwitchController.getState().active_scope === 'ENTER_RECOVERY_ONLY_MODE') {
+      const err = new Error('E-KS-RECOVERY-ONLY-MODE: Research dispatch blocked under recovery-only mode.');
+      (err as any).statusCode = 409;
+      throw err;
+    }
+
+    const updated = this.productObservationDeck.updateProductResearchStatus(
+      request.product_id,
+      'ADVERSARIAL_REVIEW',
+      'VALIDATE_FURTHER'
+    );
+
+    const timestampUtc = new Date().toISOString();
+    this.mcpRunLedger.appendEvent(
+      'TOOL_CALL_INVOKED',
+      `task:product-research:${Date.now()}`,
+      'worker:source-capture:v1',
+      {
+        tool_name: 'mcp://source-capture/http_get_snapshot',
+        target_url: product.sell_side.listing_url || 'https://www.amazon.in',
+        call_status: 'SUCCESS',
+        wall_clock_ms: 18
+      },
+      timestampUtc
+    );
+
+    this.activeResearchRunsCount += 1;
+    this.currentSnapshot = this.projectAuthoritativeSnapshot();
+
+    this.notifyListeners({
+      type: 'PRODUCT_RESEARCHED',
+      kill_switch_scope: this.killSwitchController.getState().active_scope,
+      snapshot_jcs_sha256: this.currentSnapshot.snapshot_jcs_sha256,
+      timestamp_utc: timestampUtc,
+      details: {
+        product_id: updated.product_id,
+        status: updated.strategy.research_case_status
+      }
+    });
+
+    return updated;
   }
 
   public getHealthStatus(): WorkstationHealthStatus {
@@ -1088,6 +1175,195 @@ export class WorkstationStateManager {
         ],
         evidence_origin: fixtureBadge,
         badge: createSemanticStatusBadge('OPP_TACTICAL', '[WARN]', 'FAST_DECAY')
+      },
+      {
+        candidate_id: 'CAND-VALVE-BRASS-12IN-PN20',
+        sku_id: 'SKU-VALVE-BRASS-12IN-PN20',
+        source_freshness_age_seconds: {
+          value: 15,
+          unit: 'DAYS',
+          classification: 'OBSERVED',
+          source_lineage_ref: 'claim:indiamart:jamnagar:brass:quote'
+        },
+        edge_decay_regime: 'SUSTAINED_STRUCTURAL_SIGNAL',
+        half_life_days: {
+          value: 60,
+          unit: 'DAYS',
+          classification: 'ESTIMATED',
+          source_lineage_ref: 'macro:regime:classifier:structural'
+        },
+        evidence_gap_status: 'DATA_COMPLETE',
+        timers: [
+          {
+            timer_name: 'Factory Sourcing Quote',
+            deadline_or_duration: '2026-11-20T00:00:00Z',
+            classification: 'MEASURED_DEADLINE'
+          }
+        ],
+        evidence_origin: fixtureBadge,
+        badge: createSemanticStatusBadge('OPP_ACTIVE', '[OK]', 'ACTIVE')
+      },
+      {
+        candidate_id: 'CAND-ELEC-MCB-16A-C1P',
+        sku_id: 'SKU-ELEC-MCB-16A-C1P',
+        source_freshness_age_seconds: {
+          value: 20,
+          unit: 'DAYS',
+          classification: 'OBSERVED',
+          source_lineage_ref: 'claim:amazon:mcb:asin:b08mcb16a0'
+        },
+        edge_decay_regime: 'SUSTAINED_STRUCTURAL_SIGNAL',
+        half_life_days: {
+          value: 90,
+          unit: 'DAYS',
+          classification: 'ESTIMATED',
+          source_lineage_ref: 'macro:regime:classifier:structural'
+        },
+        evidence_gap_status: 'DATA_COMPLETE',
+        timers: [
+          {
+            timer_name: 'BIS Recertification Window',
+            deadline_or_duration: '45 days',
+            classification: 'MODELLED_ESTIMATE'
+          }
+        ],
+        evidence_origin: fixtureBadge,
+        badge: createSemanticStatusBadge('OPP_VALIDATE', '[WARN]', 'VALIDATE')
+      },
+      {
+        candidate_id: 'CAND-FEST-DIYA-CLAY-12P',
+        sku_id: 'SKU-FEST-DIYA-CLAY-12P',
+        source_freshness_age_seconds: {
+          value: 5,
+          unit: 'DAYS',
+          classification: 'OBSERVED',
+          source_lineage_ref: 'claim:kumartuli:diya:festive:quote'
+        },
+        edge_decay_regime: 'FAST_TACTICAL_OPPORTUNITY',
+        half_life_days: {
+          value: 14,
+          unit: 'DAYS',
+          classification: 'ESTIMATED',
+          source_lineage_ref: 'macro:regime:classifier:seasonal'
+        },
+        evidence_gap_status: 'DATA_COMPLETE',
+        timers: [
+          {
+            timer_name: 'Diwali Festive Surge Deadline',
+            deadline_or_duration: '2026-11-08T00:00:00Z',
+            classification: 'MEASURED_DEADLINE'
+          }
+        ],
+        evidence_origin: fixtureBadge,
+        badge: createSemanticStatusBadge('OPP_TACTICAL', '[OK]', 'ACTIVE')
+      },
+      {
+        candidate_id: 'CAND-WELL-CANDLE-SOY-200G',
+        sku_id: 'SKU-WELL-CANDLE-SOY-200G',
+        source_freshness_age_seconds: {
+          value: 18,
+          unit: 'DAYS',
+          classification: 'OBSERVED',
+          source_lineage_ref: 'claim:amazon:candle:asin:b07soycandle'
+        },
+        edge_decay_regime: 'SUSTAINED_STRUCTURAL_SIGNAL',
+        half_life_days: {
+          value: 40,
+          unit: 'DAYS',
+          classification: 'ESTIMATED',
+          source_lineage_ref: 'macro:regime:classifier:structural'
+        },
+        evidence_gap_status: 'DATA_COMPLETE',
+        timers: [
+          {
+            timer_name: 'Wax Pouring Production Batch',
+            deadline_or_duration: '10 days',
+            classification: 'MODELLED_ESTIMATE'
+          }
+        ],
+        evidence_origin: fixtureBadge,
+        badge: createSemanticStatusBadge('OPP_VALIDATE', '[WARN]', 'VALIDATE')
+      },
+      {
+        candidate_id: 'CAND-DECOR-FAIRY-10M',
+        sku_id: 'SKU-DECOR-FAIRY-10M-USB',
+        source_freshness_age_seconds: {
+          value: 8,
+          unit: 'DAYS',
+          classification: 'OBSERVED',
+          source_lineage_ref: 'claim:amazon:lights:asin:b08fairy10m'
+        },
+        edge_decay_regime: 'FAST_TACTICAL_OPPORTUNITY',
+        half_life_days: {
+          value: 12,
+          unit: 'DAYS',
+          classification: 'ESTIMATED',
+          source_lineage_ref: 'macro:regime:classifier:seasonal'
+        },
+        evidence_gap_status: 'DATA_COMPLETE',
+        timers: [
+          {
+            timer_name: 'Surat Dispatch Batch Window',
+            deadline_or_duration: '7 days',
+            classification: 'MODELLED_ESTIMATE'
+          }
+        ],
+        evidence_origin: fixtureBadge,
+        badge: createSemanticStatusBadge('OPP_MONITOR', '[WARN]', 'MONITOR')
+      },
+      {
+        candidate_id: 'CAND-FAST-BOLT-M10X50',
+        sku_id: 'SKU-FAST-BOLT-M10X50-88-50P',
+        source_freshness_age_seconds: {
+          value: 30,
+          unit: 'DAYS',
+          classification: 'OBSERVED',
+          source_lineage_ref: 'claim:indiamart:ludhiana:bolts:quote'
+        },
+        edge_decay_regime: 'SUSTAINED_STRUCTURAL_SIGNAL',
+        half_life_days: {
+          value: 90,
+          unit: 'DAYS',
+          classification: 'ESTIMATED',
+          source_lineage_ref: 'macro:regime:classifier:structural'
+        },
+        evidence_gap_status: 'DATA_COMPLETE',
+        timers: [
+          {
+            timer_name: 'Heat Treatment Batch Run',
+            deadline_or_duration: '2026-11-30T00:00:00Z',
+            classification: 'MEASURED_DEADLINE'
+          }
+        ],
+        evidence_origin: fixtureBadge,
+        badge: createSemanticStatusBadge('OPP_ACTIVE', '[OK]', 'ACTIVE')
+      },
+      {
+        candidate_id: 'CAND-SEAL-ORING-SIL-225P',
+        sku_id: 'SKU-SEAL-ORING-SIL-225P',
+        source_freshness_age_seconds: {
+          value: 12,
+          unit: 'DAYS',
+          classification: 'OBSERVED',
+          source_lineage_ref: 'claim:amazon:oring:asin:b09oring225'
+        },
+        edge_decay_regime: 'SUSTAINED_STRUCTURAL_SIGNAL',
+        half_life_days: {
+          value: 60,
+          unit: 'DAYS',
+          classification: 'ESTIMATED',
+          source_lineage_ref: 'macro:regime:classifier:structural'
+        },
+        evidence_gap_status: 'DATA_COMPLETE',
+        timers: [
+          {
+            timer_name: 'Moulding Press Tooling Slot',
+            deadline_or_duration: '14 days',
+            classification: 'MODELLED_ESTIMATE'
+          }
+        ],
+        evidence_origin: fixtureBadge,
+        badge: createSemanticStatusBadge('OPP_ACTIVE', '[OK]', 'ACTIVE')
       }
     ];
 
@@ -1124,6 +1400,118 @@ export class WorkstationStateManager {
         commercial_status: 'ADVERTISED_LISTING',
         requested_url: 'https://www.amazon.in/dp/B09XYZ1234',
         resolved_source_identity: 'fixture://golden/amazon_ss304_asin_b09xyz1234.html',
+        evidence_origin: fixtureBadge,
+        lookahead_bias_status: 'CLEAN_NO_LOOKAHEAD',
+        provenance_lineage: 'fixture://golden -> file_sha256',
+        conflict_hold: false,
+        origin_firewall_blocked: true,
+        promoted_at_utc: undefined,
+        badge: createSemanticStatusBadge('CLAIM_FIXTURE', '[WARN]', 'CAPPED')
+      },
+      {
+        claim_id: 'claim:jamnagar:brass:valve:quote',
+        entity_id: 'ent:supplier:jamnagar-brass',
+        evidence_kind: 'SUPPLIER_CATALOG_QUOTE',
+        verification_status: 'UNVERIFIED',
+        commercial_status: 'ADVERTISED_LISTING',
+        requested_url: 'https://dir.indiamart.com/jamnagar/brass-valves.html',
+        resolved_source_identity: 'fixture://golden/jamnagar_brass_valve_quote.html',
+        evidence_origin: fixtureBadge,
+        lookahead_bias_status: 'CLEAN_NO_LOOKAHEAD',
+        provenance_lineage: 'fixture://golden -> file_sha256',
+        conflict_hold: false,
+        origin_firewall_blocked: true,
+        promoted_at_utc: undefined,
+        badge: createSemanticStatusBadge('CLAIM_FIXTURE', '[WARN]', 'CAPPED')
+      },
+      {
+        claim_id: 'claim:amazon:mcb:asin:b08mcb16a0',
+        entity_id: 'ent:marketplace:amazon-in',
+        evidence_kind: 'ADVERTISED_CATALOG_LISTING',
+        verification_status: 'UNVERIFIED',
+        commercial_status: 'ADVERTISED_LISTING',
+        requested_url: 'https://www.amazon.in/dp/B08MCB16A0',
+        resolved_source_identity: 'fixture://golden/amazon_mcb_16a_listing.html',
+        evidence_origin: fixtureBadge,
+        lookahead_bias_status: 'CLEAN_NO_LOOKAHEAD',
+        provenance_lineage: 'fixture://golden -> file_sha256',
+        conflict_hold: false,
+        origin_firewall_blocked: true,
+        promoted_at_utc: undefined,
+        badge: createSemanticStatusBadge('CLAIM_FIXTURE', '[WARN]', 'CAPPED')
+      },
+      {
+        claim_id: 'claim:kumartuli:diya:festive:quote',
+        entity_id: 'ent:supplier:kumartuli-artisans',
+        evidence_kind: 'SUPPLIER_CATALOG_QUOTE',
+        verification_status: 'UNVERIFIED',
+        commercial_status: 'ADVERTISED_LISTING',
+        requested_url: 'https://dir.indiamart.com/kolkata/terracotta-diya.html',
+        resolved_source_identity: 'fixture://golden/kumartuli_terracotta_diya_quote.html',
+        evidence_origin: fixtureBadge,
+        lookahead_bias_status: 'CLEAN_NO_LOOKAHEAD',
+        provenance_lineage: 'fixture://golden -> file_sha256',
+        conflict_hold: false,
+        origin_firewall_blocked: true,
+        promoted_at_utc: undefined,
+        badge: createSemanticStatusBadge('CLAIM_FIXTURE', '[WARN]', 'CAPPED')
+      },
+      {
+        claim_id: 'claim:amazon:candle:asin:b07soycandle',
+        entity_id: 'ent:marketplace:amazon-in',
+        evidence_kind: 'ADVERTISED_CATALOG_LISTING',
+        verification_status: 'UNVERIFIED',
+        commercial_status: 'ADVERTISED_LISTING',
+        requested_url: 'https://www.amazon.in/dp/B07SOYCANDLE',
+        resolved_source_identity: 'fixture://golden/amazon_soy_candle_listing.html',
+        evidence_origin: fixtureBadge,
+        lookahead_bias_status: 'CLEAN_NO_LOOKAHEAD',
+        provenance_lineage: 'fixture://golden -> file_sha256',
+        conflict_hold: false,
+        origin_firewall_blocked: true,
+        promoted_at_utc: undefined,
+        badge: createSemanticStatusBadge('CLAIM_FIXTURE', '[WARN]', 'CAPPED')
+      },
+      {
+        claim_id: 'claim:amazon:lights:asin:b08fairy10m',
+        entity_id: 'ent:marketplace:amazon-in',
+        evidence_kind: 'ADVERTISED_CATALOG_LISTING',
+        verification_status: 'UNVERIFIED',
+        commercial_status: 'ADVERTISED_LISTING',
+        requested_url: 'https://www.amazon.in/dp/B08FAIRY10M',
+        resolved_source_identity: 'fixture://golden/amazon_fairy_lights_listing.html',
+        evidence_origin: fixtureBadge,
+        lookahead_bias_status: 'CLEAN_NO_LOOKAHEAD',
+        provenance_lineage: 'fixture://golden -> file_sha256',
+        conflict_hold: false,
+        origin_firewall_blocked: true,
+        promoted_at_utc: undefined,
+        badge: createSemanticStatusBadge('CLAIM_FIXTURE', '[WARN]', 'CAPPED')
+      },
+      {
+        claim_id: 'claim:ludhiana:bolts:quote',
+        entity_id: 'ent:supplier:ludhiana-fasteners',
+        evidence_kind: 'SUPPLIER_CATALOG_QUOTE',
+        verification_status: 'UNVERIFIED',
+        commercial_status: 'ADVERTISED_LISTING',
+        requested_url: 'https://dir.indiamart.com/ludhiana/grade-8-8-bolts.html',
+        resolved_source_identity: 'fixture://golden/ludhiana_hex_bolt_quote.html',
+        evidence_origin: fixtureBadge,
+        lookahead_bias_status: 'CLEAN_NO_LOOKAHEAD',
+        provenance_lineage: 'fixture://golden -> file_sha256',
+        conflict_hold: false,
+        origin_firewall_blocked: true,
+        promoted_at_utc: undefined,
+        badge: createSemanticStatusBadge('CLAIM_FIXTURE', '[WARN]', 'CAPPED')
+      },
+      {
+        claim_id: 'claim:amazon:oring:asin:b09oring225',
+        entity_id: 'ent:marketplace:amazon-in',
+        evidence_kind: 'ADVERTISED_CATALOG_LISTING',
+        verification_status: 'UNVERIFIED',
+        commercial_status: 'ADVERTISED_LISTING',
+        requested_url: 'https://www.amazon.in/dp/B09ORING225',
+        resolved_source_identity: 'fixture://golden/amazon_silicone_oring_listing.html',
         evidence_origin: fixtureBadge,
         lookahead_bias_status: 'CLEAN_NO_LOOKAHEAD',
         provenance_lineage: 'fixture://golden -> file_sha256',
@@ -1396,10 +1784,15 @@ export class WorkstationStateManager {
         },
         ledger_reconciliation_status: createSemanticStatusBadge('LEDGER_OK', '[OK]', 'BALANCED'),
         evidence_origin_breakdown: {
-          live_capture_claim_count: hasLiveCapture ? 1 : 0,
-          golden_fixture_claim_count: hasLiveCapture ? 1 : 2,
+          live_capture_claim_count: evidenceRecords.filter(r => r.evidence_origin?.origin_class === 'LIVE_VERIFIED_CAPTURE').length,
+          golden_fixture_claim_count: evidenceRecords.filter(r => r.evidence_origin?.origin_class === 'RECORDED_GOLDEN_FIXTURE').length,
           llm_proposal_count: 1,
-          live_verified_ratio_bps: hasLiveCapture ? 3333 : 0
+          live_verified_ratio_bps: (() => {
+            const live = evidenceRecords.filter(r => r.evidence_origin?.origin_class === 'LIVE_VERIFIED_CAPTURE').length;
+            const golden = evidenceRecords.filter(r => r.evidence_origin?.origin_class === 'RECORDED_GOLDEN_FIXTURE').length;
+            const total = live + golden + 1;
+            return total > 0 ? Math.round((live / total) * 10000) : 0;
+          })()
         },
         active_kill_switch_scope: ksState.active_scope,
         cumulative_wall_clock_budget_utilization_bps: 240

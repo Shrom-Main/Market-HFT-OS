@@ -337,21 +337,27 @@ export class WorkstationServer {
 
     // 3. Routing Table
     // Route 1: Root Workstation HTML
-    if (method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
+    if ((method === 'GET' || method === 'HEAD') && (pathname === '/' || pathname === '/index.html')) {
       const snapshot = this.stateManager.getSnapshot();
       const inbox = this.stateManager.getSignalsInbox();
       const variants = this.stateManager.getSS304Variants();
+      const deck = this.stateManager.getProductObservationDeck();
       const html = renderOperatorTerminalHtml(snapshot, {
         connectors: inbox.connectors,
         variants: variants,
-        signals: inbox.signals
+        signals: inbox.signals,
+        products: deck.products
       });
       applySecurityHeaders(res);
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
         'Content-Length': Buffer.byteLength(html, 'utf8')
       });
-      res.end(html);
+      if (method === 'HEAD') {
+        res.end();
+      } else {
+        res.end(html);
+      }
       return;
     }
 
@@ -613,7 +619,111 @@ export class WorkstationServer {
       return;
     }
 
-    // Route 12: Fallback / 404
+    // Route 12: Product Observation Deck Universe API
+    if (method === 'GET' && pathname === '/api/products/universe') {
+      const deck = this.stateManager.getProductObservationDeck();
+      sendJsonResponse(res, 200, deck);
+      return;
+    }
+
+    // Route 13: Product Observation Detail API
+    if (method === 'GET' && (pathname === '/api/products/detail' || pathname.startsWith('/api/products/'))) {
+      let productId = urlObj.searchParams.get('id') || urlObj.searchParams.get('product_id');
+      if (!productId && pathname.startsWith('/api/products/') && pathname !== '/api/products/universe' && pathname !== '/api/products/detail') {
+        productId = decodeURIComponent(pathname.replace('/api/products/', ''));
+      }
+
+      if (!productId) {
+        const err = createServerErrorEnvelope(
+          new Error('E-SRV-MISSING-ARGUMENT: Missing "id" or "product_id" query parameter for product detail.'),
+          'server:api:products-detail'
+        );
+        sendJsonResponse(res, 400, err);
+        return;
+      }
+
+      const product = this.stateManager.getProductById(productId);
+      if (!product) {
+        const err = createServerErrorEnvelope(
+          new Error(`E-SRV-PRODUCT-NOT-FOUND: Product "${productId}" not found in observation deck.`),
+          'server:api:products-detail'
+        );
+        sendJsonResponse(res, 404, err);
+        return;
+      }
+
+      sendJsonResponse(res, 200, { product });
+      return;
+    }
+
+    // Route 14: Push Product Observation Action
+    if (method === 'POST' && pathname === '/api/products/observe') {
+      const bodyResult = await readJsonBody(req);
+      if (bodyResult.error) {
+        sendJsonResponse(res, bodyResult.error.status, bodyResult.error.envelope);
+        return;
+      }
+
+      const body = bodyResult.data || {};
+      if (!body.name || !body.category || !body.commercial_archetype) {
+        const err = createServerErrorEnvelope(
+          new Error('E-SRV-MISSING-ARGUMENT: Missing required fields "name", "category", or "commercial_archetype" for product observation.'),
+          'server:api:products-observe'
+        );
+        sendJsonResponse(res, 400, err);
+        return;
+      }
+
+      try {
+        const product = this.stateManager.pushProductObservation(body);
+        sendJsonResponse(res, 200, { product, message: 'Product observation successfully ingested into deck.' });
+      } catch (e: any) {
+        const err = createServerErrorEnvelope(
+          e instanceof Error ? e : new Error(String(e)),
+          'server:api:products-observe'
+        );
+        sendJsonResponse(res, 400, err);
+      }
+      return;
+    }
+
+    // Route 15: Dispatch Product Research Action
+    if (method === 'POST' && pathname === '/api/products/research') {
+      const bodyResult = await readJsonBody(req);
+      if (bodyResult.error) {
+        sendJsonResponse(res, bodyResult.error.status, bodyResult.error.envelope);
+        return;
+      }
+
+      const body = bodyResult.data || {};
+      if (!body.product_id) {
+        const err = createServerErrorEnvelope(
+          new Error('E-SRV-MISSING-ARGUMENT: Missing required field "product_id" for product research dispatch.'),
+          'server:api:products-research'
+        );
+        sendJsonResponse(res, 400, err);
+        return;
+      }
+
+      try {
+        const updated = await this.stateManager.researchProduct(body);
+        sendJsonResponse(res, 200, {
+          product: updated,
+          status: updated.strategy.research_case_status,
+          message: `Specialist research dispatched for product "${updated.name}".`
+        });
+      } catch (e: any) {
+        const statusCode = e?.statusCode === 409 || e?.message?.includes('E-KS-RECOVERY-ONLY-MODE') ? 409 : 400;
+        const err = createServerErrorEnvelope(
+          e instanceof Error ? e : new Error(String(e)),
+          'server:api:products-research'
+        );
+        sendJsonResponse(res, statusCode, err);
+      }
+      return;
+    }
+
+    // Route 16: Fallback / 404
     const err = createServerErrorEnvelope(
       new Error(`E-SRV-NOT-FOUND: Resource ${pathname} with method ${method} not found on workstation server.`),
       'server:http:not-found'

@@ -31,10 +31,12 @@ export function exportStandaloneHtml(targetPath?: string): { filePath: string; b
   const snapshot = stateManager.getSnapshot();
   const inbox = stateManager.getSignalsInbox();
   const variants = stateManager.getSS304Variants();
+  const deck = stateManager.getProductObservationDeck();
   const html = renderOperatorTerminalHtml(snapshot, {
     connectors: inbox.connectors,
     variants,
-    signals: inbox.signals
+    signals: inbox.signals,
+    products: deck.products
   });
 
   fs.writeFileSync(outputPath, html, 'utf8');
