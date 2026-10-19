@@ -339,7 +339,13 @@ export class WorkstationServer {
     // Route 1: Root Workstation HTML
     if (method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
       const snapshot = this.stateManager.getSnapshot();
-      const html = renderOperatorTerminalHtml(snapshot);
+      const inbox = this.stateManager.getSignalsInbox();
+      const variants = this.stateManager.getSS304Variants();
+      const html = renderOperatorTerminalHtml(snapshot, {
+        connectors: inbox.connectors,
+        variants: variants,
+        signals: inbox.signals
+      });
       applySecurityHeaders(res);
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
@@ -535,7 +541,79 @@ export class WorkstationServer {
       return;
     }
 
-    // Route 8: Fallback / 404
+    // Route 8: Signal Ingestion Action (Gate M7.1 / DEC-021)
+    if (method === 'POST' && pathname === '/api/signals/ingest') {
+      const bodyResult = await readJsonBody(req);
+      if (bodyResult.error) {
+        sendJsonResponse(res, bodyResult.error.status, bodyResult.error.envelope);
+        return;
+      }
+
+      const body = bodyResult.data || {};
+      if (!body.channel || body.raw_payload === undefined) {
+        const err = createServerErrorEnvelope(
+          new Error('E-SRV-MISSING-ARGUMENT: Missing required fields "channel" or "raw_payload" for signal ingestion.'),
+          'server:api:signals-ingest'
+        );
+        sendJsonResponse(res, 400, err);
+        return;
+      }
+
+      try {
+        const trace = await this.stateManager.ingestSignalEnvelope(body);
+        sendJsonResponse(res, 200, trace);
+      } catch (e: any) {
+        const statusCode = e?.statusCode === 409 || e?.message?.includes('E-KS-RECOVERY-ONLY-MODE') ? 409 : 400;
+        const err = createServerErrorEnvelope(
+          e instanceof Error ? e : new Error(String(e)),
+          'server:api:signals-ingest'
+        );
+        sendJsonResponse(res, statusCode, err);
+      }
+      return;
+    }
+
+    // Route 9: Signals Inbox API
+    if (method === 'GET' && pathname === '/api/signals/inbox') {
+      const inbox = this.stateManager.getSignalsInbox();
+      sendJsonResponse(res, 200, inbox);
+      return;
+    }
+
+    // Route 10: Signal Trace Lineage API
+    if (method === 'GET' && pathname === '/api/signals/trace') {
+      const traceId = urlObj.searchParams.get('id') || urlObj.searchParams.get('trace_id');
+      if (!traceId) {
+        const err = createServerErrorEnvelope(
+          new Error('E-SRV-MISSING-ARGUMENT: Query parameter "id" or "trace_id" is required to inspect lineage trace.'),
+          'server:api:signals-trace'
+        );
+        sendJsonResponse(res, 400, err);
+        return;
+      }
+
+      const trace = this.stateManager.getSignalTrace(traceId);
+      if (!trace) {
+        const err = createServerErrorEnvelope(
+          new Error(`E-SRV-TRACE-NOT-FOUND: Signal processing trace with ID "${traceId}" not found.`),
+          'server:api:signals-trace'
+        );
+        sendJsonResponse(res, 404, err);
+        return;
+      }
+
+      sendJsonResponse(res, 200, { ...trace, trace });
+      return;
+    }
+
+    // Route 11: 8-Variant SS304 Matrix API
+    if (method === 'GET' && pathname === '/api/variants/ss304') {
+      const variants = this.stateManager.getSS304Variants();
+      sendJsonResponse(res, 200, { variants, ceiling_inr: 10.00 });
+      return;
+    }
+
+    // Route 12: Fallback / 404
     const err = createServerErrorEnvelope(
       new Error(`E-SRV-NOT-FOUND: Resource ${pathname} with method ${method} not found on workstation server.`),
       'server:http:not-found'

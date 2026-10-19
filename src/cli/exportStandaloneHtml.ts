@@ -29,7 +29,13 @@ export function exportStandaloneHtml(targetPath?: string): { filePath: string; b
 
   const stateManager = new WorkstationStateManager();
   const snapshot = stateManager.getSnapshot();
-  const html = renderOperatorTerminalHtml(snapshot);
+  const inbox = stateManager.getSignalsInbox();
+  const variants = stateManager.getSS304Variants();
+  const html = renderOperatorTerminalHtml(snapshot, {
+    connectors: inbox.connectors,
+    variants,
+    signals: inbox.signals
+  });
 
   fs.writeFileSync(outputPath, html, 'utf8');
   const byteLength = Buffer.byteLength(html, 'utf8');

@@ -225,61 +225,141 @@ export interface NormalizedSignal {
   target_sku_pattern: string;
   provenance_summary: string;
   jcs_hash: string;
+  ingestion_status: 'VALIDATED' | 'DATA_REQUIRED' | 'QUARANTINED_MALFORMED';
+  error_code?: string;
+  missing_fields?: readonly string[];
 }
 
 export class SignalNormalizer {
   /**
    * Normalizes raw signals from any of the 6 channels into a structured economic factor shock.
+   * POC.docx §4 & §9.2: Eliminates all fake default magnitudes. Missing required fields
+   * return explicit ingestion_status: 'DATA_REQUIRED' (E-SIG-MANDATORY-FIELD-MISSING)
+   * or 'QUARANTINED_MALFORMED' (E-SIG-MALFORMED-PAYLOAD).
    */
   public static normalizeSignal(raw: RawSignalInput): NormalizedSignal {
+    if (!raw.data || typeof raw.data !== 'object') {
+      const payloadWithoutHash = {
+        signal_id: raw.signal_id,
+        channel: raw.channel,
+        observed_at_utc: raw.observed_at_utc,
+        ttl_seconds: raw.ttl_seconds,
+        economic_factor_name: 'MALFORMED_SIGNAL',
+        magnitude_bps: '0',
+        target_sku_pattern: '*',
+        provenance_summary: 'Quarantined: payload is not a valid object',
+        ingestion_status: 'QUARANTINED_MALFORMED',
+        error_code: 'E-SIG-MALFORMED-PAYLOAD'
+      };
+      const jcs_hash = createHash('sha256').update(canonicalizeJCS(payloadWithoutHash)).digest('hex');
+      return {
+        signal_id: raw.signal_id,
+        channel: raw.channel,
+        observed_at_utc: raw.observed_at_utc,
+        ttl_seconds: raw.ttl_seconds,
+        economic_factor_name: 'MALFORMED_SIGNAL',
+        magnitude_bps: 0n,
+        target_sku_pattern: '*',
+        provenance_summary: 'Quarantined: payload is not a valid object',
+        jcs_hash,
+        ingestion_status: 'QUARANTINED_MALFORMED',
+        error_code: 'E-SIG-MALFORMED-PAYLOAD',
+        missing_fields: ['data']
+      };
+    }
+
     let factorName = 'GENERAL_MACRO_INDICATOR';
-    let magnitudeBps = 0n;
+    let magnitudeBps: bigint | null = null;
     let targetPattern = '*';
     let summary = '';
+    const missingFields: string[] = [];
 
     switch (raw.channel) {
-      case 'NEWS_TRADE_PRESS':
+      case 'NEWS_TRADE_PRESS': {
         factorName = 'INBOUND_LOGISTICS_LEAD_TIME_SHOCK';
-        magnitudeBps = BigInt(raw.data.freight_delay_bps ?? raw.data.sentiment_bps ?? 500);
         targetPattern = raw.data.target_sku_pattern ?? 'prod:*';
         summary = `Trade press alert from ${raw.source_id}: ${raw.data.headline ?? 'Supply chain bulletin'}`;
+        const val = raw.data.freight_delay_bps ?? raw.data.sentiment_bps;
+        if (val !== undefined && val !== null && !isNaN(Number(val))) {
+          magnitudeBps = BigInt(val);
+        } else {
+          missingFields.push('freight_delay_bps');
+        }
         break;
+      }
 
-      case 'YOUTUBE_VIDEO_TRANSCRIPT':
+      case 'YOUTUBE_VIDEO_TRANSCRIPT': {
         factorName = 'CUSTOMER_RETURN_RATE_SHOCK';
-        magnitudeBps = BigInt(raw.data.defect_complaint_bps ?? raw.data.rust_report_bps ?? 300);
         targetPattern = raw.data.target_sku_pattern ?? 'prod:din3017:ss304:*';
         summary = `YouTube industrial review defect alert from ${raw.data.channel_name ?? raw.source_id}`;
+        const val = raw.data.defect_complaint_bps ?? raw.data.rust_report_bps;
+        if (val !== undefined && val !== null && !isNaN(Number(val))) {
+          magnitudeBps = BigInt(val);
+        } else {
+          missingFields.push('defect_complaint_bps');
+        }
         break;
+      }
 
-      case 'SOCIAL_FORUM_CHATTER':
+      case 'SOCIAL_FORUM_CHATTER': {
         factorName = 'DAMAGED_QUARANTINE_ATTRITION_SHOCK';
-        magnitudeBps = BigInt(raw.data.breakage_report_bps ?? 400);
         targetPattern = raw.data.target_sku_pattern ?? 'prod:*';
         summary = `Seller community chatter on ${raw.data.platform ?? 'forum'}: ${raw.data.complaint_category ?? 'quality'}`;
+        const val = raw.data.breakage_report_bps;
+        if (val !== undefined && val !== null && !isNaN(Number(val))) {
+          magnitudeBps = BigInt(val);
+        } else {
+          missingFields.push('breakage_report_bps');
+        }
         break;
+      }
 
-      case 'MACROECONOMIC_INDICATOR':
+      case 'MACROECONOMIC_INDICATOR': {
         factorName = 'RISK_FREE_TBILL_YIELD';
-        magnitudeBps = BigInt(raw.data.tbill_yield_bps ?? 650);
         targetPattern = '*';
-        summary = `RBI Sovereign 91-Day T-Bill Benchmark: ${raw.data.value_bps ?? 650} bps`;
+        const val = raw.data.tbill_yield_bps ?? raw.data.value_bps;
+        if (val !== undefined && val !== null && !isNaN(Number(val))) {
+          magnitudeBps = BigInt(val);
+          summary = `RBI Sovereign 91-Day T-Bill Benchmark: ${val} bps`;
+        } else {
+          missingFields.push('tbill_yield_bps');
+          summary = `RBI Sovereign 91-Day T-Bill Benchmark: missing yield`;
+        }
         break;
+      }
 
-      case 'LATERAL_FINANCIAL_MARKET':
+      case 'LATERAL_FINANCIAL_MARKET': {
         factorName = 'RAW_MATERIAL_LME_STEEL_SHOCK';
-        magnitudeBps = BigInt(raw.data.change_24h_bps ?? raw.data.steel_coil_inflation_bps ?? 1000);
         targetPattern = 'prod:din3017:ss304:*';
-        summary = `Lateral Market LME/Nifty Metal Index surge: ${magnitudeBps} bps shock on ${raw.data.symbol ?? 'SS304_COIL'}`;
+        const val = raw.data.change_24h_bps ?? raw.data.steel_coil_inflation_bps;
+        if (val !== undefined && val !== null && !isNaN(Number(val))) {
+          magnitudeBps = BigInt(val);
+          summary = `Lateral Market LME/Nifty Metal Index surge: ${magnitudeBps} bps shock on ${raw.data.symbol ?? 'SS304_COIL'}`;
+        } else {
+          missingFields.push('change_24h_bps');
+          summary = `Lateral Market LME/Nifty Metal Index: missing price/change`;
+        }
         break;
+      }
 
-      case 'GOVERNMENT_SCHEME_POLICY':
+      case 'GOVERNMENT_SCHEME_POLICY': {
         factorName = 'STATUTORY_CUSTOMS_DUTY_SHOCK';
-        magnitudeBps = BigInt(raw.data.customs_duty_bps ?? raw.data.msme_credit_days_bps ?? 1200);
         targetPattern = 'prod:*';
         summary = `Statutory notification ${raw.data.notification_id ?? 'GOV-2026'}: ${raw.data.statutory_act ?? 'Customs Tariff'}`;
+        const val = raw.data.customs_duty_bps ?? raw.data.msme_credit_days_bps;
+        if (val !== undefined && val !== null && !isNaN(Number(val))) {
+          magnitudeBps = BigInt(val);
+        } else {
+          missingFields.push('customs_duty_bps');
+        }
         break;
+      }
     }
+
+    const hasMissing = missingFields.length > 0 || magnitudeBps === null;
+    const finalMagnitude = magnitudeBps !== null ? magnitudeBps : 0n;
+    const ingestion_status = hasMissing ? 'DATA_REQUIRED' : 'VALIDATED';
+    const error_code = hasMissing ? 'E-SIG-MANDATORY-FIELD-MISSING' : undefined;
 
     const payloadWithoutHash = {
       signal_id: raw.signal_id,
@@ -287,9 +367,11 @@ export class SignalNormalizer {
       observed_at_utc: raw.observed_at_utc,
       ttl_seconds: raw.ttl_seconds,
       economic_factor_name: factorName,
-      magnitude_bps: magnitudeBps.toString(),
+      magnitude_bps: finalMagnitude.toString(),
       target_sku_pattern: targetPattern,
-      provenance_summary: summary
+      provenance_summary: summary,
+      ingestion_status,
+      ...(error_code ? { error_code } : {})
     };
 
     const jcs_hash = createHash('sha256')
@@ -302,10 +384,13 @@ export class SignalNormalizer {
       observed_at_utc: raw.observed_at_utc,
       ttl_seconds: raw.ttl_seconds,
       economic_factor_name: factorName,
-      magnitude_bps: magnitudeBps,
+      magnitude_bps: finalMagnitude,
       target_sku_pattern: targetPattern,
       provenance_summary: summary,
-      jcs_hash
+      jcs_hash,
+      ingestion_status,
+      ...(error_code ? { error_code } : {}),
+      ...(missingFields.length > 0 ? { missing_fields: missingFields } : {})
     };
   }
 }
@@ -448,7 +533,7 @@ export class DeepResearchPipelineOrchestrator {
       createEvidenceEnvelope({
         evidence_id: `ev:${sig.signal_id}`,
         kind: 'OBSERVED_FACT',
-        verification_status: 'CRYPTOGRAPHICALLY_ATTESTED',
+        verification_status: 'UNVERIFIED',
         commercial_status: 'NOT_APPLICABLE',
         provenance: {
           source_id: sig.signal_id,
