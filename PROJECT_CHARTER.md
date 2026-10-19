@@ -1,13 +1,13 @@
 # POC-001 — Capital-Allocation Research and Market Simulation Platform
-## Project Charter v0.2.8
+## Project Charter v0.3.0
 
-**Document Status:** APPROVED / CLOSED (Gates M0–M6, Gates M6.1–M6.9, and Gate M7.0 Fully Closed & Verified; 279 Tests across 32 Suites Passing; Workstation Release Ready)  
-**Governance Authority:** Project Owner Directive (Decision OD-20, 18 October 2026)  
+**Document Status:** APPROVED / IN-PROGRESS (Gates M0–M7.3 Fully Closed & Verified; 302 Tests across 35 Suites Passing; Gate M8.0 Central Research & Allocation Core Loop Authorized)  
+**Governance Authority:** Project Owner Directive (Decision OD-24, 19 October 2026)  
 **Target Repository:** `D:\Market HFT OS` (Workspace Root)  
 **Legacy Reference Repository:** `D:\Market HFT OS\_salvage\AIStudio` (Preserved in read-only quarantine)  
 **External Research Pool:** `D:\Market HFT OS\_salvage\external\` (Preserved in read-only quarantine)  
 **Operating Mode:** DRY_RUN / Paper Simulation; Actuals Execution strictly disabled  
-**Micro-Agent Boundary:** The MCP Broker & Micro-Agent Framework (Gates M6.1–M6.9) and Runnable Loopback Workstation (Gate M7.0) are fully implemented, verified, and closed under strict paper-only (`DRY_RUN`), non-destructive evaluation, and mandatory human-authorization confirmation gates (`POC.docx` §2, §6.5, §7–§13, §15).
+**Micro-Agent Boundary:** The MCP Broker & Micro-Agent Framework (Gates M6.1–M6.9), Runnable Loopback Workstation (Gates M7.0–M7.3), and Central Research & Allocation Core Loop (Gate M8.0) operate under strict paper-only (`DRY_RUN`), non-destructive evaluation, and mandatory human-authorization confirmation gates (`POC.docx` §2, §6.5, §7–§13, §15).
 
 ---
 
@@ -382,6 +382,10 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 | **DEC-018** | Governed MCP Broker & 5-Worker Specialist Architecture Hardening | 2026-10-18 | Authorizes Gate M6.1–M6.8 as bounded research extension under paper-only (DRY_RUN) constraints; enforces wire-level MCP lifecycle, positive manifests, streaming bytes limit, DNS rebinding prevention, honest evidence provenance, DAG plan execution, and provider certification. |
 | **DEC-019** | 8-Workspace Read-Only Operator Terminal, 3-Tier Kill Switch, Governed Confirmation Gate, HMAC & Egress Telemetry, Worker Certification Scoreboard & 12-Point Platform Release Gate | 2026-10-18 | Establishes the strictly read-only Operator Terminal projection layer across 8 workspaces (Command Center, Opportunity Radar, Evidence Workbench, Economic & Simulation Sandbox, Capital Allocation & Queue, Strategy & Factor Lifecycle, Risk & Exposure Monitor, Statutory & Audit Ledger); enforces anti-vanity profit firewall (`E-M9-VANITY-PROFIT-FORBIDDEN`); exposes HMAC-SHA256 capability grant and DNS-pinned egress telemetry; exposes Adala-style GoldenExtractionBench worker precision/recall certification; implements 3-tier kill switch with $\ge 15$-character governed confirmation rationale; formats two-level error envelopes with secret scrubbing; renders self-contained HTML5/SVG dark-mode workstation; and evaluates the 12-point platform release gate into canonical RFC 8785 JCS SHA-256 certificate. |
 | **DEC-020** | Runnable Local Loopback Workstation Server, Authoritative State Manager, Interactive 8-Workspace Client & Zero-Trust Security Acceptance Gate | 2026-10-18 | Authorizes Gate M7.0 establishing the runnable local loopback HTTP and WebSocket workstation server (127.0.0.1:4310 / port 0); enforces SRV-01 (Host & Origin firewalls, 64 KB request body cap, CSP, XFO: DENY, nosniff, no-store); enforces SRV-02 (zero client-side float math; pure BigInt rational AST on backend); enforces SRV-03 (kill-switch fail-closed enforcement across live HTTP action dispatches returning HTTP 409 under halt scopes while read-only GET endpoints remain 100% available); enforces SRV-04 (ephemeral loopback port assignment for isolated test execution); provides interactive 8-workspace dark-mode client with live WebSocket telemetry broadcast; verified by Acceptance Suite 32 (10 normative tests, total 279 tests across 32 suites). |
+| **DEC-021** | Provenance Hardening, 5-Worker Ingestion Pipeline & Cockpit UI | 2026-10-19 | Authorizes Gate M7.1; validates signal deduplication, look-ahead bias rejection, stale TTL checks, mandatory cost verification, fixture vs live promotion, 8-variant SS304 matrix, and data-driven SVG rendering; verified by Suite 33 (10 normative tests, 289 total tests). |
+| **DEC-022** | Multi-Product Observation Deck, Sell-Side Analytics & Grievance Mining | 2026-10-19 | Authorizes Gate M7.2; extends catalog across 6 archetypes, captures sell-side dynamics and verbatim buyer grievances, formulates engineered operational edge, and models upstream hub sourcing; verified by Suite 34 (10 normative tests, 294 total tests). |
+| **DEC-023** | Modern React Workstation UI, Bloomberg Split-Terminal & Groq AI Advisor | 2026-10-19 | Authorizes Gate M7.3; introduces modern React 19 single-page application (`client/`) with Tailwind CSS, Lucide icons, Bloomberg split-terminal, and offline HTML inlining (>500 KB); verified by Suite 35 (8 normative tests, 302 total tests). |
+| **DEC-024** | Central Research & Allocation Core Loop, Epistemic Truthfulness, Need-Driven Agent Orchestration, Passage Citations & Governed Multi-Scenario Bundle Simulation | 2026-10-19 | Authorizes Gate M8.0 establishing the Central Research Core as the local system of record; enforces epistemic truthfulness (rejects caller-supplied origin self-attestation, requires cryptographic MCP tool proofs for live badge, distinguishes observed facts from estimated sales proxies, reports real PostgreSQL health); replaces static SS304 DAG with need-driven research planner dispatching specialist micro-agents per product; connects Groq API for review mining and verbatim passage citations; introduces User Intent Model and multi-scenario bundle paper simulator with pure BigInt rational arithmetic; verified by Suite 36. |
 
 ---
 
@@ -393,7 +397,7 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 |---|---|---|---|
 | 0.1 | Workspace discovery and context acquisition | Discovery report produced | ✅ Complete |
 | 0.2 | Legacy repository recovery & independent audit | Salvage Report & Addendum v1.4 completed | ✅ Complete |
-| 0.3 | Project Charter produced | This document (v0.2.8) | ✅ Approved |
+| 0.3 | Project Charter produced | This document (v0.3.0) | ✅ Approved |
 | 0.4 | Root Git repository initialization & `_salvage/` quarantine | Repository exists with charter as initial commit | ✅ Complete |
 | 0.5 | Create `RESEARCH_CORPUS_INDEX.md` | Corpus documents indexed with key decisions | ✅ Complete |
 
@@ -410,7 +414,7 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 
 ---
 
-## 13. Requirement-to-Code-and-Test Traceability Matrix (Gates M6.1–M7.0)
+## 13. Requirement-to-Code-and-Test Traceability Matrix (Gates M6.1–M8.0)
 
 *Default classification: Commitment.*
 
@@ -426,7 +430,10 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 | **M6.8** | Stage 8 Read-Only Operator Terminal Projection, 3-Tier Kill Switch, Two-Level Error Presentation & 12-Point Release Gate | `src/mcp/contracts/operatorTerminalContract.ts`, `src/terminal/operatorTerminalController.ts` (`OperatorTerminalController`, `KillSwitchController`, `executeGovernedOperatorAction`, `renderOperatorTerminalHtml`, `evaluateTwelvePointPlatformReadiness`) | `suite30_m6_8_operator_terminal_and_release_gate.test.ts` (8 tests) |
 | **M6.9** | Gate M6.9 Comprehensive MCP Protocol Hardening, Constrained Egress, First-Class Evidence Origin Firewall, GoldenExtractionBench, Topological DAG Waves & Terminal Telemetry Upgrade (Decision OD-19 / Charter DEC-019) | `src/mcp/mcpSubstrate.ts`, `src/agents/evaluation/goldenExtractionBench.ts`, `src/research/llmFormulaAdvisor.ts`, `src/agents/scheduler/contextRoutingStateMachine.ts`, `src/terminal/operatorTerminalController.ts` | `suite31_m6_9_mcp_hardening_and_terminal_certification.test.ts` (12 tests) |
 | **M7.0** | Runnable Local Loopback Workstation Server, Authoritative State Manager, Zero-Trust Browser Firewalls & Acceptance Suite 32 (Decision OD-20 / Charter DEC-020) | `src/server/workstationServer.ts`, `src/server/workstationStateManager.ts`, `src/cli/workstationCli.ts`, `src/terminal/operatorTerminalController.ts` | `suite32_m7_0_workstation_server.test.ts` (10 tests) |
-
+| **M7.1** | Signal Ingestion Pipeline, Strict Deduplication, TTL Expiry, Fixture/Live Badging, Data-Driven SVGs & Suite 33 (Decision OD-21 / Charter DEC-021) | `src/server/workstationStateManager.ts`, `src/terminal/operatorTerminalController.ts` | `suite33_m7_1_signal_ingestion_and_cockpit_ui.test.ts` (10 tests) |
+| **M7.2** | Multi-Product Observation Deck, Sell-Side Analytics, Buyer Grievance Mining, Engineered Operational Edge & Suite 34 (Decision OD-22 / Charter DEC-022) | `src/mcp/contracts/productObservationContract.ts`, `src/research/productObservationDeckRegistry.ts`, `src/server/workstationStateManager.ts`, `src/terminal/operatorTerminalController.ts` | `suite34_m7_2_multi_product_observation_deck.test.ts` (10 tests) |
+| **M7.3** | Modern React Workstation UI, Bloomberg Split-Terminal, Grievance Cockpit & Standalone Inlining (Decision OD-23 / Charter DEC-023) | `client/`, `src/server/workstationServer.ts`, `src/terminal/operatorTerminalController.ts`, `src/cli/exportStandaloneHtml.ts` | `suite35_m7_3_modern_react_workstation_ui.test.ts` (8 tests) |
+| **M8.0** | Central Research & Allocation Core Loop: Bitemporal Store, Need-Driven Agent Orchestrator, Epistemic Truthfulness, Real Groq Citations & Governed Multi-Scenario Bundle Simulator (Decision OD-24 / Charter DEC-024) | `src/research/centralResearchCore.ts`, `src/research/bundleEvaluator.ts`, `src/research/groqResearchSynthesizer.ts`, `src/server/workstationStateManager.ts`, `src/server/workstationServer.ts`, `client/` | `suite36_m8_0_central_research_and_allocation_core.test.ts` (Normative Acceptance) |
 
 ---
 

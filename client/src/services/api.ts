@@ -238,4 +238,63 @@ export class WorkstationApiClient {
       socket?.close();
     };
   }
+
+  // 14. Gate M8.0: Fetch Evidence Gap Matrix
+  public static async getEvidenceGaps(productId: string): Promise<any> {
+    const res = await fetch(`${BASE_URL}/api/research/gaps?product_id=${encodeURIComponent(productId)}`);
+    if (!res.ok) {
+      throw new Error(`Failed to load evidence gaps: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  // 15. Gate M8.0: Fetch Bitemporal Series with Event Overlays
+  public static async getBitemporalSeries(productId: string, asOfUtc?: string): Promise<any> {
+    const url = asOfUtc
+      ? `${BASE_URL}/api/bitemporal/series?product_id=${encodeURIComponent(productId)}&as_of=${encodeURIComponent(asOfUtc)}`
+      : `${BASE_URL}/api/bitemporal/series?product_id=${encodeURIComponent(productId)}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`Failed to load bitemporal series: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  // 16. Gate M8.0: Evaluate Multi-Scenario Paper Bundle
+  public static async evaluateBundle(intent: any): Promise<any> {
+    const res = await fetch(`${BASE_URL}/api/bundle/evaluate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(intent)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.operator_message || `Bundle evaluation failed: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  // 17. Gate M8.0: Commit Bundle Allocation under Governed Confirmation Gate
+  public static async commitBundle(payload: { evaluation: any; confirmation: any }): Promise<any> {
+    const res = await fetch(`${BASE_URL}/api/bundle/commit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.operator_message || `Bundle commit failed: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  // 18. Gate M8.0: Check Live Database Connection Status
+  public static async getDatabaseHealth(): Promise<any> {
+    const res = await fetch(`${BASE_URL}/api/health/db`);
+    if (!res.ok) {
+      return { is_connected: false, backend: 'IN_MEMORY_FALLBACK' };
+    }
+    return res.json();
+  }
 }
+

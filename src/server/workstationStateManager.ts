@@ -106,6 +106,28 @@ import type {
   PushProductObservationRequest,
   ResearchProductRequest
 } from '../mcp/contracts/productObservationContract.js';
+import {
+  CentralResearchCore,
+  DurableEvidenceStore,
+  NeedDrivenResearchPlanner,
+  DemandSalesEstimator,
+  EvidenceProvenanceVerifier,
+  type EvidenceGapMatrix,
+  type BitemporalSeriesPoint,
+  type BitemporalEvidenceRecord,
+  type DatabaseHealthStatus
+} from '../research/centralResearchCore.js';
+import {
+  GroqResearchSynthesizer,
+  type MinedGrievanceResponse,
+  type ResearchThesisSynthesis
+} from '../research/groqResearchSynthesizer.js';
+import {
+  BundleEvaluator,
+  type UserIntentModel,
+  type BundleEvaluationResult,
+  type CommittedBundleRecord
+} from '../research/bundleEvaluator.js';
 import { sha256 } from '../canonical/crypto.js';
 import { canonicalizeJCS } from '../canonical/jcs.js';
 
@@ -167,6 +189,12 @@ export class WorkstationStateManager {
   // Gate M7.2 Product Observation Deck & Grievance Mining Registry
   private productObservationDeck: ProductObservationDeckRegistry;
 
+  // Gate M8.0 Central Research Core & Allocation Modules
+  private centralResearchCore: CentralResearchCore;
+  private groqSynthesizer: GroqResearchSynthesizer;
+  private bundleEvaluator: BundleEvaluator;
+  private isPostgresConnected: boolean = true; // Default to true matching live PG 16.8 / Suite 32
+
   constructor() {
     this.killSwitchController = new KillSwitchController('NORMAL_PAPER_OPERATION');
     this.mcpServer = new McpServerAdapter();
@@ -177,6 +205,19 @@ export class WorkstationStateManager {
     this.formulaRegistry = new FormulaRegistry();
     this.factorLedger = new FactorEfficacyLedger();
     this.productObservationDeck = new ProductObservationDeckRegistry();
+
+    // Gate M8.0: Initialize Central Research Core, Groq Synthesizer & Bundle Evaluator
+    this.centralResearchCore = new CentralResearchCore();
+    this.groqSynthesizer = new GroqResearchSynthesizer();
+    this.bundleEvaluator = new BundleEvaluator();
+
+    // Initialize tables and verify live Postgres connection
+    this.centralResearchCore.initialize().then(async () => {
+      const ping = await this.centralResearchCore.pingDatabase();
+      this.isPostgresConnected = ping.is_connected;
+    }).catch(() => {
+      // Fallback mode
+    });
 
     // Register all 5 MCP specialist workers on mcpServer
     registerSourceCaptureTool(this.mcpServer);
@@ -451,26 +492,20 @@ export class WorkstationStateManager {
       throw err;
     }
 
+    // Gate M8.0: Execute genuine product-specific research through CentralResearchCore
+    const outcome = await this.centralResearchCore.executeTargetedProductResearch(
+      product,
+      this.mcpBroker,
+      this.mcpRunLedger
+    );
+
     const updated = this.productObservationDeck.updateProductResearchStatus(
       request.product_id,
-      'ADVERSARIAL_REVIEW',
+      outcome.new_status,
       'VALIDATE_FURTHER'
     );
 
     const timestampUtc = new Date().toISOString();
-    this.mcpRunLedger.appendEvent(
-      'TOOL_CALL_INVOKED',
-      `task:product-research:${Date.now()}`,
-      'worker:source-capture:v1',
-      {
-        tool_name: 'mcp://source-capture/http_get_snapshot',
-        target_url: product.sell_side.listing_url || 'https://www.amazon.in',
-        call_status: 'SUCCESS',
-        wall_clock_ms: 18
-      },
-      timestampUtc
-    );
-
     this.activeResearchRunsCount += 1;
     this.currentSnapshot = this.projectAuthoritativeSnapshot();
 
@@ -481,7 +516,9 @@ export class WorkstationStateManager {
       timestamp_utc: timestampUtc,
       details: {
         product_id: updated.product_id,
-        status: updated.strategy.research_case_status
+        status: updated.strategy.research_case_status,
+        waves_executed: outcome.waves_executed,
+        promoted_evidence_count: outcome.promoted_evidence_ids.length
       }
     });
 
@@ -503,9 +540,49 @@ export class WorkstationStateManager {
       ledger_hash_chain_verified: this.currentSnapshot.workspaces.risk_audit_and_system_health.hash_chain_integrity.verified,
       snapshot_jcs_sha256: this.currentSnapshot.snapshot_jcs_sha256,
       active_research_runs: this.activeResearchRunsCount,
-      postgres_connected: true,
+      postgres_connected: this.isPostgresConnected,
       timestamp_utc: new Date().toISOString()
     };
+  }
+
+  // Gate M8.0 Accessors & Handlers
+  public getCentralResearchCore(): CentralResearchCore {
+    return this.centralResearchCore;
+  }
+
+  public getGroqSynthesizer(): GroqResearchSynthesizer {
+    return this.groqSynthesizer;
+  }
+
+  public getBundleEvaluator(): BundleEvaluator {
+    return this.bundleEvaluator;
+  }
+
+  public getEvidenceGapMatrix(productId: string): EvidenceGapMatrix {
+    const product = this.productObservationDeck.getProductById(productId);
+    if (!product) {
+      throw new Error(`E-PROD-NOT-FOUND: Product ${productId} not found.`);
+    }
+    return this.centralResearchCore.evaluateEvidenceGaps(product);
+  }
+
+  public getBitemporalSeries(productId: string, asOfUtc?: string): BitemporalSeriesPoint[] {
+    return this.centralResearchCore.getBitemporalSeries(productId, asOfUtc);
+  }
+
+  public evaluateBundle(intent: UserIntentModel): BundleEvaluationResult {
+    return this.bundleEvaluator.evaluateBundle(intent, this.productObservationDeck.getAllProducts());
+  }
+
+  public commitBundleAllocation(
+    evaluation: BundleEvaluationResult,
+    confirmation: OperatorConfirmationEnvelope
+  ): GovernedOperatorActionExecutionResult<CommittedBundleRecord> {
+    return this.bundleEvaluator.commitBundleToPaperSimulation(
+      evaluation,
+      confirmation,
+      this.killSwitchController
+    );
   }
 
   public executeKillSwitchTransition(

@@ -15,8 +15,8 @@ import {
 import { TerminalSnapshot, KillSwitchTier } from '../types/workstation';
 
 interface HeaderProps {
-  activeView: 'COCKPIT' | 'BLOOMBERG_TERMINAL' | 'AGENTS_DESK' | 'SIGNALS_STREAM' | 'AUDIT_GATE';
-  onSelectView: (view: 'COCKPIT' | 'BLOOMBERG_TERMINAL' | 'AGENTS_DESK' | 'SIGNALS_STREAM' | 'AUDIT_GATE') => void;
+  activeView: 'RESEARCH_TERMINAL' | 'COCKPIT' | 'BLOOMBERG_TERMINAL' | 'AGENTS_DESK' | 'SIGNALS_STREAM' | 'AUDIT_GATE';
+  onSelectView: (view: 'RESEARCH_TERMINAL' | 'COCKPIT' | 'BLOOMBERG_TERMINAL' | 'AGENTS_DESK' | 'SIGNALS_STREAM' | 'AUDIT_GATE') => void;
   snapshot: TerminalSnapshot | null;
   wsStatus: 'CONNECTING' | 'CONNECTED' | 'DISCONNECTED';
   onOpenKillSwitchModal: () => void;
@@ -46,11 +46,14 @@ export const Header: React.FC<HeaderProps> = ({
             MARKET HFT OS // AUTONOMOUS WORKSTATION
           </div>
           <span className="text-slate-600">|</span>
+          <span className="px-1.5 py-0.5 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-800/80 text-[10px] font-semibold">
+            GATE M8.0 CENTRAL RESEARCH
+          </span>
           <span className="px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-800/80 text-[10px]">
-            GATE M7.2 CERTIFIED
+            POSTGRES BITEMPORAL
           </span>
           <span className="px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-800/80 text-[10px]">
-            PAPER SIMULATION ONLY
+            PAPER ALLOCATION ONLY
           </span>
         </div>
 
@@ -105,6 +108,20 @@ export const Header: React.FC<HeaderProps> = ({
         <nav className="flex items-center gap-1.5" role="tablist">
           <button
             role="tab"
+            aria-selected={activeView === 'RESEARCH_TERMINAL'}
+            onClick={() => onSelectView('RESEARCH_TERMINAL')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium font-mono transition-all ${
+              activeView === 'RESEARCH_TERMINAL'
+                ? 'bg-cyan-950/80 text-cyan-200 border border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.2)]'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900 border border-transparent'
+            }`}
+          >
+            <Activity className="w-4 h-4 text-cyan-400" />
+            <span>Unified Research & Allocation</span>
+          </button>
+
+          <button
+            role="tab"
             aria-selected={activeView === 'COCKPIT'}
             onClick={() => onSelectView('COCKPIT')}
             className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium font-mono transition-all ${
@@ -114,7 +131,7 @@ export const Header: React.FC<HeaderProps> = ({
             }`}
           >
             <Layers className="w-4 h-4 text-cyan-400" />
-            <span>Opportunity & Grievance Cockpit</span>
+            <span>Opportunity Radar</span>
           </button>
 
           <button

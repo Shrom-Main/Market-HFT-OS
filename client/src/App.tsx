@@ -5,6 +5,7 @@ import { BloombergSplitTerminal } from './components/BloombergSplitTerminal';
 import { AgentResearchDesk } from './components/AgentResearchDesk';
 import { SurveillanceStream } from './components/SurveillanceStream';
 import { AuditGateView } from './components/AuditGateView';
+import { InstitutionalResearchTerminal } from './components/InstitutionalResearchTerminal';
 import { ProductTeardownDrawer } from './components/ProductTeardownDrawer';
 import { GroqAiIntelligenceModal } from './components/GroqAiIntelligenceModal';
 import { KillSwitchModal } from './components/KillSwitchModal';
@@ -14,8 +15,8 @@ import { WorkstationApiClient } from './services/api';
 
 export default function App() {
   const [activeView, setActiveView] = useState<
-    'COCKPIT' | 'BLOOMBERG_TERMINAL' | 'AGENTS_DESK' | 'SIGNALS_STREAM' | 'AUDIT_GATE'
-  >('COCKPIT');
+    'RESEARCH_TERMINAL' | 'COCKPIT' | 'BLOOMBERG_TERMINAL' | 'AGENTS_DESK' | 'SIGNALS_STREAM' | 'AUDIT_GATE'
+  >('RESEARCH_TERMINAL');
 
   const [products, setProducts] = useState<ProductObservationItem[]>([]);
   const [snapshot, setSnapshot] = useState<TerminalSnapshot | null>(null);
@@ -85,7 +86,17 @@ export default function App() {
       />
 
       {/* Main Content Workspace Container */}
-      <main className="flex-1 p-6 max-w-7xl w-full mx-auto space-y-6">
+      <main className={`flex-1 ${activeView === 'RESEARCH_TERMINAL' ? 'p-3 max-w-[1920px]' : 'p-6 max-w-7xl'} w-full mx-auto space-y-6`}>
+        {activeView === 'RESEARCH_TERMINAL' && (
+          <InstitutionalResearchTerminal
+            products={products}
+            snapshot={snapshot}
+            wsStatus={wsStatus}
+            onRefreshData={loadInitialData}
+            onOpenKillSwitchModal={() => setShowKillSwitchModal(true)}
+          />
+        )}
+
         {activeView === 'COCKPIT' && (
           <CockpitHome
             products={products}

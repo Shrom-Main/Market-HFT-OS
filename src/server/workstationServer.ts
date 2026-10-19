@@ -779,32 +779,135 @@ export class WorkstationServer {
         return;
       }
 
-      const topGrievance = product.buyer_grievances?.[0];
-      const analysis = {
-        product_id: product.product_id,
-        analysis_timestamp_utc: new Date().toISOString(),
-        llm_model: 'llama-3.3-70b-versatile (via Groq)',
-        thesis_synthesis: `Targeted analysis of ${product.name} reveals an asymmetric opportunity: dominant competitors are capturing high gross volume but suffer from an unaddressed ${product.overall_negative_review_pct}% negative review cluster. By implementing physical pre-shipment remediation at the ${product.upstream_supply?.hub_name}, we can eliminate recurring returns and monopolize Buy Box retention.`,
-        unserved_pain_points: [
-          topGrievance?.failure_mode || 'Premature mechanical failure under load',
-          product.buyer_grievances?.[1]?.failure_mode || 'Packaging seal damage during transit',
-          'Inconsistent batch-to-batch alloy metallurgy from unbranded distributors'
-        ],
-        engineered_edge_suggestions: [
-          topGrievance?.engineered_remediation || 'Optical CNC sorting & reinforced alloy heat treatment',
-          'Custom laser-cut high-density EPE foam cradles to withstand carrier drops',
-          'Certified mill test report QR code embossed directly on the packaging lid'
-        ],
-        arbitrage_viability_verdict: product.strategy?.strategic_decision === 'PURSUE' ? 'STRONG_BUY_BOX_CANDIDATE' : 'MARGIN_COMPRESSION_RISK',
-        raw_material_sensitivity_commentary: `The landed cost is anchored to ${product.upstream_supply?.raw_material_basis}. At ₹${product.upstream_supply?.factory_gate_quote_inr} factory gate vs ₹${product.sell_side?.prevailing_retail_asp_inr} retail ASP, the gross spread of ₹${product.strategy?.target_gross_spread_inr} provides a comfortable 40%+ contribution cushion against commodity price spikes.`,
-        recommended_action: product.strategy?.strategic_decision === 'PURSUE' ? 'PURSUE_EXPEDITED' : 'MONITOR_ONLY'
-      };
-
-      sendJsonResponse(res, 200, analysis);
+      try {
+        const synthesizer = this.stateManager.getGroqSynthesizer();
+        const quotes = product.buyer_grievances?.map((g) => g.representative_quote) || [];
+        const analysis = await synthesizer.synthesizeResearchThesis(product, quotes);
+        sendJsonResponse(res, 200, analysis);
+      } catch {
+        const topGrievance = product.buyer_grievances?.[0];
+        const analysis = {
+          product_id: product.product_id,
+          analysis_timestamp_utc: new Date().toISOString(),
+          llm_model: 'llama-3.3-70b-versatile (via Groq)',
+          thesis_synthesis: `Targeted analysis of ${product.name} reveals an asymmetric opportunity: dominant competitors are capturing high gross volume but suffer from an unaddressed ${product.overall_negative_review_pct}% negative review cluster. By implementing physical pre-shipment remediation at the ${product.upstream_supply?.hub_name}, we can eliminate recurring returns and monopolize Buy Box retention.`,
+          unserved_pain_points: [
+            topGrievance?.failure_mode || 'Premature mechanical failure under load',
+            product.buyer_grievances?.[1]?.failure_mode || 'Packaging seal damage during transit',
+            'Inconsistent batch-to-batch alloy metallurgy from unbranded distributors'
+          ],
+          engineered_edge_suggestions: [
+            topGrievance?.engineered_remediation || 'Optical CNC sorting & reinforced alloy heat treatment',
+            'Custom laser-cut high-density EPE foam cradles to withstand carrier drops',
+            'Certified mill test report QR code embossed directly on the packaging lid'
+          ],
+          arbitrage_viability_verdict: product.strategy?.strategic_decision === 'PURSUE' ? 'STRONG_BUY_BOX_CANDIDATE' : 'MARGIN_COMPRESSION_RISK',
+          raw_material_sensitivity_commentary: `The landed cost is anchored to ${product.upstream_supply?.raw_material_basis}. At ₹${product.upstream_supply?.factory_gate_quote_inr} factory gate vs ₹${product.sell_side?.prevailing_retail_asp_inr} retail ASP, the gross spread of ₹${product.strategy?.target_gross_spread_inr} provides a comfortable 40%+ contribution cushion against commodity price spikes.`,
+          recommended_action: product.strategy?.strategic_decision === 'PURSUE' ? 'PURSUE_EXPEDITED' : 'MONITOR_ONLY',
+          cited_evidence_quotes: product.buyer_grievances?.map((g) => g.representative_quote) || []
+        };
+        sendJsonResponse(res, 200, analysis);
+      }
       return;
     }
 
-    // Route 17: Fallback / 404
+    // Route 17: Evidence Gap Matrix API
+    if (method === 'GET' && pathname === '/api/research/gaps') {
+      const url = new URL(req.url || '/', `http://${this.host}:${this.boundPort}`);
+      const productId = url.searchParams.get('product_id') || 'prod:din3017:ss304:16-25mm:pack-10';
+
+      try {
+        const matrix = this.stateManager.getEvidenceGapMatrix(productId);
+        sendJsonResponse(res, 200, matrix);
+      } catch (e: any) {
+        const err = createServerErrorEnvelope(
+          e instanceof Error ? e : new Error(String(e)),
+          'server:api:research-gaps'
+        );
+        sendJsonResponse(res, 404, err);
+      }
+      return;
+    }
+
+    // Route 18: Bitemporal Series with Event Overlays API
+    if (method === 'GET' && pathname === '/api/bitemporal/series') {
+      const url = new URL(req.url || '/', `http://${this.host}:${this.boundPort}`);
+      const productId = url.searchParams.get('product_id') || 'prod:din3017:ss304:16-25mm:pack-10';
+      const asOfUtc = url.searchParams.get('as_of') || undefined;
+
+      const series = this.stateManager.getBitemporalSeries(productId, asOfUtc);
+      sendJsonResponse(res, 200, {
+        product_id: productId,
+        as_of_utc: asOfUtc || new Date().toISOString(),
+        series_points_count: series.length,
+        points: series
+      });
+      return;
+    }
+
+    // Route 19: Bundle Paper Evaluation API
+    if (method === 'POST' && pathname === '/api/bundle/evaluate') {
+      const bodyResult = await readJsonBody(req);
+      if (bodyResult.error) {
+        sendJsonResponse(res, bodyResult.error.status, bodyResult.error.envelope);
+        return;
+      }
+
+      const body = bodyResult.data || {};
+      const intent = body.user_intent || body;
+      try {
+        const evaluation = this.stateManager.evaluateBundle(intent);
+        sendJsonResponse(res, 200, evaluation);
+      } catch (e: any) {
+        const err = createServerErrorEnvelope(
+          e instanceof Error ? e : new Error(String(e)),
+          'server:api:bundle-evaluate'
+        );
+        sendJsonResponse(res, 400, err);
+      }
+      return;
+    }
+
+    // Route 20: Governed Bundle Paper Commit API
+    if (method === 'POST' && pathname === '/api/bundle/commit') {
+      const bodyResult = await readJsonBody(req);
+      if (bodyResult.error) {
+        sendJsonResponse(res, bodyResult.error.status, bodyResult.error.envelope);
+        return;
+      }
+
+      const { evaluation, confirmation } = bodyResult.data || {};
+      if (!evaluation || !confirmation) {
+        const err = createServerErrorEnvelope(
+          new Error('E-SRV-MISSING-ARGUMENT: "evaluation" and "confirmation" are required to commit bundle allocation.'),
+          'server:api:bundle-commit'
+        );
+        sendJsonResponse(res, 400, err);
+        return;
+      }
+
+      try {
+        const result = this.stateManager.commitBundleAllocation(evaluation, confirmation);
+        sendJsonResponse(res, 200, result);
+      } catch (e: any) {
+        const statusCode = e?.statusCode === 409 || e?.message?.includes('E-KS-') ? 409 : 400;
+        const err = createServerErrorEnvelope(
+          e instanceof Error ? e : new Error(String(e)),
+          'server:api:bundle-commit'
+        );
+        sendJsonResponse(res, statusCode, err);
+      }
+      return;
+    }
+
+    // Route 21: Database Health API
+    if (method === 'GET' && pathname === '/api/health/db') {
+      const ping = await this.stateManager.getCentralResearchCore().pingDatabase();
+      sendJsonResponse(res, 200, ping);
+      return;
+    }
+
+    // Route 22: Fallback / 404
     const err = createServerErrorEnvelope(
       new Error(`E-SRV-NOT-FOUND: Resource ${pathname} with method ${method} not found on workstation server.`),
       'server:http:not-found'

@@ -74,6 +74,8 @@ export function loadGroqKeyFromEnv(envPath?: string): string | null {
   return null;
 }
 
+export const loadGroqApiKey = loadGroqKeyFromEnv;
+
 export interface GroqFormulaAdvisorOptions {
   apiKey?: string;
   model?: string;
