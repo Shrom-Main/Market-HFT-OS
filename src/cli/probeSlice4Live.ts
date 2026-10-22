@@ -15,6 +15,8 @@
  */
 
 import http from 'node:http';
+import { spawn } from 'node:child_process';
+import path from 'node:path';
 import { WorkstationServer } from '../server/workstationServer.js';
 
 function assert(condition: any, message: string): asserts condition {
@@ -67,12 +69,28 @@ async function main() {
   try {
     try {
       await fetchJson('/api/health');
+      console.log('[Probe] Existing WorkstationServer detected on port 4310.\n');
     } catch {
-      console.log('[Probe] No server detected on port 4310. Starting WorkstationServer on port 4310...');
-      const server = new WorkstationServer({ port: 4310, host: '127.0.0.1' });
-      await server.start();
-      serverToStop = server;
-      console.log('[Probe] WorkstationServer started on port 4310.\n');
+      console.log('[Probe] No server detected on port 4310. Spawning detached WorkstationServer daemon (SLICE4-FIX-05)...');
+      const tsxCli = path.resolve(process.cwd(), 'node_modules/tsx/dist/cli.mjs');
+      const workerScript = path.resolve(process.cwd(), 'src/cli/workstationCli.ts');
+      const child = spawn(process.execPath, [tsxCli, workerScript], {
+        detached: true,
+        stdio: 'ignore',
+        cwd: process.cwd()
+      });
+      child.unref();
+
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        try {
+          const ping = await fetchJson('/api/health');
+          if (ping.status === 200) {
+            console.log('[Probe] Detached WorkstationServer daemon is active on port 4310.\n');
+            break;
+          }
+        } catch {}
+      }
     }
 
     // Probe 1: Server & Database Health
@@ -146,6 +164,7 @@ async function main() {
   console.log('   Decision Outcome:', dossier.lead_header.current_decision_outcome);
   assert(dossier.lead_header.product_id === targetLead, 'Lead header product ID must match target');
   assert(typeof dossier.lead_header.provenance_badge === 'string', 'Provenance badge must be string');
+  assert(dossier.lead_header.provenance_badge === 'Fixture data (Demo quote)', 'Lead header provenance badge must be "Fixture data (Demo quote)" (SLICE4-FIX-02)');
 
   console.log('2. Demand Interest:', dossier.demand_and_seasonality.observed_interest);
   console.log('   Transaction Evidence:', dossier.demand_and_seasonality.observed_transaction_evidence);
@@ -165,6 +184,9 @@ async function main() {
     console.log(`   [${wf.channel}]: Gross ₹${wf.gross_selling_price_inr} (${wf.price_epistemic_class}) -> Net ₹${wf.net_contribution_inr} (${wf.contribution_margin_bps} bps margin) | Viable: ${wf.is_viable}`);
     assert(!isNaN(wf.net_contribution_inr), 'Net contribution must be finite');
     assert(!isNaN(wf.contribution_margin_bps), 'Margin bps must be finite');
+    if (wf.channel === 'AMAZON_IN') {
+      assert(wf.price_epistemic_class === 'FIXTURE_QUOTE', 'Amazon channel price epistemic class must be FIXTURE_QUOTE (SLICE4-FIX-02)');
+    }
   }
 
   console.log('7. Incumbent Failure Matrix Entries:', dossier.incumbent_failure_matrix.length);
@@ -212,8 +234,20 @@ async function main() {
   }
   console.log('PROBE 6 PASSED: Local-first research query answered deterministically with zero external LLM calls.\n');
 
-  // Probe 7: Contradiction Surfacing in Local Query
-  console.log('--- PROBE 7: Contradiction Surfacing in Local Query ---');
+  // Probe 7: Contradiction Surfacing in Local Query (SLICE4-FIX-01)
+  console.log('--- PROBE 7: Contradiction Surfacing in Local Query (SLICE4-FIX-01) ---');
+  const probe7Nonce = Date.now();
+  await fetchJson('/api/connectors/run', 'POST', {
+    connector_id: 'conn:macro:rbi-fbil-lme',
+    product_id: 'prod:din3017:ss304:16-25mm:pack-10',
+    raw_payload_override: `<div id="probe7-a-${probe7Nonce}" data-price="250000" data-freight="15000" data-moq="500">DIN 3017 SS304 Clamp ₹25.00 MOQ 500</div>`
+  });
+  await fetchJson('/api/connectors/run', 'POST', {
+    connector_id: 'conn:macro:rbi-fbil-lme',
+    product_id: 'prod:din3017:ss304:16-25mm:pack-10',
+    raw_payload_override: `<div id="probe7-b-${probe7Nonce + 1}" data-price="315000" data-freight="15000" data-moq="1000">DIN 3017 SS304 Clamp ₹31.50 MOQ 1000</div>`
+  });
+
   const conflictQueryRes = await fetchJson('/api/research/query', 'POST', {
     query: 'supplier quote and raw material costs',
     product_id: 'prod:din3017:ss304:16-25mm:pack-10'
@@ -222,6 +256,8 @@ async function main() {
   assert(conflictQueryRes.status === 200, 'Query must return HTTP 200');
   console.log('Active Contradictions Count:', conflictQueryRes.json.active_contradictions.length);
   console.log('Unknowns and Gaps Count:', conflictQueryRes.json.unknowns_and_gaps.length);
+  assert(conflictQueryRes.json.active_contradictions.length >= 1, 'active_contradictions.length must be >= 1 (SLICE4-FIX-01)');
+  assert(conflictQueryRes.json.unknowns_and_gaps.length >= 1, 'unknowns_and_gaps.length must be >= 1 (SLICE4-FIX-01)');
   console.log('PROBE 7 PASSED: Contradictions and unknown gaps explicitly surfaced without averaging.\n');
 
   // Probe 8: Explicit Opt-In Gate for External Providers
@@ -262,11 +298,7 @@ async function main() {
   console.log(' ALL 9 SLICE 4 LIVE LOOPBACK PROBES COMPLETED SUCCESSFULLY');
   console.log('================================================================================');
   } finally {
-    if (serverToStop) {
-      console.log('\n[Probe] Stopping in-process WorkstationServer...');
-      await serverToStop.stop();
-      console.log('[Probe] Server stopped cleanly.');
-    }
+    console.log('\n[Probe] SLICE4-FIX-05: WorkstationServer daemon remains running on http://127.0.0.1:4310 for interactive access.');
   }
 }
 

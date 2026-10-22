@@ -53,7 +53,7 @@ export interface ScorecardDimension {
 export interface DistributionChannelAnalysis {
   readonly channel: MarketplaceChannel;
   readonly retail_selling_price_inr: number;
-  readonly price_epistemic_class: 'OBSERVED_QUOTE' | 'ESTIMATED_PROXY' | 'DATA_REQUIRED';
+  readonly price_epistemic_class: 'OBSERVED_QUOTE' | 'FIXTURE_QUOTE' | 'ESTIMATED_PROXY' | 'DATA_REQUIRED';
   readonly explicit_assumptions: readonly string[];
   readonly factory_cost_inr: number;
   readonly platform_fee_inr: number;
@@ -298,8 +298,11 @@ export class OpportunityScorecardEngine {
       let returnRateBps = 300n; // 3.00%
       let freightSubunits = inboundFreightSubunits;
       let pkgSubunits = packagingCostSubunits;
-      let priceEpistemicClass: 'OBSERVED_QUOTE' | 'ESTIMATED_PROXY' | 'DATA_REQUIRED' =
-        baseAspSubunits > 0n ? 'OBSERVED_QUOTE' : 'DATA_REQUIRED';
+      const isRecordedFixture = product.evidence_origin?.origin_class === 'RECORDED_GOLDEN_FIXTURE';
+      let priceEpistemicClass: 'OBSERVED_QUOTE' | 'FIXTURE_QUOTE' | 'ESTIMATED_PROXY' | 'DATA_REQUIRED' =
+        baseAspSubunits > 0n
+          ? (isRecordedFixture ? 'FIXTURE_QUOTE' : 'OBSERVED_QUOTE')
+          : 'DATA_REQUIRED';
       let explicitAssumptions: string[] = ['Prevailing marketplace retail ASP observed from live listing'];
 
       if (channel === 'AMAZON_IN') {

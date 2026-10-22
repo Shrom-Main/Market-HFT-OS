@@ -69,6 +69,8 @@ export interface ProductSellSideAnalysis {
 }
 
 export interface UpstreamSupplyCluster {
+  readonly supplier_id?: string; // Canonical verified supplier identifier (e.g. "supp:howrah:apex-precision-fasteners")
+  readonly supplier_name?: string; // Sourcing entity / manufacturer name
   readonly hub_name: string; // e.g. "Baltikuri / Howrah, West Bengal"
   readonly manufacturing_method: string; // e.g. "Progressive High-Speed Stamping"
   readonly factory_gate_quote_inr: number; // INR per unit ex-factory

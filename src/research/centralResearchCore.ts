@@ -978,17 +978,11 @@ export class DurableEvidenceStore {
   public async storeCommittedBundle(bundle: CommittedBundleRecord): Promise<void> {
     await this.ensureConnected();
     try {
-      await this.pgPool!.query(
+      const res = await this.pgPool!.query(
         `INSERT INTO market_committed_bundles
            (allocation_id, bundle_name, committed_at_utc, total_allocated_capital_inr, blended_target_rowc_bps, status, bundle_json, jcs_sha256)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (allocation_id) DO UPDATE SET
-           bundle_name = EXCLUDED.bundle_name,
-           total_allocated_capital_inr = EXCLUDED.total_allocated_capital_inr,
-           blended_target_rowc_bps = EXCLUDED.blended_target_rowc_bps,
-           status = EXCLUDED.status,
-           bundle_json = EXCLUDED.bundle_json,
-           jcs_sha256 = EXCLUDED.jcs_sha256`,
+         ON CONFLICT (allocation_id) DO NOTHING`,
         [
           bundle.bundle_id,
           bundle.evaluation.intent.intent_id,
@@ -1000,7 +994,15 @@ export class DurableEvidenceStore {
           bundle.jcs_sha256
         ]
       );
+      if (res.rowCount === 0) {
+        const err = new Error(
+          `E-BUNDLE-ALREADY-COMMITTED: Bundle allocation "${bundle.bundle_id}" has already been committed and is immutable. Overwriting existing committed paper allocations is strictly prohibited.`
+        );
+        (err as any).statusCode = 409;
+        throw err;
+      }
     } catch (err: any) {
+      if (err.message?.startsWith('E-BUNDLE-ALREADY-COMMITTED')) throw err;
       if (err.message?.startsWith('E-DB-PERSISTENCE-FAILED')) throw err;
       throw new Error(
         `E-DB-PERSISTENCE-FAILED: PostgreSQL persistence mandatory for durable commitments — query failed: ${err.message}`
@@ -1080,14 +1082,22 @@ export class DurableEvidenceStore {
     }
   }
 
-  public async loadHypotheses(productId?: string): Promise<HypothesisLedgerRecord[]> {
+  public async loadHypotheses(productId?: string, asOfUtc?: string): Promise<HypothesisLedgerRecord[]> {
     await this.ensureConnected().catch(() => {});
     if (!this.pgPool || !this.isPgAvailable) return [];
     try {
-      const query = productId
-        ? 'SELECT * FROM market_hypothesis_ledger WHERE product_id = $1 ORDER BY created_at_utc ASC'
-        : 'SELECT * FROM market_hypothesis_ledger ORDER BY created_at_utc ASC';
-      const params = productId ? [productId] : [];
+      let query = 'SELECT * FROM market_hypothesis_ledger WHERE 1=1';
+      const params: any[] = [];
+      let paramIdx = 1;
+      if (productId) {
+        query += ` AND product_id = $${paramIdx++}`;
+        params.push(productId);
+      }
+      if (asOfUtc) {
+        query += ` AND created_at_utc <= $${paramIdx++}`;
+        params.push(asOfUtc);
+      }
+      query += ' ORDER BY created_at_utc ASC';
       const res = await this.pgPool.query(query, params);
       return res.rows.map((r) => ({
         hypothesis_id: r.hypothesis_id,
@@ -1314,8 +1324,8 @@ export class CentralResearchCore {
     return this.evidenceStore.storeHypothesis(record);
   }
 
-  public async loadHypotheses(productId?: string): Promise<HypothesisLedgerRecord[]> {
-    return this.evidenceStore.loadHypotheses(productId);
+  public async loadHypotheses(productId?: string, asOfUtc?: string): Promise<HypothesisLedgerRecord[]> {
+    return this.evidenceStore.loadHypotheses(productId, asOfUtc);
   }
 
   public async pingDatabase(): Promise<DatabaseHealthStatus> {
@@ -1324,6 +1334,14 @@ export class CentralResearchCore {
 
   public async close(): Promise<void> {
     return this.evidenceStore.close();
+  }
+
+  public async storeCommittedBundle(bundle: CommittedBundleRecord): Promise<void> {
+    return this.evidenceStore.storeCommittedBundle(bundle);
+  }
+
+  public async loadCommittedBundles(): Promise<CommittedBundleRecord[]> {
+    return this.evidenceStore.loadCommittedBundles();
   }
 
   /**

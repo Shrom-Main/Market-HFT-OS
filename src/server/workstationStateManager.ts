@@ -97,9 +97,14 @@ import {
 } from '../research/opportunityDossierService.js';
 import {
   LocalFirstResearchQueryEngine,
+  DefaultExternalLlmProviderClient,
   type ResearchQueryRequest,
   type ResearchQueryResponse
 } from '../research/localFirstResearchQueryEngine.js';
+import {
+  CitedReportExporter,
+  type CitedResearchReport
+} from '../research/citedReportExporter.js';
 import {
   M5SiloAndGroupSimulator,
   SiloCandidateInput,
@@ -250,7 +255,8 @@ export class WorkstationStateManager {
     // Slice 4: Initialize Local-First Research Query Engine
     this.localResearchQueryEngine = new LocalFirstResearchQueryEngine({
       centralResearchCore: this.centralResearchCore,
-      productDeck: this.productObservationDeck
+      productDeck: this.productObservationDeck,
+      entityIdentityResolver: this.entityIdentityResolver
     });
 
     // Initialize tables and verify live Postgres connection
@@ -362,6 +368,8 @@ export class WorkstationStateManager {
     const persistedProducts = await durableStore.loadProductDeck();
     if (persistedProducts.length > 0) {
       this.productObservationDeck.replaceProducts(persistedProducts);
+      // Persist enriched products back to PostgreSQL so DB state contains canonical supplier and hub fields
+      await durableStore.storeProductDeck(this.productObservationDeck.getAllProducts());
     } else {
       await durableStore.storeProductDeck(this.productObservationDeck.getAllProducts());
     }
@@ -659,6 +667,19 @@ export class WorkstationStateManager {
     return this.localResearchQueryEngine.query(request);
   }
 
+  public async exportReport(
+    targetType: 'LEAD' | 'BUNDLE',
+    targetId: string,
+    asOfUtc?: string
+  ): Promise<CitedResearchReport> {
+    return CitedReportExporter.generateReport({
+      target_type: targetType,
+      target_id: targetId,
+      stateManager: this,
+      as_of_utc: asOfUtc
+    });
+  }
+
   public getHealthStatus(livePing?: DatabaseHealthStatus): WorkstationHealthStatus {
     const ksState = this.killSwitchController.getState();
     const isHalted = ksState.active_scope !== 'NORMAL_PAPER_OPERATION';
@@ -723,6 +744,10 @@ export class WorkstationStateManager {
     return this.bundleEvaluator.evaluateBundle(intent, this.productObservationDeck.getAllProducts());
   }
 
+  public getEvaluationById(bundleId: string): BundleEvaluationResult | undefined {
+    return this.bundleEvaluator.getEvaluationById(bundleId);
+  }
+
   public async commitBundleAllocation(
     evaluation: BundleEvaluationResult,
     confirmation: OperatorConfirmationEnvelope
@@ -733,7 +758,7 @@ export class WorkstationStateManager {
       this.killSwitchController
     );
     if (outcome?.outcome) {
-      await this.centralResearchCore.getEvidenceStore().storeCommittedBundle(outcome.outcome);
+      await this.centralResearchCore.storeCommittedBundle(outcome.outcome);
     }
     return outcome;
   }

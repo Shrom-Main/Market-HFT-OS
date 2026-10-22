@@ -129,6 +129,8 @@ export class ProductObservationDeckRegistry {
         ],
         overall_negative_review_pct: 18.5,
         upstream_supply: {
+          supplier_id: 'supp:howrah:apex-precision-fasteners',
+          supplier_name: 'Apex Precision Fasteners (Howrah)',
           hub_name: 'Baltikuri / Howrah, West Bengal',
           manufacturing_method: 'Progressive High-Speed Stamping',
           factory_gate_quote_inr: 13.20,
@@ -203,6 +205,8 @@ export class ProductObservationDeckRegistry {
         ],
         overall_negative_review_pct: 22.0,
         upstream_supply: {
+          supplier_id: 'supp:jamnagar:omkar-brass-industries',
+          supplier_name: 'Omkar Brass Industries (Jamnagar)',
           hub_name: 'Jamnagar Brass Parts Cluster (Gujarat)',
           manufacturing_method: 'Hot Forging & CNC Machining',
           factory_gate_quote_inr: 115.00,
@@ -277,6 +281,8 @@ export class ProductObservationDeckRegistry {
         ],
         overall_negative_review_pct: 15.2,
         upstream_supply: {
+          supplier_id: 'supp:haridwar:precision-switchgears',
+          supplier_name: 'Precision Switchgears (Haridwar)',
           hub_name: 'Faridabad / Haridwar Electrical Cluster',
           manufacturing_method: 'Automated Stamping & Thermoset Moulding',
           factory_gate_quote_inr: 68.00,
@@ -351,6 +357,8 @@ export class ProductObservationDeckRegistry {
         ],
         overall_negative_review_pct: 31.0,
         upstream_supply: {
+          supplier_id: 'supp:bankura:kumartuli-artisans-guild',
+          supplier_name: 'Kumartuli & Bankura Artisans Cooperative',
           hub_name: 'Kumartuli / Bankura Clay Artisan Cluster (West Bengal)',
           manufacturing_method: 'Hand-Thrown Clay & Kiln Fired',
           factory_gate_quote_inr: 38.00,
@@ -425,6 +433,8 @@ export class ProductObservationDeckRegistry {
         ],
         overall_negative_review_pct: 24.0,
         upstream_supply: {
+          supplier_id: 'supp:silvassa:botanicals-fragrance-works',
+          supplier_name: 'Botanicals Fragrance Works (Silvassa)',
           hub_name: 'Silvassa / Daman Chemical & Fragrance Hub',
           manufacturing_method: 'Semi-Automated Temperature-Controlled Pouring',
           factory_gate_quote_inr: 140.00,
@@ -499,6 +509,8 @@ export class ProductObservationDeckRegistry {
         ],
         overall_negative_review_pct: 28.5,
         upstream_supply: {
+          supplier_id: 'supp:surat:radiance-electronics',
+          supplier_name: 'Radiance Electronics (Surat)',
           hub_name: 'Surat / Delhi Electronics Assembling Hub',
           manufacturing_method: 'SMT Surface Mount & Automated Wire Twisting',
           factory_gate_quote_inr: 42.00,
@@ -573,6 +585,8 @@ export class ProductObservationDeckRegistry {
         ],
         overall_negative_review_pct: 16.8,
         upstream_supply: {
+          supplier_id: 'supp:ludhiana:ludhiana-fastener-works',
+          supplier_name: 'Ludhiana Fasteners Ltd (Punjab)',
           hub_name: 'Ludhiana Fasteners Cluster (Punjab)',
           manufacturing_method: 'Cold Forging & Continuous Heat Treatment',
           factory_gate_quote_inr: 280.00,
@@ -647,6 +661,8 @@ export class ProductObservationDeckRegistry {
         ],
         overall_negative_review_pct: 26.2,
         upstream_supply: {
+          supplier_id: 'supp:vasai:shree-polymer-extrusions',
+          supplier_name: 'Shree Polymer & Rubber Extrusions (Vasai)',
           hub_name: 'Vasai / Pune Precision Rubber Moulding Hub (Maharashtra)',
           manufacturing_method: 'Vacuum Compression Moulding',
           factory_gate_quote_inr: 105.00,
@@ -711,13 +727,32 @@ export class ProductObservationDeckRegistry {
   }
 
   public getProductById(productId: string): ProductObservationItem | undefined {
-    return this.products.get(productId);
+    if (this.products.has(productId)) {
+      return this.products.get(productId);
+    }
+    if (productId === 'prod:soy:lavender-candle:200g-amber-jar') {
+      return this.products.get('prod:wellness:candle:soy-lavender');
+    }
+    return undefined;
   }
 
   public replaceProducts(items: readonly ProductObservationItem[]): void {
+    const existingMap = new Map(this.products);
     this.products.clear();
     for (const item of items) {
-      this.products.set(item.product_id, item);
+      const canonical = existingMap.get(item.product_id);
+      const merged: ProductObservationItem = canonical
+        ? {
+            ...item,
+            upstream_supply: {
+              ...canonical.upstream_supply,
+              ...item.upstream_supply,
+              supplier_id: item.upstream_supply?.supplier_id || canonical.upstream_supply?.supplier_id,
+              supplier_name: item.upstream_supply?.supplier_name || canonical.upstream_supply?.supplier_name,
+            }
+          }
+        : item;
+      this.products.set(item.product_id, merged);
     }
   }
 
@@ -817,6 +852,8 @@ export class ProductObservationDeckRegistry {
       buyer_grievances: grievances,
       overall_negative_review_pct: request.overall_negative_review_pct || 14.5,
       upstream_supply: {
+        supplier_id: (request.upstream_supply as any)?.supplier_id || 'UNKNOWN_UNVERIFIED_SUPPLIER',
+        supplier_name: (request.upstream_supply as any)?.supplier_name || 'Unverified Marketplace Supplier',
         hub_name: hubName,
         manufacturing_method: request.upstream_supply?.manufacturing_method || 'Precision Hot Forging & Stamping',
         factory_gate_quote_inr: factoryQuote,

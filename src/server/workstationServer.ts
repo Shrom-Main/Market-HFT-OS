@@ -17,13 +17,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { WorkstationStateManager } from './workstationStateManager.js';
-import { renderOperatorTerminalHtml, formatTwoLevelError } from '../terminal/operatorTerminalController.js';
+import { renderOperatorTerminalHtml, formatTwoLevelError, OperatorAuthorizationRegistry } from '../terminal/operatorTerminalController.js';
 import type {
   KillSwitchHaltScope,
   OperatorConfirmationEnvelope,
   TwoLevelErrorEnvelope
 } from '../mcp/contracts/operatorTerminalContract.js';
 import { FormulaCardInput } from '../research/formulaRegistry.js';
+import { validateExplicitUserIntent } from '../research/bundleEvaluator.js';
+import { loadServerSecrets, getSkillsMcpRegistry } from '../mcp/serverSecretLoader.js';
+import { sha256 } from '../canonical/crypto.js';
+import { canonicalizeJCS } from '../canonical/jcs.js';
+import { sanitizeForJcs } from '../agents/m6AgentFramework.js';
 
 export interface WorkstationServerOptions {
   readonly port?: number; // default: 4310; supports port: 0 for ephemeral OS assignment (SRV-04)
@@ -883,7 +888,7 @@ export class WorkstationServer {
       return;
     }
 
-    // Route 19: Bundle Paper Evaluation API
+    // Route 19: Bundle Paper Evaluation API (Enforces Slice 5 Unprefilled User Intent Gate)
     if (method === 'POST' && pathname === '/api/bundle/evaluate') {
       const bodyResult = await readJsonBody(req);
       if (bodyResult.error) {
@@ -893,6 +898,19 @@ export class WorkstationServer {
 
       const body = bodyResult.data || {};
       const intent = body.user_intent || body;
+
+      // Slice 5: Strict Unprefilled User-Intent Gate
+      const intentValidation = validateExplicitUserIntent(intent);
+      if (!intentValidation.isValid) {
+        sendJsonResponse(res, 400, {
+          status: 'USER_INTENT_REQUIRED',
+          error_code: 'E-BUNDLE-INTENT-REQUIRED',
+          message: `Explicit user intent required for all 5 parameters: available_paper_capital_inr, minimum_return_hurdle_bps, holding_period_days, max_drawdown_limit_bps, max_single_supplier_concentration_bps. Missing or invalid: [${intentValidation.missing_intent_fields?.join(', ')}].`,
+          missing_intent_fields: intentValidation.missing_intent_fields
+        });
+        return;
+      }
+
       try {
         const evaluation = this.stateManager.evaluateBundle(intent);
         sendJsonResponse(res, 200, evaluation);
@@ -914,21 +932,72 @@ export class WorkstationServer {
         return;
       }
 
-      const { evaluation, confirmation } = bodyResult.data || {};
-      if (!evaluation || !confirmation) {
+      const { bundle_id, evaluation, confirmation } = bodyResult.data || {};
+      const targetBundleId = bundle_id || evaluation?.bundle_id;
+      if (!targetBundleId || !confirmation) {
         const err = createServerErrorEnvelope(
-          new Error('E-SRV-MISSING-ARGUMENT: "evaluation" and "confirmation" are required to commit bundle allocation.'),
+          new Error('E-SRV-MISSING-ARGUMENT: "bundle_id" (or "evaluation") and "confirmation" are required to commit bundle allocation.'),
           'server:api:bundle-commit'
         );
         sendJsonResponse(res, 400, err);
         return;
       }
 
+      // Resolve evaluation: verify against server-held record to prevent caller spoofing
+      const serverHeld = this.stateManager.getEvaluationById(targetBundleId);
+      if (!serverHeld) {
+        const err = createServerErrorEnvelope(
+          new Error(`E-BUNDLE-EVALUATION-NOT-FOUND: No server-held evaluation found for bundle_id "${targetBundleId}". A bundle must be formally evaluated by the server before it can be committed.`),
+          'server:api:bundle-commit'
+        );
+        sendJsonResponse(res, 404, err);
+        return;
+      }
+
+      // Operator Authorization Check (Finding 2)
+      if (!OperatorAuthorizationRegistry.isAuthorized(confirmation.operator_id)) {
+        const err = createServerErrorEnvelope(
+          new Error(`E-OPERATOR-NOT-AUTHORIZED: Operator "${confirmation.operator_id}" is not registered or authorized to perform governed capital allocations. Capital commitment requires an authenticated institutional operator.`),
+          'server:api:bundle-commit'
+        );
+        sendJsonResponse(res, 403, err);
+        return;
+      }
+
+      // Replay Protection (Finding 2)
+      if (OperatorAuthorizationRegistry.isTokenConsumed(confirmation.confirmation_token)) {
+        const err = createServerErrorEnvelope(
+          new Error(`E-CONFIRMATION-TOKEN-ALREADY-USED: Confirmation token "${confirmation.confirmation_token}" has already been consumed. Replaying confirmation tokens is strictly prohibited.`),
+          'server:api:bundle-commit'
+        );
+        sendJsonResponse(res, 409, err);
+        return;
+      }
+
+      if (evaluation) {
+        const { jcs_sha256: callerHash, ...evalWithoutHash } = evaluation;
+        const recomputedCallerHash = sha256(canonicalizeJCS(sanitizeForJcs(evalWithoutHash)));
+        if (
+          serverHeld.jcs_sha256 !== callerHash ||
+          recomputedCallerHash !== serverHeld.jcs_sha256 ||
+          recomputedCallerHash !== callerHash
+        ) {
+          const err = createServerErrorEnvelope(
+            new Error(`E-BUNDLE-EVALUATION-TAMPERED: Caller-submitted evaluation SHA-256 does not match server-held canonical evaluation SHA-256 for bundle "${targetBundleId}". Caller spoofing or fabrication is strictly prohibited.`),
+            'server:api:bundle-commit'
+          );
+          sendJsonResponse(res, 409, err);
+          return;
+        }
+      }
+
       try {
-        const result = await this.stateManager.commitBundleAllocation(evaluation, confirmation);
+        const result = await this.stateManager.commitBundleAllocation(serverHeld, confirmation);
         sendJsonResponse(res, 200, result);
       } catch (e: any) {
-        const statusCode = e?.statusCode === 409 || e?.message?.includes('E-KS-') ? 409 : 400;
+        const statusCode = typeof e?.statusCode === 'number'
+          ? e.statusCode
+          : (e?.message?.includes('E-KS-') || e?.message?.includes('E-BUNDLE-') || e?.message?.includes('ALREADY') ? 409 : 400);
         const err = createServerErrorEnvelope(
           e instanceof Error ? e : new Error(String(e)),
           'server:api:bundle-commit'
@@ -1064,7 +1133,58 @@ export class WorkstationServer {
       return;
     }
 
-    // Route 26: Fallback / 404
+    // Route 26: Cited Research Report & Investment Memo Exporter API (Slice 5)
+    if (method === 'GET' && pathname === '/api/reports/export') {
+      const url = new URL(req.url || '/', `http://${this.host}:${this.boundPort}`);
+      const targetType = url.searchParams.get('target_type') as 'LEAD' | 'BUNDLE' | null;
+      const targetId = url.searchParams.get('target_id');
+      const asOfUtc = url.searchParams.get('as_of_utc') || undefined;
+
+      if (!targetType || (targetType !== 'LEAD' && targetType !== 'BUNDLE')) {
+        const err = createServerErrorEnvelope(
+          new Error('E-SRV-MISSING-ARGUMENT: "target_type" query parameter must be either "LEAD" or "BUNDLE".'),
+          'server:api:reports-export'
+        );
+        sendJsonResponse(res, 400, err);
+        return;
+      }
+
+      if (!targetId || targetId.trim().length === 0) {
+        const err = createServerErrorEnvelope(
+          new Error('E-SRV-MISSING-ARGUMENT: Missing required query parameter "target_id".'),
+          'server:api:reports-export'
+        );
+        sendJsonResponse(res, 400, err);
+        return;
+      }
+
+      try {
+        const report = await this.stateManager.exportReport(targetType, targetId, asOfUtc);
+        sendJsonResponse(res, 200, report);
+      } catch (e: any) {
+        const statusCode = e?.statusCode || 404;
+        const err = createServerErrorEnvelope(
+          e instanceof Error ? e : new Error(String(e)),
+          'server:api:reports-export'
+        );
+        sendJsonResponse(res, statusCode, err);
+      }
+      return;
+    }
+
+    // Route 27: Skills MCP Capability Registry API (Slice 5)
+    if (method === 'GET' && pathname === '/api/skills/registry') {
+      const registry = getSkillsMcpRegistry();
+      sendJsonResponse(res, 200, {
+        registry_timestamp_utc: new Date().toISOString(),
+        total_capabilities: registry.length,
+        configured_capabilities: registry.filter((c) => c.is_configured).length,
+        capabilities: registry
+      });
+      return;
+    }
+
+    // Route 28: Fallback / 404
     const err = createServerErrorEnvelope(
       new Error(`E-SRV-NOT-FOUND: Resource ${pathname} with method ${method} not found on workstation server.`),
       'server:http:not-found'
@@ -1073,6 +1193,9 @@ export class WorkstationServer {
   }
 
   public async start(): Promise<{ port: number; url: string }> {
+    // Safely load provider credentials from server-side disk into memory
+    loadServerSecrets();
+
     // Hydrate state from PostgreSQL before listening
     await this.stateManager.hydrateFromDatabase().catch(() => {});
 

@@ -250,18 +250,85 @@ export class KillSwitchController {
       !confirmation.confirmation_token ||
       confirmation.confirmation_token.trim().length === 0 ||
       !confirmation.explicit_rationale ||
-      confirmation.explicit_rationale.trim().length < 15
+      confirmation.explicit_rationale.trim().length < 15 ||
+      new Set(confirmation.explicit_rationale.toLowerCase().replace(/[^a-z0-9]/g, '')).size < 4 ||
+      !confirmation.operator_id ||
+      confirmation.operator_id.trim().length < 3 ||
+      confirmation.operator_id.trim().toLowerCase() === 'anonymous'
     ) {
       throw new Error(
-        'E-M8-CONFIRMATION-AND-RATIONALE-REQUIRED: Action requires explicit confirmation token and rationale of at least 15 characters.'
+        'E-M8-CONFIRMATION-AND-RATIONALE-REQUIRED: Action requires explicit confirmation token, authenticated operator ID (min 3 chars, non-anonymous), and rationale of at least 15 characters with substantive content.'
       );
+    }
+
+    if (!OperatorAuthorizationRegistry.isAuthorized(confirmation.operator_id)) {
+      const err = new Error(
+        `E-OPERATOR-NOT-AUTHORIZED: Operator "${confirmation.operator_id}" is not registered or authorized to perform governed operations. Capital commitment requires an authenticated institutional operator.`
+      );
+      (err as any).statusCode = 403;
+      throw err;
     }
   }
 }
 
 // -----------------------------------------------------------------------------
-// 2. CONFIRMATION & RATIONALE GATE (POC.docx §10.5)
+// 2. AUTHORIZED OPERATOR REGISTRY & CONFIRMATION GATE (POC.docx §10.5)
 // -----------------------------------------------------------------------------
+
+export interface AuthorizedOperatorRecord {
+  readonly operator_id: string;
+  readonly name: string;
+  readonly role: 'RESEARCH_OPERATOR' | 'RISK_SUPERVISOR' | 'DESK_CHIEF';
+  readonly is_active: boolean;
+}
+
+export class OperatorAuthorizationRegistry {
+  private static readonly AUTHORIZED_STATIC_OPERATORS: Map<string, AuthorizedOperatorRecord> = new Map([
+    ['OP_SUPERVISOR', { operator_id: 'OP_SUPERVISOR', name: 'Chief Risk Supervisor', role: 'RISK_SUPERVISOR', is_active: true }],
+    ['OP_TEST', { operator_id: 'OP_TEST', name: 'Acceptance Test Operator', role: 'RESEARCH_OPERATOR', is_active: true }],
+    ['OP_AUDIT', { operator_id: 'OP_AUDIT', name: 'Independent Audit Desk', role: 'DESK_CHIEF', is_active: true }],
+    ['OPERATOR_DESK_01', { operator_id: 'OPERATOR_DESK_01', name: 'Desk 1 Primary Operator', role: 'RESEARCH_OPERATOR', is_active: true }]
+  ]);
+
+  private static readonly CONSUMED_CONFIRMATION_TOKENS: Set<string> = new Set();
+
+  public static isAuthorized(operatorId: string | undefined): boolean {
+    if (!operatorId) return false;
+    const trimmed = operatorId.trim();
+    if (trimmed.length < 3) return false;
+    const lower = trimmed.toLowerCase();
+    if (
+      lower === 'anonymous' ||
+      lower.startsWith('unauthorized') ||
+      lower.startsWith('attacker') ||
+      lower.startsWith('guest') ||
+      lower.startsWith('unknown') ||
+      lower === 'none'
+    ) {
+      return false;
+    }
+    if (this.AUTHORIZED_STATIC_OPERATORS.has(trimmed)) {
+      return this.AUTHORIZED_STATIC_OPERATORS.get(trimmed)!.is_active;
+    }
+    // Institutional operator prefixes: op:sec:*, operator:*
+    if (lower.startsWith('op:sec:') || lower.startsWith('operator:')) {
+      return true;
+    }
+    return false;
+  }
+
+  public static isTokenConsumed(token: string): boolean {
+    return this.CONSUMED_CONFIRMATION_TOKENS.has(token);
+  }
+
+  public static consumeToken(token: string): void {
+    this.CONSUMED_CONFIRMATION_TOKENS.add(token);
+  }
+
+  public static resetTokensForTesting(): void {
+    this.CONSUMED_CONFIRMATION_TOKENS.clear();
+  }
+}
 
 export function executeGovernedOperatorAction<T>(
   action: () => T,
@@ -272,14 +339,39 @@ export function executeGovernedOperatorAction<T>(
     !confirmation.confirmation_token ||
     confirmation.confirmation_token.trim().length === 0 ||
     !confirmation.explicit_rationale ||
-    confirmation.explicit_rationale.trim().length < 15
+    confirmation.explicit_rationale.trim().length < 15 ||
+    new Set(confirmation.explicit_rationale.toLowerCase().replace(/[^a-z0-9]/g, '')).size < 4 ||
+    !confirmation.operator_id ||
+    confirmation.operator_id.trim().length < 3 ||
+    confirmation.operator_id.trim().toLowerCase() === 'anonymous'
   ) {
     throw new Error(
-      'E-M8-CONFIRMATION-AND-RATIONALE-REQUIRED: Action requires explicit confirmation token and rationale of at least 15 characters.'
+      'E-M8-CONFIRMATION-AND-RATIONALE-REQUIRED: Action requires explicit confirmation token, authenticated operator ID (min 3 chars, non-anonymous), and rationale of at least 15 characters with substantive content.'
     );
   }
 
+  // Authoritative operator authentication and authorization check
+  if (!OperatorAuthorizationRegistry.isAuthorized(confirmation.operator_id)) {
+    const err = new Error(
+      `E-OPERATOR-NOT-AUTHORIZED: Operator "${confirmation.operator_id}" is not registered or authorized to perform governed capital allocations. Capital commitment requires an authenticated institutional operator.`
+    );
+    (err as any).statusCode = 403;
+    throw err;
+  }
+
+  // Token replay protection
+  if (OperatorAuthorizationRegistry.isTokenConsumed(confirmation.confirmation_token)) {
+    const err = new Error(
+      `E-CONFIRMATION-TOKEN-ALREADY-USED: Confirmation token "${confirmation.confirmation_token}" has already been consumed. Replaying confirmation tokens is strictly prohibited.`
+    );
+    (err as any).statusCode = 409;
+    throw err;
+  }
+
   const outcome = action();
+
+  // Consume token upon successful execution
+  OperatorAuthorizationRegistry.consumeToken(confirmation.confirmation_token);
 
   return {
     outcome,

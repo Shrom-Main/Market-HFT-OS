@@ -508,6 +508,7 @@ describe('Suite 36: Gate M8.0 Central Research & Allocation Core Loop Certificat
         target_holding_period_days: 45,
         max_risk_tolerance: 'MEDIUM',
         max_drawdown_pct: 10.0,
+        max_single_supplier_concentration_bps: 10000,
         selected_product_ids: ['prod:din3017:ss304:16-25mm:pack-10']
       })
     });

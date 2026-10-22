@@ -32,7 +32,11 @@ import {
   type OpportunityScorecardResult,
   type DistributionChannelAnalysis
 } from './opportunityScorecardEngine.js';
-import type { MarketplaceChannel, DecisionOutcome } from '../mcp/contracts/canonicalMarketGraphContract.js';
+import {
+  evaluateIncumbentFailureHypotheses,
+  type MarketplaceChannel,
+  type DecisionOutcome
+} from '../mcp/contracts/canonicalMarketGraphContract.js';
 
 // ============================================================================
 // 1. DOSSIER DATA CONTRACTS
@@ -58,7 +62,7 @@ export interface DossierDemandAndSeasonality {
     readonly method: string;
     readonly lower_bound_units: number;
     readonly upper_bound_units: number;
-    readonly epistemic_class: 'ESTIMATED_PROXY';
+    readonly epistemic_class: 'ESTIMATED_PROXY' | 'UNOBSERVED_MODEL_DEFAULTS';
   };
   readonly seasonal_event_overlays: readonly BitemporalEventOverlay[];
 }
@@ -112,7 +116,7 @@ export interface DossierUnitEconomicsWaterfallRow {
   readonly return_drag_inr: number;
   readonly net_contribution_inr: number;
   readonly contribution_margin_bps: number;
-  readonly price_epistemic_class: 'OBSERVED_QUOTE' | 'ESTIMATED_PROXY' | 'DATA_REQUIRED';
+  readonly price_epistemic_class: 'OBSERVED_QUOTE' | 'FIXTURE_QUOTE' | 'ESTIMATED_PROXY' | 'DATA_REQUIRED';
   readonly explicit_assumptions: readonly string[];
   readonly is_viable: boolean;
   readonly data_required: boolean;
@@ -186,9 +190,11 @@ export class OpportunityDossierService {
     });
 
     // 2. Resolve Human-Readable Provenance Badge
-    let provenanceBadge = 'Fixture data';
+    let provenanceBadge = 'Fixture data (Demo quote)';
     if (product.evidence_origin?.origin_class === 'LIVE_VERIFIED_CAPTURE' && (product.evidence_origin as any)?.is_attested) {
       provenanceBadge = 'Verified capture';
+    } else if (product.evidence_origin?.origin_class === 'RECORDED_GOLDEN_FIXTURE') {
+      provenanceBadge = 'Fixture data (Demo quote)';
     } else if (product.upstream_supply?.factory_gate_quote_inr && product.upstream_supply.factory_gate_quote_inr > 0) {
       provenanceBadge = 'Supplier quote';
     } else if (product.sell_side?.prevailing_retail_asp_inr && product.sell_side.prevailing_retail_asp_inr > 0) {
@@ -206,28 +212,36 @@ export class OpportunityDossierService {
       current_decision_outcome: scorecard.decision_outcome,
       provenance_badge: provenanceBadge,
       as_of_utc: nowUtc,
-      generated_at_utc: new Date().toISOString()
+      generated_at_utc: asOfUtc || nowUtc
     };
 
     // 3. Demand & Seasonality (Historical Bitemporal Filter — Zero Look-Ahead Bias)
     const allOverlays = centralResearchCore.getEvidenceStore().queryEventOverlays(product.product_id, nowUtc);
-    const estUnits = product.sell_side?.monthly_sales_volume_est || 1000;
+    const hasObservedSalesVolume = Boolean(product.sell_side?.monthly_sales_volume_est && product.sell_side.monthly_sales_volume_est > 0);
+    const estUnits = hasObservedSalesVolume ? product.sell_side!.monthly_sales_volume_est : 1000;
+    const demandEpistemicClass = hasObservedSalesVolume ? 'ESTIMATED_PROXY' : 'UNOBSERVED_MODEL_DEFAULTS';
     const demandSection: DossierDemandAndSeasonality = {
       observed_interest: product.sell_side?.best_seller_rank ? `Amazon BSR #${product.sell_side.best_seller_rank} in ${product.category}` : 'Unranked organic search',
       observed_transaction_evidence: 'UNKNOWN', // Public marketplace pages do not expose actual settlement logs
       estimated_monthly_demand: {
         estimated_units: estUnits,
-        method: 'Category power-law BSR calibration proxy',
+        method: hasObservedSalesVolume
+          ? 'Category power-law BSR calibration proxy'
+          : 'UNOBSERVED_MODEL_DEFAULT: Fallback proxy of 1,000 units/mo used because marketplace settlement logs are UNKNOWN; strictly barred from supporting verified market size claims',
         lower_bound_units: Math.round(estUnits * 0.7),
         upper_bound_units: Math.round(estUnits * 1.35),
-        epistemic_class: 'ESTIMATED_PROXY'
+        epistemic_class: demandEpistemicClass
       },
       seasonal_event_overlays: allOverlays
     };
 
-    // 4. Customer Pain & Strengths (Mined via ReviewAndGrievanceMiner)
+    // Query bitemporal evidence up to nowUtc
+    const evidenceList = centralResearchCore.queryEvidence(product.product_id, nowUtc);
+
+    // 4. Customer Pain & Strengths (Mined via ReviewAndGrievanceMiner from real captured evidence artifacts)
     const minedReviews = ReviewAndGrievanceMiner.mineReviews({
       product,
+      capturedEvidence: evidenceList,
       asOfUtc: nowUtc
     });
 
@@ -240,11 +254,12 @@ export class OpportunityDossierService {
     };
 
     // 5. Seller & Competition
+    const hasObservedCompetitors = Boolean(product.sell_side?.top_competitor_names && product.sell_side.top_competitor_names.length > 0);
     const sellerSection: DossierSellerAndCompetition = {
       primary_marketplace: product.sell_side?.primary_marketplace || 'Amazon India',
       prevailing_retail_asp_inr: product.sell_side?.prevailing_retail_asp_inr || 0,
-      competitor_count: product.sell_side?.competitor_count || 12,
-      top_competitors: product.sell_side?.top_competitor_names || ['Incumbent Brand A', 'Incumbent Brand B'],
+      competitor_count: product.sell_side?.competitor_count || (hasObservedCompetitors ? product.sell_side!.top_competitor_names.length : 12),
+      top_competitors: hasObservedCompetitors ? product.sell_side!.top_competitor_names : ['UNOBSERVED_INCUMBENT_A', 'UNOBSERVED_INCUMBENT_B'],
       dominant_pack_formats: product.sell_side?.dominant_pack_formats || ['Single Unit', 'Multipack'],
       buy_box_retention_risk: product.overall_negative_review_pct && product.overall_negative_review_pct > 20 ? 'HIGH' : 'MEDIUM',
       material_claims_vs_verified: product.upstream_supply?.raw_material_basis
@@ -300,8 +315,11 @@ export class OpportunityDossierService {
       let platformFeeSubunits = 0n;
       let fulfillmentSubunits = 50_0000n;
       let returnRateBps = 300n;
-      let priceEpistemicClass: 'OBSERVED_QUOTE' | 'ESTIMATED_PROXY' | 'DATA_REQUIRED' =
-        baseAspSubunits > 0n ? 'OBSERVED_QUOTE' : 'DATA_REQUIRED';
+      const isRecordedFixture = product.evidence_origin?.origin_class === 'RECORDED_GOLDEN_FIXTURE';
+      let priceEpistemicClass: 'OBSERVED_QUOTE' | 'FIXTURE_QUOTE' | 'ESTIMATED_PROXY' | 'DATA_REQUIRED' =
+        baseAspSubunits > 0n
+          ? (isRecordedFixture ? 'FIXTURE_QUOTE' : 'OBSERVED_QUOTE')
+          : 'DATA_REQUIRED';
       let explicitAssumptions: string[] = ['Prevailing marketplace retail ASP observed from live listing'];
 
       if (channel === 'AMAZON_IN') {
@@ -385,20 +403,40 @@ export class OpportunityDossierService {
       };
     });
 
-    // 8. Incumbent Failure Matrix (Loaded from market_hypothesis_ledger)
-    const storedHypotheses = await centralResearchCore.loadHypotheses(product.product_id);
-    const incumbentMatrix: DossierIncumbentFailureMatrixEntry[] = storedHypotheses.map((h) => ({
-      explanation_type: h.explanation_type,
-      statement: h.hypothesis_statement,
-      verdict: h.verdict,
-      current_stage: h.current_stage,
-      supporting_evidence_count: h.supporting_evidence_ids.length,
-      disconfirming_evidence_count: h.disconfirming_evidence_ids.length,
-      hypothesis_id: h.hypothesis_id
-    }));
+    // 8. Incumbent Failure Matrix (Loaded from market_hypothesis_ledger with bitemporal asOfUtc filter)
+    const storedHypotheses = await centralResearchCore.loadHypotheses(product.product_id, asOfUtc);
+    let incumbentMatrix: DossierIncumbentFailureMatrixEntry[];
 
-    // 9. Evidence & Citations
-    const evidenceList = centralResearchCore.queryEvidence(product.product_id, nowUtc);
+    if (storedHypotheses.length > 0) {
+      incumbentMatrix = storedHypotheses.map((h) => ({
+        explanation_type: h.explanation_type,
+        statement: h.hypothesis_statement,
+        verdict: h.verdict,
+        current_stage: h.current_stage,
+        supporting_evidence_count: h.supporting_evidence_ids.length,
+        disconfirming_evidence_count: h.disconfirming_evidence_ids.length,
+        hypothesis_id: h.hypothesis_id
+      }));
+    } else {
+      const evaluated = evaluateIncumbentFailureHypotheses({
+        product_id: product.product_id,
+        observations: [],
+        customer_problems: [],
+        supplier_quotes: [],
+        unit_economics: []
+      });
+      incumbentMatrix = evaluated.map((e) => ({
+        explanation_type: e.explanation_type,
+        statement: e.hypothesis_statement,
+        verdict: e.verdict,
+        current_stage: 'STAGE_1_OPPORTUNITY_IDENTIFIED',
+        supporting_evidence_count: e.supporting_evidence_ids.length,
+        disconfirming_evidence_count: e.disconfirming_evidence_ids.length,
+        hypothesis_id: `hyp:${product.product_id}:${e.explanation_type.toLowerCase()}`
+      }));
+    }
+
+    // 9. Evidence & Citations (Using bitemporally filtered evidenceList)
     const evidenceRecords = evidenceList.map((e) => ({
       evidence_id: e.evidence_id,
       channel: e.channel,

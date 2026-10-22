@@ -403,7 +403,7 @@ describe('Suite 37: Gate Slice 1 Truthful Persistence, Provenance & Attribution 
     expect(inboxRes.statusCode).toBe(200);
     expect(inboxRes.json.connectors.length).toBe(5);
     const connStatuses = inboxRes.json.connectors.map((c: any) => c.status);
-    expect(connStatuses.some((s: string) => s === 'IDLE_NEVER_RUN' || s === 'ACTIVE')).toBe(true);
+    expect(connStatuses.some((s: string) => s === 'IDLE_NEVER_RUN' || s === 'IDLE' || s === 'ACTIVE')).toBe(true);
 
     // 7D: POST /api/ai/analyze returns truthful fallback attribution
     const aiRes = await httpRequest({

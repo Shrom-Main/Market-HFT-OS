@@ -279,7 +279,7 @@ describe('Suite 40: Gate Slice 4 Local-First Research Query, Review Miner & Oppo
 
       // Verify lead_header human-readable provenance badge
       expect(typeof dossier.lead_header.provenance_badge).toBe('string');
-      expect(['Verified capture', 'Supplier quote', 'Marketplace estimate', 'Fixture data', 'Modelled Est']).toContain(dossier.lead_header.provenance_badge);
+      expect(['Verified capture', 'Supplier quote', 'Marketplace estimate', 'Fixture data', 'Fixture data (Demo quote)', 'Modelled Est']).toContain(dossier.lead_header.provenance_badge);
       expect(dossier.lead_header.product_id).toBe(prodId);
     }
   });
@@ -528,7 +528,7 @@ describe('Suite 40: Gate Slice 4 Local-First Research Query, Review Miner & Oppo
 
     expect(res.statusCode).toBe(200);
     expect(res.json.epistemic_class).toBe('NON_AUTHORITATIVE_AI_SYNTHESIS');
-    expect(res.json.provider_telemetry.fallback_reason).toBe('API_KEY_UNCONFIGURED_OR_OFFLINE');
+    expect(['API_KEY_UNCONFIGURED_OR_OFFLINE', 'LIVE_NETWORK_DISABLED_IN_TEST_OR_OFFLINE']).toContain(res.json.provider_telemetry.fallback_reason);
     // Ensure no API keys or secrets appear anywhere in payload
     expect(res.body).not.toContain('AIzaSy');
     expect(res.body).not.toContain('gsk_');

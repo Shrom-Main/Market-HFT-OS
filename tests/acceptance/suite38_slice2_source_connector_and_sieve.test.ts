@@ -99,8 +99,7 @@ describe('Suite 38: Gate Slice 2 Permitted Source Capture, Identity Resolution &
     const pool = store.getPgPool();
     if (pool) {
       await pool.query(`
-        DELETE FROM market_signal_traces WHERE trace_id LIKE 'TRACE-TEST-%' OR signal_id LIKE 'SIG-TEST-%';
-        DELETE FROM market_bitemporal_evidence WHERE evidence_id LIKE 'EVID-TEST-%' OR evidence_id LIKE 'EVID-CONN-%';
+        DELETE FROM market_signal_traces WHERE trace_id LIKE 'TRACE-TEST-S38-%' OR signal_id LIKE 'SIG-TEST-S38-%';
       `).catch(() => {});
       await store.close().catch(() => {});
     }
