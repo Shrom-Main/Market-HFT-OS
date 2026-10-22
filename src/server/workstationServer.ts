@@ -495,7 +495,9 @@ export class WorkstationServer {
       };
 
       try {
-        const result = await this.stateManager.triggerGovernedDagRun(confirmation);
+        const result = await this.stateManager.triggerGovernedDagRun(confirmation, {
+          product_id: body.product_id
+        });
         sendJsonResponse(res, 200, result);
       } catch (e: any) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -749,7 +751,7 @@ export class WorkstationServer {
     }
 
     // Route 15: Dispatch Product Research Action
-    if (method === 'POST' && pathname === '/api/products/research') {
+    if (method === 'POST' && (pathname === '/api/products/research' || pathname === '/api/research/dispatch')) {
       const bodyResult = await readJsonBody(req);
       if (bodyResult.error) {
         sendJsonResponse(res, bodyResult.error.status, bodyResult.error.envelope);
@@ -944,7 +946,60 @@ export class WorkstationServer {
       return;
     }
 
-    // Route 22: Fallback / 404
+    // Route 22: Hypothesis Ledger API (Slice 3)
+    if (method === 'GET' && pathname === '/api/hypothesis/list') {
+      const productId = urlObj.searchParams.get('product_id') || undefined;
+      try {
+        const hypotheses = await this.stateManager.getCentralResearchCore().loadHypotheses(productId);
+        sendJsonResponse(res, 200, {
+          count: hypotheses.length,
+          product_id: productId || null,
+          hypotheses
+        });
+      } catch (e: any) {
+        const err = createServerErrorEnvelope(
+          e instanceof Error ? e : new Error(String(e)),
+          'server:api:hypothesis-list'
+        );
+        sendJsonResponse(res, 500, err);
+      }
+      return;
+    }
+
+    // Route 23: 8-Dimension Opportunity Scorecard API (Slice 3)
+    if (method === 'POST' && pathname === '/api/research/scorecard') {
+      const bodyResult = await readJsonBody(req);
+      if (bodyResult.error) {
+        sendJsonResponse(res, bodyResult.error.status, bodyResult.error.envelope);
+        return;
+      }
+      const body = bodyResult.data || {};
+      if (!body.product_id) {
+        const err = createServerErrorEnvelope(
+          new Error('E-SRV-MISSING-ARGUMENT: Missing required field "product_id" for scorecard evaluation.'),
+          'server:api:research-scorecard'
+        );
+        sendJsonResponse(res, 400, err);
+        return;
+      }
+      try {
+        const scorecard = await this.stateManager.evaluateProductScorecard(body.product_id);
+        sendJsonResponse(res, 200, {
+          product_id: body.product_id,
+          scorecard
+        });
+      } catch (e: any) {
+        const statusCode = e?.message?.includes('E-PROD-NOT-FOUND') ? 404 : 400;
+        const err = createServerErrorEnvelope(
+          e instanceof Error ? e : new Error(String(e)),
+          'server:api:research-scorecard'
+        );
+        sendJsonResponse(res, statusCode, err);
+      }
+      return;
+    }
+
+    // Route 24: Fallback / 404
     const err = createServerErrorEnvelope(
       new Error(`E-SRV-NOT-FOUND: Resource ${pathname} with method ${method} not found on workstation server.`),
       'server:http:not-found'

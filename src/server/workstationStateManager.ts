@@ -86,6 +86,12 @@ import {
   registerRedTeamTool
 } from '../agents/workers/redTeamWorker.js';
 import {
+  ProductAwareDynamicResearchPlanner
+} from '../research/productAwareDynamicResearchPlanner.js';
+import type {
+  OpportunityScorecardResult
+} from '../research/opportunityScorecardEngine.js';
+import {
   M5SiloAndGroupSimulator,
   SiloCandidateInput,
   SS304Diameter,
@@ -580,6 +586,15 @@ export class WorkstationStateManager {
       this.mcpRunLedger
     );
 
+    // Slice 3: Execute product-aware dynamic research planner (6 specialist task agents, 8-dimension scorecard & hypothesis ledger)
+    const dynamicPlanResult = await ProductAwareDynamicResearchPlanner.executeResearchPlan({
+      product,
+      centralResearchCore: this.centralResearchCore,
+      mcpBroker: this.mcpBroker,
+      mcpRunLedger: this.mcpRunLedger,
+      operatorRationale: 'Operator targeted research dispatch'
+    });
+
     const updated = this.productObservationDeck.updateProductResearchStatus(
       request.product_id,
       outcome.new_status,
@@ -601,7 +616,9 @@ export class WorkstationStateManager {
         product_id: updated.product_id,
         status: updated.strategy.research_case_status,
         waves_executed: outcome.waves_executed,
-        promoted_evidence_count: outcome.promoted_evidence_ids.length
+        promoted_evidence_count: outcome.promoted_evidence_ids.length + dynamicPlanResult.promoted_evidence_ids.length,
+        hypothesis_id: dynamicPlanResult.hypothesis_record.hypothesis_id,
+        decision_outcome: dynamicPlanResult.final_decision_outcome
       }
     });
 
@@ -638,6 +655,14 @@ export class WorkstationStateManager {
   // Gate M8.0 Accessors & Handlers
   public getCentralResearchCore(): CentralResearchCore {
     return this.centralResearchCore;
+  }
+
+  public getMcpBroker(): McpCapabilityBroker {
+    return this.mcpBroker;
+  }
+
+  public async close(): Promise<void> {
+    await this.centralResearchCore.close();
   }
 
   public getGroqSynthesizer(): GroqResearchSynthesizer {
@@ -707,8 +732,9 @@ export class WorkstationStateManager {
   }
 
   public async triggerGovernedDagRun(
-    confirmation: OperatorConfirmationEnvelope
-  ): Promise<GovernedOperatorActionExecutionResult<{ run_id: string; checkpoint_sha256: string; waves_executed: number }>> {
+    confirmation: OperatorConfirmationEnvelope,
+    options?: { product_id?: string }
+  ): Promise<GovernedOperatorActionExecutionResult<{ run_id: string; checkpoint_sha256: string; waves_executed: number; product_id?: string }>> {
     // 1. SRV-03: Kill-switch assertion fails closed if simulation is halted
     this.killSwitchController.assertSimulationAllowed();
 
@@ -716,44 +742,100 @@ export class WorkstationStateManager {
     const timestampUtc = new Date().toISOString();
     const runId = `dag-run-${Date.now()}`;
 
+    // Target product resolution: category-agnostic
+    const targetProduct = options?.product_id
+      ? this.productObservationDeck.getProductById(options.product_id)
+      : this.productObservationDeck.getAllProducts()[0];
+
+    if (options?.product_id && !targetProduct) {
+      throw new Error(`E-PROD-NOT-FOUND: Product ${options.product_id} not found in observation deck.`);
+    }
+
+    const prod = targetProduct || this.productObservationDeck.getAllProducts()[0];
+    const candidateId = `cand:${(prod?.sku_id || 'prod:din3017:ss304:16-25mm:pack-10').toLowerCase()}`;
+    const skuId = prod?.product_id || 'prod:din3017:ss304:16-25mm:pack-10';
+
+    let packMassGrams = 140;
+    let hsnCode = '73269099';
+    const moqUnits = prod?.upstream_supply?.supplier_moq || prod?.upstream_supply?.minimum_order_quantity || 500;
+    const unitPriceInr = prod?.upstream_supply?.factory_gate_quote_inr || 25;
+    const targetUrl = (prod?.upstream_supply as any)?.sourcing_url || `https://catalog.howrah-industrial.com/${skuId.replace(/[:_]/g, '-')}`;
+
+    if (skuId.includes('brass-valve')) {
+      packMassGrams = 320;
+      hsnCode = '84818020';
+    } else if (skuId.includes('mcb')) {
+      packMassGrams = 380;
+      hsnCode = '85362030';
+    } else if (skuId.includes('diya')) {
+      packMassGrams = 450;
+      hsnCode = '69120090';
+    } else if (skuId.includes('candle')) {
+      packMassGrams = 500;
+      hsnCode = '34060010';
+    } else if (skuId.includes('fairy-lights')) {
+      packMassGrams = 220;
+      hsnCode = '94054090';
+    } else if (skuId.includes('hex-bolt')) {
+      packMassGrams = 1200;
+      hsnCode = '73181500';
+    } else if (skuId.includes('oring')) {
+      packMassGrams = 160;
+      hsnCode = '40169320';
+    }
+
+    const rawSourceHtml = `
+      <div id="catalog-listing" data-sku="${skuId}">
+        <span class="product-title">${prod?.name || 'DIN 3017 SS304 Hose Clamp'}</span>
+        <span class="unit-price" data-price="${unitPriceInr * 10000}">₹ ${unitPriceInr}.00</span>
+        <span class="supplier-moq" data-moq="${moqUnits}">MOQ: ${moqUnits}</span>
+      </div>
+    `;
+
     // Execute genuine 5-worker DAG via ContextRoutingStateMachine routed through this.mcpBroker
     const scheduler = new ContextRoutingStateMachine({ broker: this.mcpBroker });
     const dagResult = await scheduler.runDagPipeline({
       task_id: `task:governed-dag:${Date.now()}`,
-      candidate_id: 'cand:ss304:16-25mm:pack-10',
-      sku_id: 'prod:din3017:ss304:16-25mm:pack-10',
-      target_catalog_url: 'https://catalog.howrah-industrial.com/din3017-ss304-16-25-p10',
+      candidate_id: candidateId,
+      sku_id: skuId,
+      target_catalog_url: targetUrl,
       reference_time_utc: timestampUtc,
-      pack_mass_grams: 140,
-      hsn_code: '73269099',
+      pack_mass_grams: packMassGrams,
+      hsn_code: hsnCode,
       is_msme_supplier: true,
       has_written_msme_agreement: true,
       assumed_dpo_days: 45,
-      inbound_freight_subunits: 45000n,
-      packaging_kitting_subunits: 32000n,
+      inbound_freight_subunits: BigInt(Math.round(((prod?.upstream_supply as any)?.inbound_freight_est_inr || 15) * 10000)),
+      packaging_kitting_subunits: BigInt(Math.round(((prod?.upstream_supply as any)?.packaging_kitting_inr || 10) * 10000)),
       customs_inspection_subunits: 0n,
-      raw_source_html: `
-        <div id="catalog-listing" data-sku="prod:din3017:ss304:16-25mm:pack-10">
-          <span class="product-title">DIN 3017 SS304 Hose Clamp 16-25mm Pack of 10</span>
-          <span class="unit-price" data-price="1250000">₹ 125.00 / Pack</span>
-          <span class="supplier-moq" data-moq="500">MOQ: 500 Packs</span>
-        </div>
-      `
+      raw_source_html: rawSourceHtml
     });
+
+    // Also execute dynamic research plan across the 6 specialist task agents if prod is defined
+    if (prod) {
+      await ProductAwareDynamicResearchPlanner.executeResearchPlan({
+        product: prod,
+        centralResearchCore: this.centralResearchCore,
+        mcpBroker: this.mcpBroker,
+        mcpRunLedger: this.mcpRunLedger,
+        operatorRationale: confirmation.explicit_rationale
+      });
+    }
 
     const outcome = {
       run_id: runId,
       checkpoint_sha256: dagResult.telemetry_digest_sha256,
-      waves_executed: dagResult.execution_plan.nodes.length
+      waves_executed: dagResult.execution_plan.nodes.length,
+      product_id: prod?.product_id
     };
 
     // Log the 5 genuine worker tool call executions to McpRunLedger
     const workerMap = [
-      { workerId: 'worker:source-capture:v1', tool: 'mcp://source-capture/http_get_snapshot', url: 'https://catalog.howrah-industrial.com/din3017-ss304-16-25-p10' },
+      { workerId: 'worker:source-capture:v1', tool: 'mcp://source-capture/http_get_snapshot', url: targetUrl },
       { workerId: 'worker:macro-lateral:v1', tool: 'mcp://macro-lateral/query_lme_nickel', url: 'https://www.lme.com/Metals/Non-ferrous/Nickel' },
-      { workerId: 'worker:govt-statutory:v1', tool: 'mcp://govt-statutory/fetch_cbic_circulars', url: 'https://cbic.gov.in/circulars/customs-hsn73269099' },
-      { workerId: 'worker:media-chatter:v1', tool: 'mcp://media-chatter/scan_sentiment_and_defects', url: 'https://www.youtube.com/watch?v=mock-defect-analysis' },
-      { workerId: 'worker:red-team:v1', tool: 'mcp://red-team/audit_conflict_and_bias', url: 'https://catalog.howrah-industrial.com/din3017-ss304-16-25-p10' }
+      { workerId: 'worker:govt-statutory:v1', tool: 'mcp://govt-statutory/fetch_cbic_circulars', url: `https://cbic.gov.in/circulars/customs-hsn${hsnCode}` },
+      { workerId: 'worker:media-chatter:v1', tool: 'mcp://media-chatter/scan_sentiment_and_defects', url: `https://www.youtube.com/watch?v=mock-${skuId.replace(/[:_]/g, '-')}` },
+      { workerId: 'worker:red-team:v1', tool: 'mcp://red-team/audit_conflict_and_bias', url: targetUrl }
     ];
 
     for (const w of workerMap) {
@@ -787,11 +869,26 @@ export class WorkstationStateManager {
       timestamp_utc: new Date().toISOString(),
       details: {
         run_id: executionResult.outcome.run_id,
-        checkpoint_sha256: executionResult.outcome.checkpoint_sha256
+        checkpoint_sha256: executionResult.outcome.checkpoint_sha256,
+        product_id: executionResult.outcome.product_id
       }
     });
 
     return executionResult;
+  }
+
+  public async evaluateProductScorecard(productId: string): Promise<OpportunityScorecardResult> {
+    const product = this.productObservationDeck.getProductById(productId);
+    if (!product) {
+      throw new Error(`E-PROD-NOT-FOUND: Product ${productId} not found in observation deck.`);
+    }
+    const result = await ProductAwareDynamicResearchPlanner.executeResearchPlan({
+      product,
+      centralResearchCore: this.centralResearchCore,
+      mcpBroker: this.mcpBroker,
+      mcpRunLedger: this.mcpRunLedger
+    });
+    return result.scorecard;
   }
 
   public async ingestSignalEnvelope(

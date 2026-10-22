@@ -212,13 +212,17 @@ export interface UnitEconomicsScenarioEntity {
 }
 
 // ============================================================================
-// 9. HYPOTHESIS & 7-STAGE LIFECYCLE
+// 9. HYPOTHESIS & LIFECYCLE
 // ============================================================================
 
 export type HypothesisStage =
   | 'DETECTED'
-  | 'FORMULATED'
   | 'EVIDENCE_GATHERING'
+  | 'UNDER_CHALLENGE'
+  | 'VALIDATION_REQUIRED'
+  | 'PAPER_TEST'
+  | 'HUMAN_REVIEW'
+  | 'FORMULATED'
   | 'ADVERSARIAL_TESTING'
   | 'APPROVED'
   | 'REJECTED'
@@ -236,6 +240,9 @@ export interface HypothesisEntity {
   readonly last_updated_utc: string;
   readonly supporting_evidence_ids: readonly string[];
   readonly disconfirming_evidence_ids: readonly string[];
+  readonly explanation_type?: IncumbentFailureHypothesisType;
+  readonly hypothesis_statement?: string;
+  readonly validation_method?: string;
 }
 
 // ============================================================================
@@ -279,13 +286,27 @@ export type IncumbentFailureHypothesisType =
   | 'WEAK_INCENTIVES'
   | 'FALSE_OPPORTUNITY';
 
+export const INCUMBENT_FAILURE_HYPOTHESIS_STATEMENTS: Record<IncumbentFailureHypothesisType, string> = {
+  ECONOMICS_UNVIABLE: 'Quality improvement costs more than buyer willingness to pay',
+  DEMAND_FRAGMENTATION: 'Need exists, but too few buyers share the same specification',
+  MANUFACTURING_CONSTRAINTS: 'Consistent material, tolerances, or finishing require specialized capex or expertise',
+  DISTRIBUTION_CONSTRAINTS: 'Marketplace fees, returns, or dispersed freight consume the margin',
+  INFORMATION_ASYMMETRY: 'Buyers cannot verify material grade or quality before purchase',
+  PROCUREMENT_FRICTION: 'B2B buyers require certifications, traceability, vendor approval, or credit terms',
+  WEAK_INCENTIVES: 'Buyer bears failure cost while incumbent seller receives little penalty',
+  FALSE_OPPORTUNITY: 'Complaints are rare, unrepresentative, or already solved by substitutes'
+};
+
 export interface IncumbentFailureHypothesisEvaluation {
-  readonly hypothesis: IncumbentFailureHypothesisType;
+  readonly explanation_type: IncumbentFailureHypothesisType;
+  readonly hypothesis: IncumbentFailureHypothesisType; // backward compatibility
+  readonly hypothesis_statement: string;
   readonly evaluated_product_id: string;
   readonly supporting_evidence_ids: readonly string[];
   readonly disconfirming_evidence_ids: readonly string[];
   readonly validation_method: string;
-  readonly verdict: 'SUPPORTED' | 'REFUTED' | 'INSUFFICIENT_DATA';
+  readonly status: 'SUPPORTED' | 'DISCONFIRMED' | 'VALIDATION_REQUIRED';
+  readonly verdict: 'SUPPORTED' | 'REFUTED' | 'INSUFFICIENT_DATA'; // backward compatibility
   readonly rationale: string;
 }
 
@@ -300,107 +321,210 @@ export function evaluateIncumbentFailureHypotheses(params: {
 
   const results: IncumbentFailureHypothesisEvaluation[] = [];
 
-  // 1. ECONOMICS_UNVIABLE
+  // Helper to construct aligned evaluation object
+  const buildEval = (
+    type: IncumbentFailureHypothesisType,
+    supporting: string[],
+    disconfirming: string[],
+    validationMethod: string,
+    status: 'SUPPORTED' | 'DISCONFIRMED' | 'VALIDATION_REQUIRED',
+    rationale: string
+  ): IncumbentFailureHypothesisEvaluation => {
+    const verdictMap: Record<string, 'SUPPORTED' | 'REFUTED' | 'INSUFFICIENT_DATA'> = {
+      SUPPORTED: 'SUPPORTED',
+      DISCONFIRMED: 'REFUTED',
+      VALIDATION_REQUIRED: 'INSUFFICIENT_DATA'
+    };
+    return {
+      explanation_type: type,
+      hypothesis: type,
+      hypothesis_statement: INCUMBENT_FAILURE_HYPOTHESIS_STATEMENTS[type],
+      evaluated_product_id: product_id,
+      supporting_evidence_ids: supporting,
+      disconfirming_evidence_ids: disconfirming,
+      validation_method: validationMethod,
+      status,
+      verdict: verdictMap[status],
+      rationale
+    };
+  };
+
+  // 1. ECONOMICS_UNVIABLE (Quality improvement costs more than buyer willingness to pay)
   const unprofitableScenarios = unit_economics.filter((u) => !u.is_profitable || u.contribution_margin_bps < 1000);
-  results.push({
-    hypothesis: 'ECONOMICS_UNVIABLE',
-    evaluated_product_id: product_id,
-    supporting_evidence_ids: unprofitableScenarios.map((u) => u.scenario_id),
-    disconfirming_evidence_ids: unit_economics.filter((u) => u.is_profitable && u.contribution_margin_bps >= 1500).map((u) => u.scenario_id),
-    validation_method: 'Pure BigInt Unit Economics Scenario Matrix',
-    verdict: unprofitableScenarios.length > 0 && unit_economics.length > 0 ? 'SUPPORTED' : (unit_economics.length === 0 ? 'INSUFFICIENT_DATA' : 'REFUTED'),
-    rationale: unprofitableScenarios.length > 0
-      ? `Economics unviable in ${unprofitableScenarios.length} channel scenario(s) due to margin compression (<1000 bps).`
-      : 'Unit economics demonstrate viable commercial spread across modeled channels.'
-  });
+  const profitableScenarios = unit_economics.filter((u) => u.is_profitable && u.contribution_margin_bps >= 1500);
+  const econStatus: 'SUPPORTED' | 'DISCONFIRMED' | 'VALIDATION_REQUIRED' =
+    unit_economics.length === 0
+      ? 'VALIDATION_REQUIRED'
+      : (unprofitableScenarios.length > 0 ? 'SUPPORTED' : 'DISCONFIRMED');
+  results.push(
+    buildEval(
+      'ECONOMICS_UNVIABLE',
+      unprofitableScenarios.map((u) => u.scenario_id),
+      profitableScenarios.map((u) => u.scenario_id),
+      'Pure BigInt Unit Economics Scenario Matrix',
+      econStatus,
+      unprofitableScenarios.length > 0
+        ? `Economics unviable in ${unprofitableScenarios.length} channel scenario(s) due to margin compression (<1000 bps).`
+        : (unit_economics.length === 0
+          ? 'Missing unit economics scenarios; empirical pricing inputs required to evaluate economic viability.'
+          : 'Unit economics demonstrate viable commercial spread across modeled channels.')
+    )
+  );
 
-  // 2. DEMAND_FRAGMENTATION
+  // 2. DEMAND_FRAGMENTATION (Need exists, but too few buyers share the same specification)
   const highVarianceProblems = customer_problems.filter((p) => p.failure_frequency_pct < 15);
-  results.push({
-    hypothesis: 'DEMAND_FRAGMENTATION',
-    evaluated_product_id: product_id,
-    supporting_evidence_ids: highVarianceProblems.map((p) => p.problem_id),
-    disconfirming_evidence_ids: customer_problems.filter((p) => p.failure_frequency_pct >= 25).map((p) => p.problem_id),
-    validation_method: 'Grievance Frequency Cluster Analysis',
-    verdict: highVarianceProblems.length > 3 ? 'SUPPORTED' : (customer_problems.length === 0 ? 'INSUFFICIENT_DATA' : 'REFUTED'),
-    rationale: highVarianceProblems.length > 3
-      ? 'Customer complaints are fragmented across low-frequency edge cases with no dominant cluster.'
-      : 'Dominant cluster identified; demand is cohesive around core mechanical/packaging pain point.'
-  });
+  const dominantProblems = customer_problems.filter((p) => p.failure_frequency_pct >= 25);
+  const fragStatus: 'SUPPORTED' | 'DISCONFIRMED' | 'VALIDATION_REQUIRED' =
+    customer_problems.length === 0
+      ? 'VALIDATION_REQUIRED'
+      : (highVarianceProblems.length > 3 ? 'SUPPORTED' : 'DISCONFIRMED');
+  results.push(
+    buildEval(
+      'DEMAND_FRAGMENTATION',
+      highVarianceProblems.map((p) => p.problem_id),
+      dominantProblems.map((p) => p.problem_id),
+      'Grievance Frequency Cluster Analysis',
+      fragStatus,
+      highVarianceProblems.length > 3
+        ? 'Customer complaints are fragmented across low-frequency edge cases with no dominant cluster.'
+        : (customer_problems.length === 0
+          ? 'No customer complaint observations registered; customer pain clustering required.'
+          : 'Dominant cluster identified; demand is cohesive around core mechanical/packaging pain point.')
+    )
+  );
 
-  // 3. MANUFACTURING_CONSTRAINTS
+  // 3. MANUFACTURING_CONSTRAINTS (Consistent material, tolerances, or finishing require specialized capex or expertise)
   const unverifiedQuotes = supplier_quotes.filter((q) => q.verification_status === 'UNVERIFIED');
-  results.push({
-    hypothesis: 'MANUFACTURING_CONSTRAINTS',
-    evaluated_product_id: product_id,
-    supporting_evidence_ids: unverifiedQuotes.map((q) => q.quote_id),
-    disconfirming_evidence_ids: supplier_quotes.filter((q) => q.verification_status !== 'UNVERIFIED').map((q) => q.quote_id),
-    validation_method: 'Supplier MOQ & Lead Time Constraint Audit',
-    verdict: supplier_quotes.some((q) => q.moq_units > 10000 || q.lead_time_days > 30) ? 'SUPPORTED' : (supplier_quotes.length === 0 ? 'INSUFFICIENT_DATA' : 'REFUTED'),
-    rationale: supplier_quotes.some((q) => q.moq_units > 10000)
-      ? 'High MOQ (>10,000 units) creates manufacturing working capital constraint.'
-      : 'Supplier manufacturing terms and batch sizes are within acceptable working capital limits.'
-  });
+  const verifiedQuotes = supplier_quotes.filter((q) => q.verification_status !== 'UNVERIFIED');
+  const hasHighMoqOrLead = supplier_quotes.some((q) => q.moq_units > 10000 || q.lead_time_days > 30);
+  const mfgStatus: 'SUPPORTED' | 'DISCONFIRMED' | 'VALIDATION_REQUIRED' =
+    supplier_quotes.length === 0
+      ? 'VALIDATION_REQUIRED'
+      : (hasHighMoqOrLead ? 'SUPPORTED' : 'DISCONFIRMED');
+  results.push(
+    buildEval(
+      'MANUFACTURING_CONSTRAINTS',
+      unverifiedQuotes.map((q) => q.quote_id),
+      verifiedQuotes.map((q) => q.quote_id),
+      'Supplier MOQ & Lead Time Constraint Audit',
+      mfgStatus,
+      hasHighMoqOrLead
+        ? 'High MOQ (>10,000 units) or long lead time (>30 days) creates manufacturing working capital constraint.'
+        : (supplier_quotes.length === 0
+          ? 'No empirical supplier quotes available; manufacturing capability audit required.'
+          : 'Supplier manufacturing terms and batch sizes are within acceptable working capital limits.')
+    )
+  );
 
-  // 4. DISTRIBUTION_CONSTRAINTS
-  results.push({
-    hypothesis: 'DISTRIBUTION_CONSTRAINTS',
-    evaluated_product_id: product_id,
-    supporting_evidence_ids: [],
-    disconfirming_evidence_ids: observations.filter((o) => o.kind === 'VERIFIED_TECHNICAL_FINDING').map((o) => o.observation_id),
-    validation_method: 'Marketplace Logistics Fee & Weight Threshold Verification',
-    verdict: 'INSUFFICIENT_DATA',
-    rationale: 'Carrier routes and dimensional weight handling requires empirical fulfillment rate verification.'
+  // 4. DISTRIBUTION_CONSTRAINTS (Marketplace fees, returns, or dispersed freight consume the margin)
+  const highFeeChannels = unit_economics.filter((u) => {
+    const feeRatio = (u.platform_referral_fee_inr + u.platform_fulfillment_fee_inr) / (u.retail_selling_price_inr || 1);
+    return feeRatio > 0.40;
   });
+  const distStatus: 'SUPPORTED' | 'DISCONFIRMED' | 'VALIDATION_REQUIRED' =
+    unit_economics.length === 0
+      ? 'VALIDATION_REQUIRED'
+      : (highFeeChannels.length === unit_economics.length ? 'SUPPORTED' : 'DISCONFIRMED');
+  results.push(
+    buildEval(
+      'DISTRIBUTION_CONSTRAINTS',
+      highFeeChannels.map((u) => u.scenario_id),
+      unit_economics.filter((u) => !highFeeChannels.includes(u)).map((u) => u.scenario_id),
+      'Marketplace Logistics Fee & Weight Threshold Verification',
+      distStatus,
+      highFeeChannels.length === unit_economics.length && unit_economics.length > 0
+        ? 'High marketplace referral and fulfillment fees (>40% of ASP) consume viable commercial spread across all channels.'
+        : (unit_economics.length === 0
+          ? 'Carrier routes and dimensional weight handling require empirical fulfillment rate verification.'
+          : 'At least one distribution channel maintains viable logistics and platform fee burden.')
+    )
+  );
 
-  // 5. INFORMATION_ASYMMETRY
-  const marketingVsMeasured = observations.filter((o) => o.kind === 'MARKETING_CLAIM' || o.kind === 'MEASURED_RESULT');
-  results.push({
-    hypothesis: 'INFORMATION_ASYMMETRY',
-    evaluated_product_id: product_id,
-    supporting_evidence_ids: marketingVsMeasured.filter((o) => o.kind === 'CUSTOMER_ALLEGATION').map((o) => o.observation_id),
-    disconfirming_evidence_ids: marketingVsMeasured.filter((o) => o.kind === 'MEASURED_RESULT').map((o) => o.observation_id),
-    validation_method: 'Marketing Claim vs Laboratory / Physical Measurement Comparison',
-    verdict: observations.some((o) => o.kind === 'MARKETING_CLAIM') && customer_problems.length > 0 ? 'SUPPORTED' : 'INSUFFICIENT_DATA',
-    rationale: 'Competitors market premium specifications but customer complaints reveal persistent metallurgical/casing defects.'
-  });
+  // 5. INFORMATION_ASYMMETRY (Buyers cannot verify material grade or quality before purchase)
+  const marketingClaims = observations.filter((o) => o.kind === 'MARKETING_CLAIM');
+  const allegations = observations.filter((o) => o.kind === 'CUSTOMER_ALLEGATION');
+  const measuredFindings = observations.filter((o) => o.kind === 'MEASURED_RESULT' || o.kind === 'VERIFIED_TECHNICAL_FINDING');
+  const asymStatus: 'SUPPORTED' | 'DISCONFIRMED' | 'VALIDATION_REQUIRED' =
+    allegations.length > 0 && marketingClaims.length > 0
+      ? 'SUPPORTED'
+      : (observations.length === 0 ? 'VALIDATION_REQUIRED' : (measuredFindings.length >= 2 ? 'DISCONFIRMED' : 'VALIDATION_REQUIRED'));
+  results.push(
+    buildEval(
+      'INFORMATION_ASYMMETRY',
+      allegations.map((o) => o.observation_id),
+      measuredFindings.map((o) => o.observation_id),
+      'Marketing Claim vs Laboratory / Physical Measurement Comparison',
+      asymStatus,
+      allegations.length > 0 && marketingClaims.length > 0
+        ? 'Competitors market premium specifications (MARKETING_CLAIM) but customer allegations reveal unverified metallurgy/durability defects.'
+        : (measuredFindings.length >= 2
+          ? 'Physical lab measurements (MEASURED_RESULT / VERIFIED_TECHNICAL_FINDING) transparently verify technical specifications.'
+          : 'Insufficient paired marketing claims and measured findings to assess information asymmetry.')
+    )
+  );
 
-  // 6. PROCUREMENT_FRICTION
-  results.push({
-    hypothesis: 'PROCUREMENT_FRICTION',
-    evaluated_product_id: product_id,
-    supporting_evidence_ids: unverifiedQuotes.map((q) => q.quote_id),
-    disconfirming_evidence_ids: supplier_quotes.filter((q) => q.verification_status === 'CRYPTOGRAPHICALLY_ATTESTED').map((q) => q.quote_id),
-    validation_method: 'Supplier Onboarding & Payment Term Friction Assessment',
-    verdict: unverifiedQuotes.length > 0 ? 'SUPPORTED' : (supplier_quotes.length === 0 ? 'INSUFFICIENT_DATA' : 'REFUTED'),
-    rationale: unverifiedQuotes.length > 0
-      ? 'Suppliers lack cryptographic attestation; commercial procurement terms require direct contract validation.'
-      : 'Verified supplier channels accessible with standard commercial procurement terms.'
-  });
+  // 6. PROCUREMENT_FRICTION (B2B buyers require certifications, traceability, vendor approval, or credit terms)
+  const attestedQuotes = supplier_quotes.filter((q) => q.verification_status === 'CRYPTOGRAPHICALLY_ATTESTED');
+  const procStatus: 'SUPPORTED' | 'DISCONFIRMED' | 'VALIDATION_REQUIRED' =
+    supplier_quotes.length === 0
+      ? 'VALIDATION_REQUIRED'
+      : (unverifiedQuotes.length > 0 ? 'SUPPORTED' : 'DISCONFIRMED');
+  results.push(
+    buildEval(
+      'PROCUREMENT_FRICTION',
+      unverifiedQuotes.map((q) => q.quote_id),
+      attestedQuotes.map((q) => q.quote_id),
+      'Supplier Onboarding & Payment Term Friction Assessment',
+      procStatus,
+      unverifiedQuotes.length > 0
+        ? 'Suppliers lack cryptographic attestation; commercial procurement terms require direct contract validation.'
+        : (supplier_quotes.length === 0
+          ? 'No supplier quotes recorded; procurement friction cannot be established.'
+          : 'Verified supplier channels accessible with standard commercial procurement terms.')
+    )
+  );
 
-  // 7. WEAK_INCENTIVES
-  results.push({
-    hypothesis: 'WEAK_INCENTIVES',
-    evaluated_product_id: product_id,
-    supporting_evidence_ids: [],
-    disconfirming_evidence_ids: customer_problems.map((p) => p.problem_id),
-    validation_method: 'Incumbent Brand Incentive & Margin Cannibalization Analysis',
-    verdict: customer_problems.length > 0 ? 'SUPPORTED' : 'INSUFFICIENT_DATA',
-    rationale: 'Dominant sellers prioritize high gross transaction volume over fixing high-return defects due to lack of direct brand liability.'
-  });
+  // 7. WEAK_INCENTIVES (Buyer bears failure cost while incumbent seller receives little penalty)
+  const criticalProblems = customer_problems.filter((p) => p.failure_severity === 'CRITICAL' || p.failure_severity === 'HIGH');
+  const incStatus: 'SUPPORTED' | 'DISCONFIRMED' | 'VALIDATION_REQUIRED' =
+    customer_problems.length === 0
+      ? 'VALIDATION_REQUIRED'
+      : (criticalProblems.length > 0 ? 'SUPPORTED' : 'DISCONFIRMED');
+  results.push(
+    buildEval(
+      'WEAK_INCENTIVES',
+      criticalProblems.map((p) => p.problem_id),
+      customer_problems.filter((p) => !criticalProblems.includes(p)).map((p) => p.problem_id),
+      'Incumbent Brand Incentive & Margin Cannibalization Analysis',
+      incStatus,
+      criticalProblems.length > 0
+        ? 'Dominant sellers prioritize high gross transaction volume over fixing recurring high-severity defects due to lack of direct brand liability.'
+        : (customer_problems.length === 0
+          ? 'No customer grievance data available to assess seller incentive alignment.'
+          : 'Defect rates are minor; incumbent sellers maintain active quality control feedback loops.')
+    )
+  );
 
-  // 8. FALSE_OPPORTUNITY
-  results.push({
-    hypothesis: 'FALSE_OPPORTUNITY',
-    evaluated_product_id: product_id,
-    supporting_evidence_ids: [],
-    disconfirming_evidence_ids: observations.filter((o) => o.verified).map((o) => o.observation_id),
-    validation_method: 'Adversarial Red-Team Stress Test & Statutory Review',
-    verdict: observations.filter((o) => o.verified).length >= 2 ? 'REFUTED' : 'INSUFFICIENT_DATA',
-    rationale: observations.filter((o) => o.verified).length >= 2
-      ? 'Opportunity is corroborated by verified empirical observations across multiple channels.'
-      : 'Insufficient verified observations to rule out a false positive opportunity.'
-  });
+  // 8. FALSE_OPPORTUNITY (Complaints are rare, unrepresentative, or already solved by substitutes)
+  const verifiedObs = observations.filter((o) => o.verified);
+  const falseStatus: 'SUPPORTED' | 'DISCONFIRMED' | 'VALIDATION_REQUIRED' =
+    verifiedObs.length >= 2
+      ? 'DISCONFIRMED'
+      : (observations.length === 0 ? 'VALIDATION_REQUIRED' : 'SUPPORTED');
+  results.push(
+    buildEval(
+      'FALSE_OPPORTUNITY',
+      observations.filter((o) => !o.verified).map((o) => o.observation_id),
+      verifiedObs.map((o) => o.observation_id),
+      'Adversarial Red-Team Stress Test & Empirical Corroboration',
+      falseStatus,
+      verifiedObs.length >= 2
+        ? 'Opportunity is corroborated by verified empirical observations across multiple independent channels.'
+        : (observations.length === 0
+          ? 'No observations recorded to test opportunity validity.'
+          : 'Observations lack independent verification or cross-channel corroboration; high risk of false positive opportunity.')
+    )
+  );
 
   return results;
 }

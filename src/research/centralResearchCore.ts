@@ -30,6 +30,34 @@ import type {
 } from '../mcp/contracts/signalIngestionContract.js';
 import type { McpCapabilityBroker, McpRunLedger } from '../mcp/mcpSubstrate.js';
 import { ContextRoutingStateMachine } from '../agents/scheduler/contextRoutingStateMachine.js';
+import type {
+  HypothesisStage,
+  IncumbentFailureHypothesisType
+} from '../mcp/contracts/canonicalMarketGraphContract.js';
+import type { OpportunityScorecardResult } from './opportunityScorecardEngine.js';
+
+export interface HypothesisLedgerRecord {
+  readonly hypothesis_id: string;
+  readonly product_id: string;
+  readonly title: string;
+  readonly current_stage: HypothesisStage;
+  readonly explanation_type: IncumbentFailureHypothesisType;
+  readonly hypothesis_statement: string;
+  readonly supporting_evidence_ids: readonly string[];
+  readonly disconfirming_evidence_ids: readonly string[];
+  readonly validation_method: string;
+  readonly verdict: 'SUPPORTED' | 'DISCONFIRMED' | 'VALIDATION_REQUIRED';
+  readonly scorecard_result?: OpportunityScorecardResult;
+  readonly task_outputs: Record<string, unknown>;
+  readonly history: readonly {
+    readonly from_stage: HypothesisStage | null;
+    readonly to_stage: HypothesisStage;
+    readonly transitioned_at_utc: string;
+    readonly rationale: string;
+  }[];
+  readonly created_at_utc: string;
+  readonly updated_at_utc: string;
+}
 
 export const DEFAULT_BROKER_SIGNING_SECRET =
   process.env.MARKET_HFT_BROKER_SECRET || crypto.randomBytes(32).toString('hex');
@@ -180,11 +208,13 @@ export interface DatabaseHealthStatus {
     signals_count: number;
     products_count: number;
     connectors_count: number;
+    hypotheses_count?: number;
     market_bitemporal_evidence?: number;
     market_event_overlays?: number;
     market_signal_traces?: number;
     market_product_deck_state?: number;
     market_connector_telemetry?: number;
+    market_hypothesis_ledger?: number;
   };
   error?: string;
 }
@@ -456,7 +486,8 @@ export class DurableEvidenceStore {
               (SELECT count(*) FROM market_event_overlays) AS events_count,
               (SELECT count(*) FROM market_signal_traces) AS signals_count,
               (SELECT count(*) FROM market_product_deck_state) AS products_count,
-              (SELECT count(*) FROM market_connector_telemetry) AS connectors_count;
+              (SELECT count(*) FROM market_connector_telemetry) AS connectors_count,
+              (SELECT count(*) FROM market_hypothesis_ledger) AS hypotheses_count;
           `);
         } catch {
           // If tables don't exist yet, initialize them and re-query
@@ -469,7 +500,8 @@ export class DurableEvidenceStore {
               (SELECT count(*) FROM market_event_overlays) AS events_count,
               (SELECT count(*) FROM market_signal_traces) AS signals_count,
               (SELECT count(*) FROM market_product_deck_state) AS products_count,
-              (SELECT count(*) FROM market_connector_telemetry) AS connectors_count;
+              (SELECT count(*) FROM market_connector_telemetry) AS connectors_count,
+              (SELECT count(*) FROM market_hypothesis_ledger) AS hypotheses_count;
           `);
         }
 
@@ -489,11 +521,13 @@ export class DurableEvidenceStore {
             signals_count: Number(row?.signals_count || 0),
             products_count: Number(row?.products_count || 0),
             connectors_count: Number(row?.connectors_count || 0),
+            hypotheses_count: Number(row?.hypotheses_count || 0),
             market_bitemporal_evidence: Number(row?.evidence_count || 0),
             market_event_overlays: Number(row?.events_count || 0),
             market_signal_traces: Number(row?.signals_count || 0),
             market_product_deck_state: Number(row?.products_count || 0),
-            market_connector_telemetry: Number(row?.connectors_count || 0)
+            market_connector_telemetry: Number(row?.connectors_count || 0),
+            market_hypothesis_ledger: Number(row?.hypotheses_count || 0)
           }
         };
       } finally {
@@ -629,6 +663,26 @@ export class DurableEvidenceStore {
           );
           CREATE INDEX IF NOT EXISTS idx_quota_ledger_time
             ON market_api_quota_ledger(provider, timestamp_utc);
+
+          CREATE TABLE IF NOT EXISTS market_hypothesis_ledger (
+            hypothesis_id TEXT PRIMARY KEY,
+            product_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            current_stage TEXT NOT NULL,
+            explanation_type TEXT NOT NULL,
+            hypothesis_statement TEXT NOT NULL,
+            supporting_evidence_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+            disconfirming_evidence_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+            validation_method TEXT NOT NULL,
+            verdict TEXT NOT NULL,
+            scorecard_result JSONB,
+            task_outputs JSONB NOT NULL DEFAULT '{}'::jsonb,
+            history JSONB NOT NULL DEFAULT '[]'::jsonb,
+            created_at_utc TIMESTAMPTZ NOT NULL,
+            updated_at_utc TIMESTAMPTZ NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_hypo_product
+            ON market_hypothesis_ledger(product_id);
         `);
 
         // Evidence is append-only: no destructive in-place DELETE or UPDATE on market_bitemporal_evidence.
@@ -957,6 +1011,82 @@ export class DurableEvidenceStore {
     }
   }
 
+  public async storeHypothesis(record: HypothesisLedgerRecord): Promise<void> {
+    await this.ensureConnected();
+    try {
+      await this.pgPool!.query(
+        `INSERT INTO market_hypothesis_ledger
+           (hypothesis_id, product_id, title, current_stage, explanation_type, hypothesis_statement,
+            supporting_evidence_ids, disconfirming_evidence_ids, validation_method, verdict,
+            scorecard_result, task_outputs, history, created_at_utc, updated_at_utc)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+         ON CONFLICT (hypothesis_id) DO UPDATE SET
+           current_stage = EXCLUDED.current_stage,
+           explanation_type = EXCLUDED.explanation_type,
+           hypothesis_statement = EXCLUDED.hypothesis_statement,
+           supporting_evidence_ids = EXCLUDED.supporting_evidence_ids,
+           disconfirming_evidence_ids = EXCLUDED.disconfirming_evidence_ids,
+           validation_method = EXCLUDED.validation_method,
+           verdict = EXCLUDED.verdict,
+           scorecard_result = EXCLUDED.scorecard_result,
+           task_outputs = EXCLUDED.task_outputs,
+           history = EXCLUDED.history,
+           updated_at_utc = EXCLUDED.updated_at_utc`,
+        [
+          record.hypothesis_id,
+          record.product_id,
+          record.title,
+          record.current_stage,
+          record.explanation_type,
+          record.hypothesis_statement,
+          JSON.stringify(record.supporting_evidence_ids),
+          JSON.stringify(record.disconfirming_evidence_ids),
+          record.validation_method,
+          record.verdict,
+          record.scorecard_result ? JSON.stringify(record.scorecard_result) : null,
+          JSON.stringify(record.task_outputs),
+          JSON.stringify(record.history),
+          record.created_at_utc,
+          record.updated_at_utc
+        ]
+      );
+    } catch (err: any) {
+      if (err.message?.startsWith('E-DB-PERSISTENCE-FAILED')) throw err;
+      throw new Error(`E-DB-PERSISTENCE-FAILED: Failed to store hypothesis: ${err.message}`);
+    }
+  }
+
+  public async loadHypotheses(productId?: string): Promise<HypothesisLedgerRecord[]> {
+    await this.ensureConnected().catch(() => {});
+    if (!this.pgPool || !this.isPgAvailable) return [];
+    try {
+      const query = productId
+        ? 'SELECT * FROM market_hypothesis_ledger WHERE product_id = $1 ORDER BY created_at_utc ASC'
+        : 'SELECT * FROM market_hypothesis_ledger ORDER BY created_at_utc ASC';
+      const params = productId ? [productId] : [];
+      const res = await this.pgPool.query(query, params);
+      return res.rows.map((r) => ({
+        hypothesis_id: r.hypothesis_id,
+        product_id: r.product_id,
+        title: r.title,
+        current_stage: r.current_stage,
+        explanation_type: r.explanation_type,
+        hypothesis_statement: r.hypothesis_statement,
+        supporting_evidence_ids: Array.isArray(r.supporting_evidence_ids) ? r.supporting_evidence_ids : JSON.parse(r.supporting_evidence_ids || '[]'),
+        disconfirming_evidence_ids: Array.isArray(r.disconfirming_evidence_ids) ? r.disconfirming_evidence_ids : JSON.parse(r.disconfirming_evidence_ids || '[]'),
+        validation_method: r.validation_method,
+        verdict: r.verdict,
+        scorecard_result: r.scorecard_result,
+        task_outputs: typeof r.task_outputs === 'object' && r.task_outputs !== null ? r.task_outputs : JSON.parse(r.task_outputs || '{}'),
+        history: Array.isArray(r.history) ? r.history : JSON.parse(r.history || '[]'),
+        created_at_utc: r.created_at_utc instanceof Date ? r.created_at_utc.toISOString() : String(r.created_at_utc),
+        updated_at_utc: r.updated_at_utc instanceof Date ? r.updated_at_utc.toISOString() : String(r.updated_at_utc)
+      }));
+    } catch {
+      return [];
+    }
+  }
+
   public async close(): Promise<void> {
     if (this.pgPool) {
       await this.pgPool.end().catch(() => {});
@@ -1156,8 +1286,20 @@ export class CentralResearchCore {
     return this.evidenceStore.storeEvidence(record);
   }
 
+  public async storeHypothesis(record: HypothesisLedgerRecord): Promise<void> {
+    return this.evidenceStore.storeHypothesis(record);
+  }
+
+  public async loadHypotheses(productId?: string): Promise<HypothesisLedgerRecord[]> {
+    return this.evidenceStore.loadHypotheses(productId);
+  }
+
   public async pingDatabase(): Promise<DatabaseHealthStatus> {
     return this.evidenceStore.pingDatabase();
+  }
+
+  public async close(): Promise<void> {
+    return this.evidenceStore.close();
   }
 
   /**
