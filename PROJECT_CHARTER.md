@@ -385,13 +385,14 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 | **DEC-021** | Provenance Hardening, 5-Worker Ingestion Pipeline & Cockpit UI | 2026-10-19 | Authorizes Gate M7.1; validates signal deduplication, look-ahead bias rejection, stale TTL checks, mandatory cost verification, fixture vs live promotion, 8-variant SS304 matrix, and data-driven SVG rendering; verified by Suite 33 (10 normative tests, 289 total tests). |
 | **DEC-022** | Multi-Product Observation Deck, Sell-Side Analytics & Grievance Mining | 2026-10-19 | Authorizes Gate M7.2; extends catalog across 6 archetypes, captures sell-side dynamics and verbatim buyer grievances, formulates engineered operational edge, and models upstream hub sourcing; verified by Suite 34 (10 normative tests, 294 total tests). |
 | **DEC-023** | Modern React Workstation UI, Bloomberg Split-Terminal & Groq AI Advisor | 2026-10-19 | Authorizes Gate M7.3; introduces modern React 19 single-page application (`client/`) with Tailwind CSS, Lucide icons, Bloomberg split-terminal, and offline HTML inlining (>500 KB); verified by Suite 35 (8 normative tests, 302 total tests). |
-| **DEC-024** | Central Research & Allocation Core Loop, Epistemic Truthfulness, Need-Driven Agent Orchestration, Passage Citations & Governed Multi-Scenario Bundle Simulation | 2026-10-19 | Authorizes Gate M8.0 establishing the Central Research Core as the local system of record; enforces epistemic truthfulness (rejects caller-supplied origin self-attestation, requires cryptographic MCP tool proofs for live badge, distinguishes observed facts from estimated sales proxies, reports real PostgreSQL health); replaces static SS304 DAG with need-driven research planner dispatching specialist micro-agents per product; connects Groq API for review mining and verbatim passage citations; introduces User Intent Model and multi-scenario bundle paper simulator with pure BigInt rational arithmetic; verified by Suite 36. |
+| **DEC-025** | Governed 6-Slice Central Research & Paper Allocation Remediation Roadmap (Slice 1 Approved & Closed) | 2026-10-19 | Establishes the 6-slice hardening sequence: Slice 1 (Truthful Persistence, Provenance & Attribution Baseline with real PostgreSQL 16.8 tables and cross-restart hydration, zero caller origin spoofing, exact Subunit BigInt signal economics, truthful idle connector state, and truthful Groq attribution); Slice 2 (Real Automated Ingestion, Continuous Polling & Signal-Driven Deck Refresh); Slice 3 (Epistemic Asset Taxonomy, Opportunity-Cost Hurdle & Multi-Scenario Paper Sandbox); Slice 4 (Central Research Command Cockpit, Single-Lead Flow & Clean React DOM); Slice 5 (Governed Tool Catalog, Dynamic Discovery & Real MCP Tool Execution); Slice 6 (Autonomous End-to-End Paper Loop & Continuous Research Agent). Approved & Closed under formal Owner Sign-Off 22 Oct 2026 (Suite 37). |
+| **DEC-026** | Permitted Source Capture, Entity Identity Resolution, Adversarial Verification & 6-Hop Trace (Slice 2 Approved & Closed) | 2026-10-20 | Authorizes and closes Slice 2; implements EntityIdentityResolver across 8 canonical catalog products (ASIN, supplier SKU, HSN + spec matching, UNRESOLVED_ENTITY_HOLD), connects POST /api/connectors/run through SourceCaptureWorker (6-layer DOM sieve, InjectionCanaryGuard prompt-injection defense, deduplication, 90-day freshness TTL, zero-cost substitution ban, golden fixture vs live HTTPS badging), preserves cross-source conflicts under CONFLICT_DETECTED without synthetic averaging, and persists connector telemetry to PostgreSQL; remediates 4 Slice 1 catches (eliminating the 1,054,532 bps double-scaling bug, demoting unverified caller origin claims to UNATTESTED_USER_INTAKE, isolating test artifacts, and executing suite17 with 0 skipped); verified by Suite 38 (12 normative tests, 340 total tests). Approved & Closed under formal Owner Sign-Off 22 Oct 2026. |
 
 ---
 
 ## 12. Staged Plan
 
-### Phase 0 — Project Definition & Governance *(current phase)*
+### Phase 0 — Project Definition & Governance *(Closed)*
 
 | Step | Deliverable | Gate | Status |
 |---|---|---|---|
@@ -401,16 +402,28 @@ Each phase has explicit acceptance criteria recorded in ADRs. Changes to authori
 | 0.4 | Root Git repository initialization & `_salvage/` quarantine | Repository exists with charter as initial commit | ✅ Complete |
 | 0.5 | Create `RESEARCH_CORPUS_INDEX.md` | Corpus documents indexed with key decisions | ✅ Complete |
 
-### Phase 1 — Requirements Baseline and Architecture Decisions
+### Phase 1 — Foundation, Micro-Agent Substrate & Workstation Server *(Closed: Gates M1–M8.0)*
 
-| Step | Deliverable | Gate |
-|---|---|---|
-| 1.1 | Functional requirements for first-release boundary | Requirements reviewed and approved |
-| 1.2 | Technology-stack evaluation and ADR-001 | ADR approved |
-| 1.3 | Domain model: canonical entities, strategy interface, common comparison contract | Model reviewed and approved |
-| 1.4 | Epistemic framework: evidence schemas, provenance rules, governed assumptions | Framework approved |
-| 1.5 | Economic engine specification: Strategy #1 cost model + common comparison measures | Specification approved; contract tests defined |
-| 1.6 | Risk-framework specification: capital controls, exposure limits, simulated ledgers | Framework approved |
+| Milestone Gate | Core Scope | Status | Acceptance Suite |
+|---|---|---|---|
+| Gates M1–M5 | Deterministic Financial Engine, Mathematical Solvers, Capital Rationing & Signal Bus | ✅ Closed | Suites 01–22 |
+| Gates M6.1–M6.9 | Governed MCP Broker, 5 Specialist Micro-Agents, Topological Waves, Operator Terminal Projection & 12-Point Release Gate | ✅ Closed | Suites 23–31 |
+| Gate M7.0 | Runnable Loopback Server (Port 4310), State Manager, Security Firewalls & Pure BigInt What-If Sandbox | ✅ Closed | Suite 32 |
+| Gate M7.1 | Multi-Channel Signal Ingestion Pipeline, Strict Deduplication, TTL Expiry & Fixture/Live Lineage Trace | ✅ Closed | Suite 33 |
+| Gate M7.2 | Category-Agnostic Multi-Product Observation Deck, Sell-Side Analytics & Buyer Grievance Mining | ✅ Closed | Suite 34 |
+| Gate M7.3 | Modern React 19 Workstation UI, Bloomberg Split-Terminal & Standalone Inlined Snapshot | ✅ Closed | Suite 35 |
+| Gate M8.0 | Central Research & Allocation Core, Bitemporal Store, Need-Driven Planner, Groq Review Mining & Bundle Simulator | ✅ Closed | Suite 36 |
+
+### Phase 2 — POC-001 Governed Remediation Roadmap (Slices 1–6)
+
+| Slice | Remediation Focus | Status | Authorization |
+|---|---|---|---|
+| **Slice 1** | **Truthful Persistence, Provenance & Attribution Baseline**: PostgreSQL 16.8 tables (`market_signal_traces`, `market_product_deck_state`, `market_connector_telemetry`), cross-restart hydration, zero caller spoofing, exact Subunit BigInt signal economics, truthful idle connector state, and truthful Groq fallback attribution. | ✅ Closed (Owner Sign-Off 22 Oct 2026) | Suite 37 / DEC-025 |
+| **Slice 2** | **Permitted Source Capture, Entity Identity Resolution, Adversarial Verification & 6-Hop Trace**: EntityIdentityResolver mapping to 8 canonical products, POST /api/connectors/run with 6-layer DOM sieve, InjectionCanaryGuard prompt-injection quarantine, 90-day TTL, zero-cost substitution ban, cross-source conflict preservation without synthetic averaging, and connector telemetry persistence in PostgreSQL. Remediation of 4 Slice 1 catches (1,054,532 bps double-scaling eliminated, origin demotion to UNATTESTED_USER_INTAKE, database isolation). | ✅ Closed (Owner Sign-Off 22 Oct 2026) | Suite 38 / DEC-026 |
+| **Slice 3** | **Epistemic Asset Taxonomy, Opportunity-Cost Hurdle & Multi-Scenario Paper Sandbox**: Asset class boundaries, bank FD / T-Bill hurdle rates, and multi-scenario allocation sandbox. | ⏳ Pending Approval | Deferred to Slice 3 |
+| **Slice 4** | **Central Research Command Cockpit, Single-Lead Flow & Clean React DOM**: Single-DOM mounted client, unified investigation lead flow, and full split-terminal sync. | ⏳ Pending Approval | Deferred to Slice 4 |
+| **Slice 5** | **Governed Tool Catalog, Dynamic Discovery & Real MCP Tool Execution**: Dynamic tool registration, verified tool execution, and authenticated proof pipeline. | ⏳ Pending Approval | Deferred to Slice 5 |
+| **Slice 6** | **Autonomous End-to-End Paper Loop & Continuous Research Agent**: Continuous research daemon, automated gap-closing, and paper trade execution loop. | ⏳ Pending Approval | Deferred to Slice 6 |
 
 ---
 

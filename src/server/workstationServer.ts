@@ -397,7 +397,9 @@ export class WorkstationServer {
 
     // Route 3: Health API
     if (method === 'GET' && pathname === '/api/health') {
-      const health = this.stateManager.getHealthStatus();
+      const livePing = await this.stateManager.getCentralResearchCore().pingDatabase();
+      this.stateManager.updatePostgresConnectivity(livePing.is_connected);
+      const health = this.stateManager.getHealthStatus(livePing);
       sendJsonResponse(res, 200, health);
       return;
     }
@@ -594,7 +596,7 @@ export class WorkstationServer {
 
       try {
         const trace = await this.stateManager.ingestSignalEnvelope(body);
-        sendJsonResponse(res, 200, trace);
+        sendJsonResponse(res, 200, { ...trace, trace });
       } catch (e: any) {
         const statusCode = e?.statusCode === 409 || e?.message?.includes('E-KS-RECOVERY-ONLY-MODE') ? 409 : 400;
         const err = createServerErrorEnvelope(
@@ -610,6 +612,38 @@ export class WorkstationServer {
     if (method === 'GET' && pathname === '/api/signals/inbox') {
       const inbox = this.stateManager.getSignalsInbox();
       sendJsonResponse(res, 200, inbox);
+      return;
+    }
+
+    // Route 9b: Connector Run API
+    if (method === 'POST' && pathname === '/api/connectors/run') {
+      const bodyResult = await readJsonBody(req);
+      if (bodyResult.error) {
+        sendJsonResponse(res, bodyResult.error.status, bodyResult.error.envelope);
+        return;
+      }
+
+      const body = bodyResult.data || {};
+      if (!body.connector_id) {
+        const err = createServerErrorEnvelope(
+          new Error('E-SRV-MISSING-ARGUMENT: Missing required field "connector_id" for connector run.'),
+          'server:api:connectors-run'
+        );
+        sendJsonResponse(res, 400, err);
+        return;
+      }
+
+      try {
+        const result = await this.stateManager.runConnector(body);
+        sendJsonResponse(res, 200, result);
+      } catch (e: any) {
+        const statusCode = e?.statusCode === 409 || e?.message?.includes('E-KS-') ? 409 : 400;
+        const err = createServerErrorEnvelope(
+          e instanceof Error ? e : new Error(String(e)),
+          'server:api:connectors-run'
+        );
+        sendJsonResponse(res, statusCode, err);
+      }
       return;
     }
 
@@ -702,7 +736,7 @@ export class WorkstationServer {
       }
 
       try {
-        const product = this.stateManager.pushProductObservation(body);
+        const product = await this.stateManager.pushProductObservation(body);
         sendJsonResponse(res, 200, { product, message: 'Product observation successfully ingested into deck.' });
       } catch (e: any) {
         const err = createServerErrorEnvelope(
@@ -789,7 +823,9 @@ export class WorkstationServer {
         const analysis = {
           product_id: product.product_id,
           analysis_timestamp_utc: new Date().toISOString(),
-          llm_model: 'llama-3.3-70b-versatile (via Groq)',
+          llm_called: false,
+          generation_mode: 'DETERMINISTIC_TEMPLATE_FALLBACK' as const,
+          llm_model: null,
           thesis_synthesis: `Targeted analysis of ${product.name} reveals an asymmetric opportunity: dominant competitors are capturing high gross volume but suffer from an unaddressed ${product.overall_negative_review_pct}% negative review cluster. By implementing physical pre-shipment remediation at the ${product.upstream_supply?.hub_name}, we can eliminate recurring returns and monopolize Buy Box retention.`,
           unserved_pain_points: [
             topGrievance?.failure_mode || 'Premature mechanical failure under load',
@@ -801,9 +837,9 @@ export class WorkstationServer {
             'Custom laser-cut high-density EPE foam cradles to withstand carrier drops',
             'Certified mill test report QR code embossed directly on the packaging lid'
           ],
-          arbitrage_viability_verdict: product.strategy?.strategic_decision === 'PURSUE' ? 'STRONG_BUY_BOX_CANDIDATE' : 'MARGIN_COMPRESSION_RISK',
-          raw_material_sensitivity_commentary: `The landed cost is anchored to ${product.upstream_supply?.raw_material_basis}. At ₹${product.upstream_supply?.factory_gate_quote_inr} factory gate vs ₹${product.sell_side?.prevailing_retail_asp_inr} retail ASP, the gross spread of ₹${product.strategy?.target_gross_spread_inr} provides a comfortable 40%+ contribution cushion against commodity price spikes.`,
-          recommended_action: product.strategy?.strategic_decision === 'PURSUE' ? 'PURSUE_EXPEDITED' : 'MONITOR_ONLY',
+          arbitrage_viability_verdict: 'PROMISING_BUT_UNVALIDATED' as const,
+          raw_material_sensitivity_commentary: `Deterministic template analysis: landed cost is anchored to ${product.upstream_supply?.raw_material_basis}. At ₹${product.upstream_supply?.factory_gate_quote_inr} factory gate vs ₹${product.sell_side?.prevailing_retail_asp_inr} retail ASP, the gross spread of ₹${product.strategy?.target_gross_spread_inr} provides a comfortable 40%+ contribution cushion against commodity price spikes.`,
+          recommended_action: 'VALIDATE_FURTHER' as const,
           cited_evidence_quotes: product.buyer_grievances?.map((g) => g.representative_quote) || []
         };
         sendJsonResponse(res, 200, analysis);
@@ -887,7 +923,7 @@ export class WorkstationServer {
       }
 
       try {
-        const result = this.stateManager.commitBundleAllocation(evaluation, confirmation);
+        const result = await this.stateManager.commitBundleAllocation(evaluation, confirmation);
         sendJsonResponse(res, 200, result);
       } catch (e: any) {
         const statusCode = e?.statusCode === 409 || e?.message?.includes('E-KS-') ? 409 : 400;
@@ -903,6 +939,7 @@ export class WorkstationServer {
     // Route 21: Database Health API
     if (method === 'GET' && pathname === '/api/health/db') {
       const ping = await this.stateManager.getCentralResearchCore().pingDatabase();
+      this.stateManager.updatePostgresConnectivity(ping.is_connected);
       sendJsonResponse(res, 200, ping);
       return;
     }
@@ -916,6 +953,9 @@ export class WorkstationServer {
   }
 
   public async start(): Promise<{ port: number; url: string }> {
+    // Hydrate state from PostgreSQL before listening
+    await this.stateManager.hydrateFromDatabase().catch(() => {});
+
     return new Promise((resolve, reject) => {
       this.httpServer.once('error', (err) => {
         reject(err);

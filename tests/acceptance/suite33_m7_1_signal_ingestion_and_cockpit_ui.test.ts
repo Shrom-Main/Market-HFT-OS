@@ -93,6 +93,11 @@ describe('Suite 33: Gate M7.1 Signal Ingestion Pipeline, Provenance Hardening & 
 
   afterAll(async () => {
     if (server) {
+      const store = server.getStateManager().getCentralResearchCore().getEvidenceStore();
+      const pool = store.getPgPool();
+      if (pool) {
+        await pool.query("DELETE FROM market_signal_traces WHERE trace_id LIKE 'TRACE-%' AND created_at_utc >= NOW() - INTERVAL '30 minutes';").catch(() => {});
+      }
       await server.stop();
     }
   });
@@ -478,6 +483,7 @@ describe('Suite 33: Gate M7.1 Signal Ingestion Pipeline, Provenance Hardening & 
 
     // 4. Ingest signal via HTTP POST /api/signals/ingest
     const now = new Date().toISOString();
+    const nonce = `${Date.now()}-${Math.random()}`;
     const ingestRes = await httpRequest({
       port: serverPort,
       path: '/api/signals/ingest',
@@ -486,11 +492,11 @@ describe('Suite 33: Gate M7.1 Signal Ingestion Pipeline, Provenance Hardening & 
       body: JSON.stringify({
         channel: 'MARKETPLACE_OR_SUPPLIER_HTML',
         source_id: 'conn:supplier:indiamart',
-        target_url: 'https://www.indiamart.com/proddetail/ss304-http-test.html',
+        target_url: `https://www.indiamart.com/proddetail/ss304-http-test-${nonce}.html`,
         event_time_utc: now,
         receipt_time_utc: now,
         raw_payload: {
-          supplier_id: 'SUP-IND-HTTP',
+          supplier_id: `SUP-IND-HTTP-${nonce}`,
           sku_id: 'SKU-SS304-16-25MM-P10',
           raw_quote_inr: 3.50,
           freight_cost_inr: 0.15,

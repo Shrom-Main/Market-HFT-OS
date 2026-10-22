@@ -40,11 +40,13 @@ export interface MinedGrievanceResponse {
 export interface ResearchThesisSynthesis {
   product_id: string;
   analysis_timestamp_utc: string;
-  llm_model: string;
+  llm_called: boolean;
+  generation_mode: 'LIVE_LLM_SYNTHESIS' | 'DETERMINISTIC_TEMPLATE_FALLBACK';
+  llm_model: string | null;
   thesis_synthesis: string;
   unserved_pain_points: string[];
   engineered_edge_suggestions: string[];
-  arbitrage_viability_verdict: 'STRONG_BUY_BOX_CANDIDATE' | 'MARGIN_COMPRESSION_RISK' | 'MONITOR_ONLY';
+  arbitrage_viability_verdict: 'STRONG_BUY_BOX_CANDIDATE' | 'MARGIN_COMPRESSION_RISK' | 'MONITOR_ONLY' | 'PROMISING_BUT_UNVALIDATED' | 'MORE_EVIDENCE_REQUIRED';
   raw_material_sensitivity_commentary: string;
   recommended_action: 'PURSUE_EXPEDITED' | 'VALIDATE_FURTHER' | 'MONITOR_ONLY' | 'REJECT';
   cited_evidence_quotes: string[];
@@ -244,6 +246,8 @@ ${topQuotes.map((q) => `- "${q}"`).join('\n')}
       return {
         product_id: product.product_id,
         analysis_timestamp_utc: new Date().toISOString(),
+        llm_called: true,
+        generation_mode: 'LIVE_LLM_SYNTHESIS',
         llm_model: `${this.model} (via Groq Live API)`,
         thesis_synthesis: parsed.thesis_synthesis || product.strategy?.bull_case_thesis || '',
         unserved_pain_points: parsed.unserved_pain_points || [
@@ -314,7 +318,9 @@ ${topQuotes.map((q) => `- "${q}"`).join('\n')}
     return {
       product_id: product.product_id,
       analysis_timestamp_utc: new Date().toISOString(),
-      llm_model: 'llama-3.3-70b-versatile (via Groq)',
+      llm_called: false,
+      generation_mode: 'DETERMINISTIC_TEMPLATE_FALLBACK',
+      llm_model: null,
       thesis_synthesis:
         product.strategy?.bull_case_thesis ||
         `Commercial arbitrage analysis of ${product.name}: Incumbents face an unaddressed ${product.overall_negative_review_pct}% return drag. By engineering pre-shipment remediation at the ${product.upstream_supply?.hub_name} cluster, we achieve higher Buy Box retention.`,
@@ -328,12 +334,9 @@ ${topQuotes.map((q) => `- "${q}"`).join('\n')}
         'Custom laser-cut high-density EPE foam cradles to withstand carrier drops',
         'Certified mill test report QR code embossed directly on the packaging lid'
       ],
-      arbitrage_viability_verdict:
-        product.strategy?.strategic_decision === 'PURSUE'
-          ? 'STRONG_BUY_BOX_CANDIDATE'
-          : 'MARGIN_COMPRESSION_RISK',
+      arbitrage_viability_verdict: 'PROMISING_BUT_UNVALIDATED',
       raw_material_sensitivity_commentary: `The landed cost is anchored to ${product.upstream_supply?.raw_material_basis}. At ₹${product.upstream_supply?.factory_gate_quote_inr} factory gate vs ₹${product.sell_side?.prevailing_retail_asp_inr} retail ASP, the gross spread of ₹${product.strategy?.target_gross_spread_inr} provides a comfortable 40%+ contribution cushion against commodity price spikes.`,
-      recommended_action: product.strategy?.strategic_decision === 'PURSUE' ? 'PURSUE_EXPEDITED' : 'MONITOR_ONLY',
+      recommended_action: 'VALIDATE_FURTHER',
       cited_evidence_quotes: quotes
     };
   }

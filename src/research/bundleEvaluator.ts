@@ -74,12 +74,21 @@ export interface BundleEvaluationResult {
     base: ScenarioFinancialMetrics;
     upside: ScenarioFinancialMetrics;
     downside: ScenarioFinancialMetrics;
+    base_scenario?: ScenarioFinancialMetrics;
+    upside_scenario?: ScenarioFinancialMetrics;
+    downside_stress_scenario?: ScenarioFinancialMetrics;
+    stress?: ScenarioFinancialMetrics;
   };
   recommended_disposition:
     | 'RECOMMENDED_PURSUE'
+    | 'READY_FOR_PAPER_TEST'
+    | 'PROMISING_BUT_UNVALIDATED'
     | 'MARGIN_TOO_THIN'
     | 'HURDLE_UNMET'
-    | 'EXCESSIVE_STRESS_DRAWDOWN';
+    | 'EXCESSIVE_STRESS_DRAWDOWN'
+    | 'DATA_REQUIRED_HOLD'
+    | 'INSUFFICIENT_EVIDENCE'
+    | 'HOLD_EVALUATION_PENDING';
   mathematical_rationale: string;
   jcs_sha256: string;
 }
@@ -156,21 +165,32 @@ export class BundleEvaluator {
     rawIntent: any,
     products: readonly ProductObservationItem[]
   ): BundleEvaluationResult {
-    const rawCapitalInr = rawIntent?.target_capital_inr || rawIntent?.capital_budget_inr || 250000;
-    const totalCapitalSubunits = rawIntent?.target_capital_subunits
-      ? BigInt(rawIntent.target_capital_subunits)
+    const rawCapitalInr = rawIntent?.target_capital_inr ?? rawIntent?.capital_budget_inr;
+    const targetSubunits = rawIntent?.target_capital_subunits;
+    if (
+      (rawCapitalInr === undefined || rawCapitalInr === null || isNaN(rawCapitalInr) || rawCapitalInr <= 0) &&
+      (targetSubunits === undefined || targetSubunits === null)
+    ) {
+      throw new Error('E-BUNDLE-NO-CAPITAL: Explicit positive paper capital is required to evaluate a bundle.');
+    }
+    const totalCapitalSubunits = targetSubunits
+      ? BigInt(targetSubunits)
       : BigInt(Math.round(rawCapitalInr * 10000));
 
     const candidateIds: string[] = Array.isArray(rawIntent?.selected_product_ids) && rawIntent.selected_product_ids.length > 0
       ? rawIntent.selected_product_ids
-      : Array.isArray(rawIntent?.candidate_products)
+      : Array.isArray(rawIntent?.candidate_products) && rawIntent.candidate_products.length > 0
       ? rawIntent.candidate_products.map((c: any) => c.product_id)
-      : products.slice(0, 3).map((p) => p.product_id);
+      : [];
+
+    if (candidateIds.length === 0) {
+      throw new Error('E-BUNDLE-NO-PRODUCTS: At least one product lead must be explicitly selected.');
+    }
 
     const selectedProds = products.filter((p) => candidateIds.includes(p.product_id));
 
     if (selectedProds.length === 0) {
-      throw new Error('E-BUNDLE-NO-PRODUCTS: At least one valid product must be selected for bundle evaluation.');
+      throw new Error('E-BUNDLE-NO-PRODUCTS: At least one valid product lead must be explicitly selected.');
     }
 
     const intent: UserIntentModel = {
@@ -194,14 +214,38 @@ export class BundleEvaluator {
     const slices: ProductAllocationSlice[] = [];
 
     for (const p of selectedProds) {
-      const landedInr = p.upstream_supply?.factory_gate_quote_inr
-        ? p.upstream_supply.factory_gate_quote_inr * 1.4 // Factor inbound, packaging, buffer
-        : 50.0;
-      const landedSubunits = BigInt(Math.round(landedInr * 10000));
-      const retailAspInr = p.sell_side?.prevailing_retail_asp_inr || 200.0;
-      const spreadInr = Number((retailAspInr - landedInr).toFixed(2));
+      // Resolve pack multiplier for catalog item (e.g. pack-10, pack-2, box-1)
+      const packMatch = (p.sku_id || '').match(/[-_]P(\d+)/i) || p.product_id.match(/pack-(\d+)/i);
+      const packUnits = BigInt(packMatch ? parseInt(packMatch[1], 10) : 1);
 
-      const batchQty = Number(capitalPerProductSubunits / landedSubunits);
+      const quoteNum = p.upstream_supply?.factory_gate_quote_inr;
+      const aspNum = p.sell_side?.prevailing_retail_asp_inr;
+
+      // Pure BigInt subunit arithmetic (1 INR = 10,000 subunits)
+      const hasQuote = typeof quoteNum === 'number' && !isNaN(quoteNum) && quoteNum > 0;
+      const hasAsp = typeof aspNum === 'number' && !isNaN(aspNum) && aspNum > 0;
+
+      let landedSubunits = 0n;
+      let retailAspSubunits = 0n;
+
+      if (hasQuote && hasAsp) {
+        // Factory cost for the pack
+        const factoryCostSubunits = BigInt(Math.trunc(quoteNum * 10000)) * packUnits;
+        // Inbound freight (12% of factory cost)
+        const freightSubunits = (factoryCostSubunits * 1200n) / 10000n;
+        // Packaging & kitting (₹20 for multi-pack, ₹10 for single)
+        const packagingSubunits = packUnits > 1n ? 200000n : 100000n;
+        // Marketplace platform referral & closing fees (15% of retail ASP + ₹25)
+        retailAspSubunits = BigInt(Math.trunc(aspNum * 10000));
+        const marketplaceFeeSubunits = (retailAspSubunits * 1500n) / 10000n + 250000n;
+        // Carrier fulfillment / handling (₹75)
+        const handlingSubunits = 750000n;
+
+        landedSubunits = factoryCostSubunits + freightSubunits + packagingSubunits + marketplaceFeeSubunits + handlingSubunits;
+      }
+
+      const spreadSubunits = retailAspSubunits > landedSubunits ? retailAspSubunits - landedSubunits : 0n;
+      const batchQty = landedSubunits > 0n ? Number(capitalPerProductSubunits / landedSubunits) : 0;
 
       slices.push({
         product_id: p.product_id,
@@ -209,10 +253,10 @@ export class BundleEvaluator {
         product_name: p.name,
         allocation_weight_bps: weightBps,
         allocated_capital_inr: Number(capitalPerProductSubunits) / 10000,
-        unit_batch_quantity: Math.max(1, batchQty),
-        per_unit_landed_cost_inr: Number(landedInr.toFixed(2)),
-        retail_asp_inr: retailAspInr,
-        per_unit_gross_spread_inr: spreadInr
+        unit_batch_quantity: batchQty,
+        per_unit_landed_cost_inr: Number(landedSubunits) / 10000,
+        retail_asp_inr: Number(retailAspSubunits) / 10000,
+        per_unit_gross_spread_inr: Number(spreadSubunits) / 10000
       });
     }
 
@@ -250,10 +294,25 @@ export class BundleEvaluator {
       intent.max_drawdown_pct
     );
 
-    let disposition: BundleEvaluationResult['recommended_disposition'] = 'RECOMMENDED_PURSUE';
-    let rationale = `Bundle meets required hurdle of ${intent.min_return_hurdle_bps} bps in both Base (${baseScenario.annualized_rowc_bps} bps) and Upside (${upsideScenario.annualized_rowc_bps} bps) scenarios.`;
+    // Enforce data completeness: any product missing critical pricing inputs triggers DATA_REQUIRED_HOLD
+    const missingDataProds = selectedProds.filter(
+      (p) => !p.upstream_supply?.factory_gate_quote_inr || !p.sell_side?.prevailing_retail_asp_inr || (p.strategy?.research_case_status as string) === 'DATA_REQUIRED'
+    );
 
-    if (!baseScenario.hurdle_satisfied) {
+    let disposition: BundleEvaluationResult['recommended_disposition'] = 'HOLD_EVALUATION_PENDING';
+    let rationale: string;
+
+    const hasFixtureOrProxyEvidence = selectedProds.some(
+      (p) => p.evidence_origin?.origin_class === 'RECORDED_GOLDEN_FIXTURE' ||
+             p.evidence_origin?.origin_class === 'UNATTESTED_USER_INTAKE' ||
+             (p.strategy?.research_case_status as string) === 'IN_RESEARCH' ||
+             (p.strategy?.research_case_status as string) === 'ACTIVE_OBSERVATION'
+    );
+
+    if (missingDataProds.length > 0) {
+      disposition = 'DATA_REQUIRED_HOLD';
+      rationale = `Bundle contains ${missingDataProds.length} product(s) [${missingDataProds.map((p) => p.product_id).join(', ')}] with unverified or missing factory-gate quotes or retail ASP (DATA_REQUIRED). Financial scenarios cannot be cleared without empirical pricing inputs.`;
+    } else if (!baseScenario.hurdle_satisfied) {
       disposition = 'HURDLE_UNMET';
       rationale = `Base scenario RoWC (${baseScenario.annualized_rowc_bps} bps) fails minimum hurdle threshold (${intent.min_return_hurdle_bps} bps).`;
     } else if (baseScenario.contribution_margin_bps < 1500) {
@@ -262,6 +321,12 @@ export class BundleEvaluator {
     } else if (!downsideScenario.max_drawdown_contained) {
       disposition = 'EXCESSIVE_STRESS_DRAWDOWN';
       rationale = `Downside stress test violates maximum acceptable drawdown threshold of ${intent.max_drawdown_pct}%.`;
+    } else if (hasFixtureOrProxyEvidence) {
+      disposition = 'READY_FOR_PAPER_TEST';
+      rationale = `Bundle meets financial hurdle (${baseScenario.annualized_rowc_bps} bps >= ${intent.min_return_hurdle_bps} bps) under fixture-backed inputs. Capped at READY_FOR_PAPER_TEST pending authenticated live supplier quotes.`;
+    } else {
+      disposition = 'RECOMMENDED_PURSUE';
+      rationale = `Bundle meets required hurdle of ${intent.min_return_hurdle_bps} bps in both Base (${baseScenario.annualized_rowc_bps} bps) and Upside (${upsideScenario.annualized_rowc_bps} bps) scenarios with contained downside stress drawdown.`;
     }
 
     const bundleId = `BNDL-${sha256(intent.intent_id + ':' + slices.map((s) => s.product_id).sort().join(',')).slice(0, 10).toUpperCase()}`;
@@ -273,7 +338,11 @@ export class BundleEvaluator {
       scenarios: {
         base: baseScenario,
         upside: upsideScenario,
-        downside: downsideScenario
+        downside: downsideScenario,
+        base_scenario: baseScenario,
+        upside_scenario: upsideScenario,
+        downside_stress_scenario: downsideScenario,
+        stress: downsideScenario
       },
       recommended_disposition: disposition,
       mathematical_rationale: rationale
@@ -367,6 +436,14 @@ export class BundleEvaluator {
   ): GovernedOperatorActionExecutionResult<CommittedBundleRecord> {
     killSwitch.assertSimulationAllowed();
 
+    if (evaluation.recommended_disposition !== 'RECOMMENDED_PURSUE' && evaluation.recommended_disposition !== 'READY_FOR_PAPER_TEST') {
+      const err = new Error(
+        `E-BUNDLE-UNQUALIFIED-COMMIT-BLOCKED: Cannot commit bundle with disposition "${evaluation.recommended_disposition}". Only bundles passing all financial hurdles and risk constraints (RECOMMENDED_PURSUE or READY_FOR_PAPER_TEST) may be committed.`
+      );
+      (err as any).statusCode = 409;
+      throw err;
+    }
+
     return executeGovernedOperatorAction(() => {
       const nowUtc = new Date().toISOString();
       const rawCommit: Omit<CommittedBundleRecord, 'jcs_sha256'> = {
@@ -396,5 +473,9 @@ export class BundleEvaluator {
 
   public getBundleById(bundleId: string): CommittedBundleRecord | undefined {
     return this.committedBundles.get(bundleId);
+  }
+
+  public loadCommittedRecord(record: CommittedBundleRecord): void {
+    this.committedBundles.set(record.bundle_id, record);
   }
 }

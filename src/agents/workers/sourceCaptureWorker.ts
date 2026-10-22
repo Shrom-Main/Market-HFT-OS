@@ -33,7 +33,8 @@ import {
   McpToolCallRequest,
   McpToolCallResponse,
   CapabilityGrant,
-  createCapabilityGrant
+  createCapabilityGrant,
+  ConstrainedHttpsConnector
 } from '../../mcp/mcpSubstrate.js';
 import { deepFreeze } from '../../verification/gate.js';
 
@@ -439,7 +440,7 @@ export class InjectionCanaryGuard {
 
     // Instruction overrides
     if (
-      /ignore\s+(?:all\s+|previous\s+|prior\s+)?instructions/i.test(text) ||
+      /ignore\s+(?:all\s+)?(?:previous\s+|prior\s+)?instructions/i.test(text) ||
       /system\s+prompt/i.test(text) ||
       /developer\s+mode/i.test(text) ||
       /you\s+are\s+now/i.test(text)
@@ -996,7 +997,7 @@ export class SourceCaptureFixtureRegistry {
     // Default Howrah SS304 Supplier fixture for DIN 3017 16-25mm
     SourceCaptureFixtureRegistry.fixtures.set(
       'howrah_ss304_supplier',
-      `<div id="supplier-catalog-item" class="b2b-listing" data-sku="HOWRAH-SS304-16-25">
+      `<div id="supplier-catalog-item" class="b2b-listing" data-sku="HOWRAH-SS304-16-25" data-freight="15.00">
   <span class="product-title">DIN 3017 SS304 Worm Drive Hose Clamp 16-25mm</span>
   <span class="unit-price" data-price="25.00">₹25.00</span>
   <span class="moq" data-moq="500">MOQ: 500 units</span>
@@ -1204,18 +1205,20 @@ export function registerSourceCaptureTool(server: McpServerAdapter): void {
       if (executionMode === 'APPROVED_LIVE_HTTPS_GET') {
         evidenceOriginClass = 'LIVE_VERIFIED_CAPTURE';
         resolvedSourceIdentity = targetUrl;
-        const fetchRes = await fetch(targetUrl, {
+        const fetchRes = await ConstrainedHttpsConnector.fetch(targetUrl, {
           method: 'GET',
-          redirect: 'error'
+          max_payload_bytes: 1_048_576,
+          timeout_ms: 10_000,
+          allow_redirects: false
         });
 
         if (fetchRes.status >= 300 && fetchRes.status < 400) {
           throw new Error(`E-MCP-REDIRECT-DENIED: HTTP redirect ${fetchRes.status} encountered.`);
         }
-        if (!fetchRes.ok) {
+        if (fetchRes.status < 200 || fetchRes.status >= 300) {
           throw new Error(`E-SCW-HTTP-ERROR: HTTP GET failed with status ${fetchRes.status}.`);
         }
-        rawHtml = await fetchRes.text();
+        rawHtml = fetchRes.bodyText;
       } else {
         // RECORDED_FIXTURE_REPLAY
         if (rawHtmlPayload) {

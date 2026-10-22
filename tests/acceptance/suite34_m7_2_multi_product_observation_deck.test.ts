@@ -85,20 +85,25 @@ function httpRequest(options: {
 describe('Gate M7.2: Suite 34 — Multi-Product Observation Deck, Grievance Mining & Operational Edge', () => {
   let server: WorkstationServer;
   let stateManager: WorkstationStateManager;
-  const testPort = 4314; // Distinct port to prevent collision with running daemon
+  let testPort: number;
 
   beforeAll(async () => {
     stateManager = new WorkstationStateManager();
     server = new WorkstationServer({
       stateManager,
-      port: testPort,
-      corsAllowedOrigins: [`http://127.0.0.1:${testPort}`, `http://localhost:${testPort}`]
+      port: 0
     });
-    await server.start();
+    const started = await server.start();
+    testPort = started.port;
   });
 
   afterAll(async () => {
     if (server) {
+      const store = server.getStateManager().getCentralResearchCore().getEvidenceStore();
+      const pool = store.getPgPool();
+      if (pool) {
+        await pool.query("DELETE FROM market_product_deck_state WHERE product_id LIKE 'prod:custom:%';").catch(() => {});
+      }
       await server.stop();
     }
   });

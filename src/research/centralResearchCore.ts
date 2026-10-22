@@ -11,9 +11,11 @@
  * 6. Product-Specific Specialist Agent Orchestration & Promotion to LIVE_VERIFIED_CAPTURE.
  */
 
+import crypto, { createHmac } from 'node:crypto';
 import pg from 'pg';
 import { sha256 } from '../canonical/crypto.js';
 import { canonicalizeJCS } from '../canonical/jcs.js';
+import type { CommittedBundleRecord } from './bundleEvaluator.js';
 import type {
   ProductObservationItem,
   BuyerGrievanceCluster,
@@ -21,9 +23,32 @@ import type {
   StrategicDecision,
   ResearchCaseStatus
 } from '../mcp/contracts/productObservationContract.js';
-import type { RawSignalIntakeRequest } from '../mcp/contracts/signalIngestionContract.js';
+import type {
+  RawSignalIntakeRequest,
+  SignalProcessingTraceRecord,
+  SourceConnectorHealthRow
+} from '../mcp/contracts/signalIngestionContract.js';
 import type { McpCapabilityBroker, McpRunLedger } from '../mcp/mcpSubstrate.js';
 import { ContextRoutingStateMachine } from '../agents/scheduler/contextRoutingStateMachine.js';
+
+export const DEFAULT_BROKER_SIGNING_SECRET =
+  process.env.MARKET_HFT_BROKER_SECRET || crypto.randomBytes(32).toString('hex');
+
+export function isDisallowedDnsIp(ip?: string): boolean {
+  if (!ip) return true;
+  const trimmed = ip.trim().toLowerCase();
+  if (trimmed === '104.26.12.34') return true;
+  if (trimmed === '127.0.0.1' || trimmed === 'localhost' || trimmed === '::1' || trimmed === '0.0.0.0') return true;
+  if (/^10\./.test(trimmed)) return true;
+  if (/^192\.168\./.test(trimmed)) return true;
+  if (/^169\.254\./.test(trimmed)) return true;
+  const match172 = trimmed.match(/^172\.(\d+)\./);
+  if (match172) {
+    const secondOctet = parseInt(match172[1], 10);
+    if (secondOctet >= 16 && secondOctet <= 31) return true;
+  }
+  return false;
+}
 
 // ============================================================================
 // 1. TYPES & DATA CONTRACTS
@@ -148,6 +173,19 @@ export interface DatabaseHealthStatus {
   backend: 'POSTGRESQL_16' | 'IN_MEMORY_FALLBACK';
   pool_size?: number;
   database_name?: string;
+  latency_ms?: number;
+  table_row_counts?: {
+    evidence_count: number;
+    events_count: number;
+    signals_count: number;
+    products_count: number;
+    connectors_count: number;
+    market_bitemporal_evidence?: number;
+    market_event_overlays?: number;
+    market_signal_traces?: number;
+    market_product_deck_state?: number;
+    market_connector_telemetry?: number;
+  };
   error?: string;
 }
 
@@ -238,6 +276,18 @@ export class DemandSalesEstimator {
 // ============================================================================
 
 export class EvidenceProvenanceVerifier {
+  public static signProof(
+    proof: Omit<McpToolProof, 'hmac_signature'>,
+    brokerSecret: string = DEFAULT_BROKER_SIGNING_SECRET
+  ): McpToolProof {
+    const message = `${proof.tool_run_id}:${proof.worker_id}:${proof.raw_payload_sha256}:${proof.wall_clock_ms}:${proof.dns_pre_resolution_ip}`;
+    const hmacSignature = createHmac('sha256', brokerSecret).update(message).digest('hex');
+    return {
+      ...proof,
+      hmac_signature: hmacSignature
+    };
+  }
+
   /**
    * Enforces fail-closed evidence origin validation.
    * If caller supplies LIVE_VERIFIED_CAPTURE without a valid cryptographically authenticated MCP tool proof,
@@ -246,18 +296,79 @@ export class EvidenceProvenanceVerifier {
   public static verifyAndNormalizeOrigin(
     callerOrigin: string | undefined,
     mcpProof?: McpToolProof,
-    sourceUrl?: string
+    sourceUrl?: string,
+    rawPayload?: unknown,
+    brokerSecret: string = DEFAULT_BROKER_SIGNING_SECRET
   ): {
     origin_class: 'RECORDED_GOLDEN_FIXTURE' | 'UNATTESTED_USER_INTAKE' | 'LIVE_VERIFIED_CAPTURE';
     is_attested: boolean;
     verification_notes: string;
   } {
     // 1. Authenticated MCP tool execution proof
-    if (mcpProof && mcpProof.http_status === 200 && mcpProof.hmac_signature) {
+    if (mcpProof) {
+      if (mcpProof.http_status !== 200) {
+        return {
+          origin_class: 'UNATTESTED_USER_INTAKE',
+          is_attested: false,
+          verification_notes: `Proof rejected: Non-200 HTTP status code (${mcpProof.http_status}). Demoted to UNATTESTED_USER_INTAKE.`
+        };
+      }
+
+      if (isDisallowedDnsIp(mcpProof.dns_pre_resolution_ip)) {
+        return {
+          origin_class: 'UNATTESTED_USER_INTAKE',
+          is_attested: false,
+          verification_notes: `Proof rejected: Disallowed DNS pre-resolution IP (${mcpProof.dns_pre_resolution_ip || 'none'}). Loopback, private ranges, and synthetic placeholders are rejected. Demoted to UNATTESTED_USER_INTAKE.`
+        };
+      }
+
+      if (rawPayload !== undefined) {
+        const canonicalPayload = typeof rawPayload === 'string'
+          ? rawPayload
+          : canonicalizeJCS(sanitizeForJcs(rawPayload));
+        const actualSha256 = sha256(canonicalPayload);
+        if (mcpProof.raw_payload_sha256 !== actualSha256) {
+          return {
+            origin_class: 'UNATTESTED_USER_INTAKE',
+            is_attested: false,
+            verification_notes: `Proof rejected: Payload SHA-256 mismatch (proof: ${mcpProof.raw_payload_sha256.slice(0, 12)}, actual: ${actualSha256.slice(0, 12)}). Demoted to UNATTESTED_USER_INTAKE.`
+          };
+        }
+      }
+
+      if (!mcpProof.hmac_signature || !/^[0-9a-f]{64}$/i.test(mcpProof.hmac_signature)) {
+        return {
+          origin_class: 'UNATTESTED_USER_INTAKE',
+          is_attested: false,
+          verification_notes: 'Proof rejected: Missing or invalid 64-hex HMAC signature format. Demoted to UNATTESTED_USER_INTAKE.'
+        };
+      }
+
+      const message = `${mcpProof.tool_run_id}:${mcpProof.worker_id}:${mcpProof.raw_payload_sha256}:${mcpProof.wall_clock_ms}:${mcpProof.dns_pre_resolution_ip}`;
+      const expectedHmacHex = createHmac('sha256', brokerSecret).update(message).digest('hex');
+
+      try {
+        const expectedBuf = Buffer.from(expectedHmacHex, 'hex');
+        const actualBuf = Buffer.from(mcpProof.hmac_signature, 'hex');
+        if (expectedBuf.length !== actualBuf.length || !crypto.timingSafeEqual(expectedBuf, actualBuf)) {
+          return {
+            origin_class: 'UNATTESTED_USER_INTAKE',
+            is_attested: false,
+            verification_notes: 'Proof rejected: HMAC-SHA256 signature mismatch against broker secret. Demoted to UNATTESTED_USER_INTAKE.'
+          };
+        }
+      } catch {
+        return {
+          origin_class: 'UNATTESTED_USER_INTAKE',
+          is_attested: false,
+          verification_notes: 'Proof rejected: Error during HMAC signature verification. Demoted to UNATTESTED_USER_INTAKE.'
+        };
+      }
+
       return {
         origin_class: 'LIVE_VERIFIED_CAPTURE',
         is_attested: true,
-        verification_notes: `Cryptographically attested via MCP worker [${mcpProof.worker_id}] run [${mcpProof.tool_run_id}] (DNS IP: ${mcpProof.dns_pre_resolution_ip}, ${mcpProof.wall_clock_ms}ms).`
+        verification_notes: `Cryptographically attested via MCP worker [${mcpProof.worker_id}] run [${mcpProof.tool_run_id}] (DNS IP: ${mcpProof.dns_pre_resolution_ip}, ${mcpProof.wall_clock_ms}ms, valid HMAC-SHA256).`
       };
     }
 
@@ -271,12 +382,12 @@ export class EvidenceProvenanceVerifier {
       };
     }
 
-    // 3. Known golden fixtures
+    // 3. Known golden fixtures (truthfully stamped as unverified baseline)
     if (callerOrigin === 'RECORDED_GOLDEN_FIXTURE' || (sourceUrl && sourceUrl.startsWith('fixture://'))) {
       return {
         origin_class: 'RECORDED_GOLDEN_FIXTURE',
-        is_attested: true,
-        verification_notes: 'Audited benchmark fixture recorded under frozen gate specifications.'
+        is_attested: false,
+        verification_notes: 'Audited benchmark fixture recorded under frozen gate specifications; synthetic baseline.'
       };
     }
 
@@ -331,16 +442,59 @@ export class DurableEvidenceStore {
       };
     }
 
+    const tStart = performance.now();
     try {
       const client = await this.pgPool.connect();
       try {
-        const res = await client.query('SELECT 1 as live, current_database() as dbname');
+        let res;
+        try {
+          res = await client.query(`
+            SELECT
+              1 as live,
+              current_database() as dbname,
+              (SELECT count(*) FROM market_bitemporal_evidence) AS evidence_count,
+              (SELECT count(*) FROM market_event_overlays) AS events_count,
+              (SELECT count(*) FROM market_signal_traces) AS signals_count,
+              (SELECT count(*) FROM market_product_deck_state) AS products_count,
+              (SELECT count(*) FROM market_connector_telemetry) AS connectors_count;
+          `);
+        } catch {
+          // If tables don't exist yet, initialize them and re-query
+          await this.initializeTables();
+          res = await client.query(`
+            SELECT
+              1 as live,
+              current_database() as dbname,
+              (SELECT count(*) FROM market_bitemporal_evidence) AS evidence_count,
+              (SELECT count(*) FROM market_event_overlays) AS events_count,
+              (SELECT count(*) FROM market_signal_traces) AS signals_count,
+              (SELECT count(*) FROM market_product_deck_state) AS products_count,
+              (SELECT count(*) FROM market_connector_telemetry) AS connectors_count;
+          `);
+        }
+
+        const latencyMs = Number((performance.now() - tStart).toFixed(2));
         this.isPgAvailable = true;
+        const row = res.rows[0];
+
         return {
           is_connected: true,
           backend: 'POSTGRESQL_16',
           pool_size: this.pgPool.totalCount,
-          database_name: res.rows[0]?.dbname || 'market_hft_test'
+          database_name: row?.dbname || 'market_hft_test',
+          latency_ms: latencyMs,
+          table_row_counts: {
+            evidence_count: Number(row?.evidence_count || 0),
+            events_count: Number(row?.events_count || 0),
+            signals_count: Number(row?.signals_count || 0),
+            products_count: Number(row?.products_count || 0),
+            connectors_count: Number(row?.connectors_count || 0),
+            market_bitemporal_evidence: Number(row?.evidence_count || 0),
+            market_event_overlays: Number(row?.events_count || 0),
+            market_signal_traces: Number(row?.signals_count || 0),
+            market_product_deck_state: Number(row?.products_count || 0),
+            market_connector_telemetry: Number(row?.connectors_count || 0)
+          }
         };
       } finally {
         client.release();
@@ -355,8 +509,31 @@ export class DurableEvidenceStore {
     }
   }
 
+  public isPostgresConnected(): boolean {
+    return Boolean(this.pgPool && this.isPgAvailable);
+  }
+
+  private async ensureConnected(): Promise<void> {
+    if (!this.pgPool) {
+      throw new Error(
+        'E-DB-PERSISTENCE-FAILED: PostgreSQL persistence mandatory for durable commitments — database unavailable.'
+      );
+    }
+    if (!this.isPgAvailable) {
+      await this.initializeTables();
+      if (!this.isPgAvailable) {
+        throw new Error(
+          'E-DB-PERSISTENCE-FAILED: PostgreSQL persistence mandatory for durable commitments — database unavailable.'
+        );
+      }
+    }
+  }
+
   public async initializeTables(): Promise<void> {
-    if (!this.pgPool) return;
+    if (!this.pgPool) {
+      this.isPgAvailable = false;
+      return;
+    }
     try {
       const client = await this.pgPool.connect();
       try {
@@ -390,7 +567,102 @@ export class DurableEvidenceStore {
           );
           CREATE INDEX IF NOT EXISTS idx_events_prod_time
             ON market_event_overlays(product_id, as_of_utc);
+
+          CREATE TABLE IF NOT EXISTS market_signal_traces (
+            trace_id TEXT PRIMARY KEY,
+            signal_id TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            created_at_utc TIMESTAMPTZ NOT NULL,
+            final_status TEXT NOT NULL,
+            trace_json JSONB NOT NULL,
+            jcs_sha256 TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_sig_traces_time
+            ON market_signal_traces(created_at_utc);
+
+          CREATE TABLE IF NOT EXISTS market_product_deck_state (
+            product_id TEXT PRIMARY KEY,
+            sku_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            archetype TEXT NOT NULL,
+            deck_json JSONB NOT NULL,
+            updated_at_utc TIMESTAMPTZ NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_deck_archetype
+            ON market_product_deck_state(archetype);
+
+          CREATE TABLE IF NOT EXISTS market_connector_telemetry (
+            connector_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            status TEXT NOT NULL,
+            last_fetch_utc TIMESTAMPTZ,
+            error_count INT NOT NULL DEFAULT 0,
+            telemetry_json JSONB NOT NULL
+          );
+
+          CREATE TABLE IF NOT EXISTS market_committed_bundles (
+            allocation_id TEXT PRIMARY KEY,
+            bundle_name TEXT NOT NULL,
+            committed_at_utc TIMESTAMPTZ NOT NULL,
+            total_allocated_capital_inr NUMERIC NOT NULL,
+            blended_target_rowc_bps INT NOT NULL,
+            status TEXT NOT NULL,
+            bundle_json JSONB NOT NULL,
+            jcs_sha256 TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_committed_bundles_time
+            ON market_committed_bundles(committed_at_utc);
+
+          CREATE TABLE IF NOT EXISTS market_api_quota_ledger (
+            ledger_id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            endpoint TEXT NOT NULL,
+            request_hash TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            timestamp_utc TIMESTAMPTZ NOT NULL,
+            status TEXT NOT NULL,
+            tokens_used INT NOT NULL DEFAULT 0,
+            execution_latency_ms INT NOT NULL DEFAULT 0,
+            error_code TEXT
+          );
+          CREATE INDEX IF NOT EXISTS idx_quota_ledger_time
+            ON market_api_quota_ledger(provider, timestamp_utc);
         `);
+
+        // Evidence is append-only: no destructive in-place DELETE or UPDATE on market_bitemporal_evidence.
+        // Historical unverified or synthetic records are handled at query/hydration boundaries (Defect 3 remediation).
+
+        // Hydrate existing evidence into in-memory cache
+        const evRows = await client.query('SELECT record_json FROM market_bitemporal_evidence');
+        for (const row of evRows.rows) {
+          const rec = row.record_json as BitemporalEvidenceRecord;
+          if (rec && rec.evidence_id) {
+            this.inMemoryEvidence.set(rec.evidence_id, rec);
+          }
+        }
+
+        // Hydrate existing event overlays
+        const evtRows = await client.query('SELECT * FROM market_event_overlays');
+        for (const row of evtRows.rows) {
+          const existingIdx = this.inMemoryEvents.findIndex((e) => e.event_id === row.event_id);
+          if (existingIdx === -1) {
+            this.inMemoryEvents.push({
+              event_id: row.event_id,
+              product_id: row.product_id,
+              event_type: row.event_type,
+              event_timestamp_utc: new Date(row.event_timestamp_utc).toISOString(),
+              as_of_utc: new Date(row.as_of_utc).toISOString(),
+              severity: row.severity,
+              title: row.title,
+              summary: row.summary,
+              source_citation: row.citation,
+              price_impact_subunits: row.price_impact_subunits
+            });
+          }
+        }
+
         this.isPgAvailable = true;
       } finally {
         client.release();
@@ -401,62 +673,64 @@ export class DurableEvidenceStore {
   }
 
   public async storeEvidence(record: BitemporalEvidenceRecord): Promise<void> {
-    this.inMemoryEvidence.set(record.evidence_id, record);
-
-    if (this.pgPool && this.isPgAvailable) {
-      try {
-        await this.pgPool.query(
-          `INSERT INTO market_bitemporal_evidence
-             (evidence_id, product_id, channel, observed_at_utc, as_of_utc, payload_sha256, origin_class, epistemic_class, jcs_sha256, record_json)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-           ON CONFLICT (evidence_id) DO UPDATE SET
-             record_json = EXCLUDED.record_json,
-             jcs_sha256 = EXCLUDED.jcs_sha256`,
-          [
-            record.evidence_id,
-            record.product_id,
-            record.channel,
-            record.observed_at_utc,
-            record.as_of_utc,
-            record.payload_sha256,
-            record.origin.origin_class,
-            record.epistemic_class,
-            record.jcs_sha256,
-            JSON.stringify(sanitizeForJcs(record))
-          ]
-        );
-      } catch {
-        // Fall back gracefully to in-memory store
-      }
+    await this.ensureConnected();
+    try {
+      await this.pgPool!.query(
+        `INSERT INTO market_bitemporal_evidence
+           (evidence_id, product_id, channel, observed_at_utc, as_of_utc, payload_sha256, origin_class, epistemic_class, jcs_sha256, record_json)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (evidence_id) DO UPDATE SET
+           record_json = EXCLUDED.record_json,
+           jcs_sha256 = EXCLUDED.jcs_sha256`,
+        [
+          record.evidence_id,
+          record.product_id,
+          record.channel,
+          record.observed_at_utc,
+          record.as_of_utc,
+          record.payload_sha256,
+          record.origin.origin_class,
+          record.epistemic_class,
+          record.jcs_sha256,
+          JSON.stringify(sanitizeForJcs(record))
+        ]
+      );
+      this.inMemoryEvidence.set(record.evidence_id, record);
+    } catch (err: any) {
+      if (err.message?.startsWith('E-DB-PERSISTENCE-FAILED')) throw err;
+      throw new Error(
+        `E-DB-PERSISTENCE-FAILED: PostgreSQL persistence mandatory for durable commitments — query failed: ${err.message}`
+      );
     }
   }
 
   public async storeEventOverlay(event: BitemporalEventOverlay): Promise<void> {
-    this.inMemoryEvents.push(event);
-
-    if (this.pgPool && this.isPgAvailable) {
-      try {
-        await this.pgPool.query(
-          `INSERT INTO market_event_overlays
-             (event_id, product_id, event_type, event_timestamp_utc, as_of_utc, severity, title, summary, citation, price_impact_subunits)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-           ON CONFLICT (event_id) DO NOTHING`,
-          [
-            event.event_id,
-            event.product_id,
-            event.event_type,
-            event.event_timestamp_utc,
-            event.as_of_utc,
-            event.severity,
-            event.title,
-            event.summary,
-            event.source_citation,
-            event.price_impact_subunits || '0'
-          ]
-        );
-      } catch {
-        // Fall back gracefully
-      }
+    await this.ensureConnected();
+    try {
+      await this.pgPool!.query(
+        `INSERT INTO market_event_overlays
+           (event_id, product_id, event_type, event_timestamp_utc, as_of_utc, severity, title, summary, citation, price_impact_subunits)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (event_id) DO NOTHING`,
+        [
+          event.event_id,
+          event.product_id,
+          event.event_type,
+          event.event_timestamp_utc,
+          event.as_of_utc,
+          event.severity,
+          event.title,
+          event.summary,
+          event.source_citation,
+          event.price_impact_subunits || '0'
+        ]
+      );
+      this.inMemoryEvents.push(event);
+    } catch (err: any) {
+      if (err.message?.startsWith('E-DB-PERSISTENCE-FAILED')) throw err;
+      throw new Error(
+        `E-DB-PERSISTENCE-FAILED: PostgreSQL persistence mandatory for durable commitments — query failed: ${err.message}`
+      );
     }
   }
 
@@ -491,6 +765,196 @@ export class DurableEvidenceStore {
 
   public getEvidenceCount(): number {
     return this.inMemoryEvidence.size;
+  }
+
+  public getPgPool(): pg.Pool | null {
+    return this.pgPool;
+  }
+
+  public async storeSignalTrace(trace: SignalProcessingTraceRecord): Promise<void> {
+    await this.ensureConnected();
+    try {
+      await this.pgPool!.query(
+        `INSERT INTO market_signal_traces
+           (trace_id, signal_id, channel, created_at_utc, final_status, trace_json, jcs_sha256)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (trace_id) DO UPDATE SET
+           final_status = EXCLUDED.final_status,
+           trace_json = EXCLUDED.trace_json,
+           jcs_sha256 = EXCLUDED.jcs_sha256`,
+        [
+          trace.trace_id,
+          trace.signal_id,
+          trace.channel,
+          trace.created_at_utc,
+          trace.final_status,
+          JSON.stringify(sanitizeForJcs(trace)),
+          trace.jcs_sha256
+        ]
+      );
+    } catch (err: any) {
+      if (err.message?.startsWith('E-DB-PERSISTENCE-FAILED')) throw err;
+      throw new Error(
+        `E-DB-PERSISTENCE-FAILED: PostgreSQL persistence mandatory for durable commitments — query failed: ${err.message}`
+      );
+    }
+  }
+
+  public async loadSignalTraces(): Promise<SignalProcessingTraceRecord[]> {
+    await this.ensureConnected().catch(() => {});
+    if (!this.pgPool || !this.isPgAvailable) return [];
+    try {
+      const res = await this.pgPool.query(
+        'SELECT trace_json FROM market_signal_traces ORDER BY created_at_utc ASC'
+      );
+      return res.rows.map((r) => r.trace_json as SignalProcessingTraceRecord);
+    } catch {
+      return [];
+    }
+  }
+
+  public async storeProductDeckItem(product: ProductObservationItem): Promise<void> {
+    await this.ensureConnected();
+    try {
+      await this.pgPool!.query(
+        `INSERT INTO market_product_deck_state
+           (product_id, sku_id, name, category, archetype, deck_json, updated_at_utc)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (product_id) DO UPDATE SET
+           sku_id = EXCLUDED.sku_id,
+           name = EXCLUDED.name,
+           category = EXCLUDED.category,
+           archetype = EXCLUDED.archetype,
+           deck_json = EXCLUDED.deck_json,
+           updated_at_utc = EXCLUDED.updated_at_utc`,
+        [
+          product.product_id,
+          product.sku_id,
+          product.name,
+          product.category,
+          product.commercial_archetype,
+          JSON.stringify(sanitizeForJcs(product)),
+          new Date().toISOString()
+        ]
+      );
+    } catch (err: any) {
+      if (err.message?.startsWith('E-DB-PERSISTENCE-FAILED')) throw err;
+      throw new Error(
+        `E-DB-PERSISTENCE-FAILED: PostgreSQL persistence mandatory for durable commitments — query failed: ${err.message}`
+      );
+    }
+  }
+
+  public async storeProductDeck(products: readonly ProductObservationItem[]): Promise<void> {
+    for (const prod of products) {
+      await this.storeProductDeckItem(prod);
+    }
+  }
+
+  public async loadProductDeck(): Promise<ProductObservationItem[]> {
+    await this.ensureConnected().catch(() => {});
+    if (!this.pgPool || !this.isPgAvailable) return [];
+    try {
+      const res = await this.pgPool.query(
+        'SELECT deck_json FROM market_product_deck_state ORDER BY product_id ASC'
+      );
+      return res.rows.map((r) => r.deck_json as ProductObservationItem);
+    } catch {
+      return [];
+    }
+  }
+
+  public async storeConnectorTelemetry(connectors: readonly SourceConnectorHealthRow[]): Promise<void> {
+    await this.ensureConnected();
+    for (const c of connectors) {
+      try {
+        await this.pgPool!.query(
+          `INSERT INTO market_connector_telemetry
+             (connector_id, name, channel, status, last_fetch_utc, error_count, telemetry_json)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (connector_id) DO UPDATE SET
+             name = EXCLUDED.name,
+             channel = EXCLUDED.channel,
+             status = EXCLUDED.status,
+             last_fetch_utc = EXCLUDED.last_fetch_utc,
+             error_count = EXCLUDED.error_count,
+             telemetry_json = EXCLUDED.telemetry_json`,
+          [
+            c.connector_id,
+            c.name,
+            c.channel,
+            c.status,
+            c.last_successful_fetch_utc || c.last_heartbeat_utc || null,
+            c.error_count,
+            JSON.stringify(sanitizeForJcs(c))
+          ]
+        );
+      } catch (err: any) {
+        if (err.message?.startsWith('E-DB-PERSISTENCE-FAILED')) throw err;
+        throw new Error(
+          `E-DB-PERSISTENCE-FAILED: PostgreSQL persistence mandatory for durable commitments — query failed: ${err.message}`
+        );
+      }
+    }
+  }
+
+  public async loadConnectorTelemetry(): Promise<SourceConnectorHealthRow[]> {
+    await this.ensureConnected().catch(() => {});
+    if (!this.pgPool || !this.isPgAvailable) return [];
+    try {
+      const res = await this.pgPool.query(
+        'SELECT telemetry_json FROM market_connector_telemetry ORDER BY connector_id ASC'
+      );
+      return res.rows.map((r) => r.telemetry_json as SourceConnectorHealthRow);
+    } catch {
+      return [];
+    }
+  }
+
+  public async storeCommittedBundle(bundle: CommittedBundleRecord): Promise<void> {
+    await this.ensureConnected();
+    try {
+      await this.pgPool!.query(
+        `INSERT INTO market_committed_bundles
+           (allocation_id, bundle_name, committed_at_utc, total_allocated_capital_inr, blended_target_rowc_bps, status, bundle_json, jcs_sha256)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (allocation_id) DO UPDATE SET
+           bundle_name = EXCLUDED.bundle_name,
+           total_allocated_capital_inr = EXCLUDED.total_allocated_capital_inr,
+           blended_target_rowc_bps = EXCLUDED.blended_target_rowc_bps,
+           status = EXCLUDED.status,
+           bundle_json = EXCLUDED.bundle_json,
+           jcs_sha256 = EXCLUDED.jcs_sha256`,
+        [
+          bundle.bundle_id,
+          bundle.evaluation.intent.intent_id,
+          bundle.committed_at_utc,
+          bundle.allocated_capital_inr,
+          bundle.evaluation.scenarios.base.annualized_rowc_bps,
+          bundle.status,
+          JSON.stringify(sanitizeForJcs(bundle)),
+          bundle.jcs_sha256
+        ]
+      );
+    } catch (err: any) {
+      if (err.message?.startsWith('E-DB-PERSISTENCE-FAILED')) throw err;
+      throw new Error(
+        `E-DB-PERSISTENCE-FAILED: PostgreSQL persistence mandatory for durable commitments — query failed: ${err.message}`
+      );
+    }
+  }
+
+  public async loadCommittedBundles(): Promise<CommittedBundleRecord[]> {
+    await this.ensureConnected().catch(() => {});
+    if (!this.pgPool || !this.isPgAvailable) return [];
+    try {
+      const res = await this.pgPool.query(
+        'SELECT bundle_json FROM market_committed_bundles ORDER BY committed_at_utc ASC'
+      );
+      return res.rows.map((r) => r.bundle_json as CommittedBundleRecord);
+    } catch {
+      return [];
+    }
   }
 
   public async close(): Promise<void> {
@@ -669,9 +1133,15 @@ export class CentralResearchCore {
     this.evidenceStore = new DurableEvidenceStore(connectionString);
   }
 
+  public isPostgresConnected(): boolean {
+    return this.evidenceStore.isPostgresConnected();
+  }
+
   public async initialize(): Promise<void> {
     await this.evidenceStore.initializeTables();
-    this.seedCanonicalEvidenceFixtures();
+    if (this.evidenceStore.getEvidenceCount() === 0 && this.evidenceStore.isPostgresConnected()) {
+      await this.seedCanonicalEvidenceFixtures();
+    }
   }
 
   public getEvidenceStore(): DurableEvidenceStore {
@@ -719,10 +1189,13 @@ export class CentralResearchCore {
     const prov = EvidenceProvenanceVerifier.verifyAndNormalizeOrigin(
       request.origin_class,
       mcpProof,
-      request.target_url
+      request.target_url,
+      rawStr
     );
 
-    let epistemicClass: EpistemicClass = 'OBSERVED_FACT';
+    let epistemicClass: EpistemicClass = prov.origin_class === 'LIVE_VERIFIED_CAPTURE'
+      ? 'OBSERVED_FACT'
+      : 'ESTIMATED_PROXY';
     let proxyMeta: BitemporalEvidenceRecord['proxy_metadata'] | undefined;
 
     // Parse extracted claims
@@ -876,17 +1349,16 @@ export class CentralResearchCore {
         hub: product.upstream_supply?.hub_name || 'Jamnagar'
       },
       origin: {
-        origin_class: 'LIVE_VERIFIED_CAPTURE',
+        origin_class: 'RECORDED_GOLDEN_FIXTURE',
         source_url: 'https://indiamart.com',
         captured_at_utc: timestampUtc,
-        dns_pre_resolution_ip: '104.26.12.34',
         tool_run_id: taskId,
         worker_id: 'worker:source-capture:v1',
         cryptographic_hash: sha256(rawHtml),
-        is_attested: true,
-        verification_notes: 'Verified via SourceCaptureWorker with DNS pre-resolution.'
+        is_attested: false,
+        verification_notes: 'Locally executed research fixture — not an authenticated external network capture'
       },
-      epistemic_class: 'OBSERVED_FACT',
+      epistemic_class: 'ESTIMATED_PROXY',
       jcs_sha256: sha256(rawHtml)
     });
     promotedEvidenceIds.push(sourceEvId);
@@ -910,17 +1382,16 @@ export class CentralResearchCore {
           engineered_remediation: topGrievance.engineered_remediation
         },
         origin: {
-          origin_class: 'LIVE_VERIFIED_CAPTURE',
+          origin_class: 'RECORDED_GOLDEN_FIXTURE',
           source_url: product.sell_side?.listing_url || 'https://amazon.in',
           captured_at_utc: timestampUtc,
-          dns_pre_resolution_ip: '52.95.120.1',
           tool_run_id: taskId,
           worker_id: 'worker:media-chatter:v1',
           cryptographic_hash: sha256(topGrievance.representative_quote),
-          is_attested: true,
-          verification_notes: 'Extracted and verified via MediaAndChatterWorker verbatim citation span.'
+          is_attested: false,
+          verification_notes: 'Locally executed research fixture — not an authenticated external network capture'
         },
-        epistemic_class: 'OBSERVED_FACT',
+        epistemic_class: 'ESTIMATED_PROXY',
         jcs_sha256: sha256(topGrievance.representative_quote)
       });
       promotedEvidenceIds.push(grievEvId);
@@ -942,17 +1413,16 @@ export class CentralResearchCore {
         msme_payment_limit_days: 45
       },
       origin: {
-        origin_class: 'LIVE_VERIFIED_CAPTURE',
+        origin_class: 'RECORDED_GOLDEN_FIXTURE',
         source_url: 'https://cbic.gov.in',
         captured_at_utc: timestampUtc,
-        dns_pre_resolution_ip: '164.100.128.5',
         tool_run_id: taskId,
         worker_id: 'worker:govt-statutory:v1',
         cryptographic_hash: sha256(hsnCode),
-        is_attested: true,
-        verification_notes: 'Verified via GovtAndStatutoryWorker against CBIC official circular registry.'
+        is_attested: false,
+        verification_notes: 'Locally executed research fixture — not an authenticated external network capture'
       },
-      epistemic_class: 'OBSERVED_FACT',
+      epistemic_class: 'ESTIMATED_PROXY',
       jcs_sha256: sha256(hsnCode)
     });
     promotedEvidenceIds.push(statEvId);

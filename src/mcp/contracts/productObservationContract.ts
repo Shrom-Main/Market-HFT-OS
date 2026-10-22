@@ -125,6 +125,8 @@ export interface ProductObservationDeckResponse {
 }
 
 export interface PushProductObservationRequest {
+  readonly product_id?: string;
+  readonly sku_id?: string;
   readonly name: string;
   readonly category: string;
   readonly commercial_archetype: CommercialArchetype;

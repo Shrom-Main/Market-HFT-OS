@@ -195,12 +195,18 @@ describe('Suite 35: Gate M7.3 Modern React Workstation UI & Bloomberg Split-Term
     expect(aiRes.statusCode).toBe(200);
     const data = JSON.parse(aiRes.body);
     expect(data.product_id).toBe('prod:brass:ball-valve:1-2in-pn20');
-    expect(data.llm_model).toContain('Groq');
+    if (data.llm_called) {
+      expect(data.llm_model).toContain('Groq');
+      expect(data.generation_mode).toBe('LIVE_LLM_SYNTHESIS');
+    } else {
+      expect(data.llm_model).toBeNull();
+      expect(data.generation_mode).toBe('DETERMINISTIC_TEMPLATE_FALLBACK');
+    }
     expect(data.thesis_synthesis.length).toBeGreaterThan(20);
     expect(data.unserved_pain_points.length).toBeGreaterThan(0);
     expect(data.engineered_edge_suggestions.length).toBeGreaterThan(0);
-    expect(data.arbitrage_viability_verdict).toBe('STRONG_BUY_BOX_CANDIDATE');
-    expect(data.recommended_action).toBe('PURSUE_EXPEDITED');
+    expect(['STRONG_BUY_BOX_CANDIDATE', 'PROMISING_BUT_UNVALIDATED']).toContain(data.arbitrage_viability_verdict);
+    expect(['PURSUE_EXPEDITED', 'VALIDATE_FURTHER']).toContain(data.recommended_action);
   });
 
   // TEST 6: STANDALONE INLINED HTML

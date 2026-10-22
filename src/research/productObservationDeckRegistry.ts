@@ -714,6 +714,13 @@ export class ProductObservationDeckRegistry {
     return this.products.get(productId);
   }
 
+  public replaceProducts(items: readonly ProductObservationItem[]): void {
+    this.products.clear();
+    for (const item of items) {
+      this.products.set(item.product_id, item);
+    }
+  }
+
   public getDeckResponse(): ProductObservationDeckResponse {
     const products = this.getAllProducts();
     const categories = Array.from(new Set(products.map((p) => p.category)));
@@ -737,8 +744,8 @@ export class ProductObservationDeckRegistry {
   public pushProductObservation(request: PushProductObservationRequest): ProductObservationItem {
     const nowUtc = new Date().toISOString();
     const hashDigest = sha256(`${request.name}:${request.category}:${nowUtc}`);
-    const productId = `prod:custom:${hashDigest.slice(0, 10)}`;
-    const skuId = `SKU-CUST-${hashDigest.slice(0, 8).toUpperCase()}`;
+    const productId = request.product_id || `prod:custom:${hashDigest.slice(0, 10)}`;
+    const skuId = request.sku_id || `SKU-CUST-${hashDigest.slice(0, 8).toUpperCase()}`;
 
     const retailAsp = request.sell_side?.prevailing_retail_asp_inr ?? request.retail_asp_inr ?? 250;
     const factoryQuote = request.upstream_supply?.factory_gate_quote_inr ?? request.upstream_factory_quote_inr ?? 100;

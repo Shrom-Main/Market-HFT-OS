@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    fileParallelism: false,
     exclude: ['**/node_modules/**', '**/_salvage/**', '**/dist/**'],
   },
 });

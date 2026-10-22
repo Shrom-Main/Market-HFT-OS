@@ -46,6 +46,7 @@ export interface RawInputStageTrace {
   readonly receipt_time_utc: string;
   readonly raw_sha256: string;
   readonly origin_class: EvidenceOriginClass;
+  readonly claimed_origin_rejected?: string;
 }
 
 export interface ValidatedFieldsStageTrace {
@@ -91,10 +92,11 @@ export interface WorkerAndRedTeamStageTrace {
 export interface EconomicAndGateImpactStageTrace {
   readonly affected_sku_id: string;
   readonly landed_cost_before_inr: number;
-  readonly landed_cost_after_inr: number;
+  readonly landed_cost_after_inr: number | null;
   readonly rowc_before_bps: number;
-  readonly rowc_after_bps: number;
-  readonly allocation_gate_status: 'PASSED' | 'HELD_FOR_REVIEW' | 'BLOCKED_BY_POLICY' | 'DATA_REQUIRED';
+  readonly rowc_after_bps: number | null;
+  readonly allocation_gate_status: 'PASSED' | 'HELD_FOR_REVIEW' | 'BLOCKED_BY_POLICY' | 'DATA_REQUIRED' | 'HOLD_DATA_REQUIRED';
+  readonly economic_impact_status?: 'CALCULATED' | 'DATA_REQUIRED';
 }
 
 export interface SignalProcessingTraceRecord {
@@ -119,12 +121,13 @@ export interface SourceConnectorHealthRow {
   readonly name: string;
   readonly channel: SignalIntakeChannel;
   readonly endpoint: string;
-  readonly status: 'ACTIVE' | 'IDLE' | 'DEGRADED' | 'QUARANTINED';
-  readonly last_heartbeat_utc: string;
+  readonly status: 'ACTIVE' | 'FIXTURE_SIMULATED' | 'IDLE' | 'IDLE_NEVER_RUN' | 'DEGRADED' | 'QUARANTINED';
+  readonly last_heartbeat_utc: string | null;
+  readonly last_successful_fetch_utc?: string | null;
   readonly ingested_count: number;
   readonly quarantined_count: number;
   readonly error_count: number;
-  readonly freshness_age_seconds: number;
+  readonly freshness_age_seconds: number | null;
 }
 
 export interface SS304VariantRow {

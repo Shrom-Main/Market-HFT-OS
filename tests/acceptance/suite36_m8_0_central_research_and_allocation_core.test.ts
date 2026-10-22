@@ -23,6 +23,7 @@ import {
   BitemporalEvidenceRecord,
   McpToolProof
 } from '../../src/research/centralResearchCore.js';
+import { sha256 } from '../../src/canonical/crypto.js';
 import { GroqResearchSynthesizer } from '../../src/research/groqResearchSynthesizer.js';
 import { BundleEvaluator } from '../../src/research/bundleEvaluator.js';
 import { WorkstationServer } from '../../src/server/workstationServer.js';
@@ -94,6 +95,11 @@ describe('Suite 36: Gate M8.0 Central Research & Allocation Core Loop Certificat
 
   afterAll(async () => {
     if (server) {
+      const store = server.getStateManager().getCentralResearchCore().getEvidenceStore();
+      const pool = store.getPgPool();
+      if (pool) {
+        await pool.query("DELETE FROM market_signal_traces WHERE trace_id LIKE 'TRACE-%' AND created_at_utc >= NOW() - INTERVAL '30 minutes';").catch(() => {});
+      }
       await server.stop();
     }
   });
@@ -172,21 +178,23 @@ describe('Suite 36: Gate M8.0 Central Research & Allocation Core Loop Certificat
     expect(unverified.origin_class).toBe('UNATTESTED_USER_INTAKE');
     expect(unverified.is_attested).toBe(false);
 
-    // 2. Legitimate verification with genuine MCP tool proof
-    const legitimateProof: McpToolProof = {
+    // 2. Legitimate verification with genuine signed MCP tool proof
+    const rawPayload = '{"supplier": "IndiaMART", "unit_price": 25.50}';
+    const payloadHash = sha256(rawPayload);
+    const legitimateProof = EvidenceProvenanceVerifier.signProof({
       tool_run_id: 'run-test-001',
       worker_id: 'worker:source-capture:v1',
-      dns_pre_resolution_ip: '127.0.0.1',
+      dns_pre_resolution_ip: '157.240.22.35', // Genuine public IP
       http_status: 200,
       wall_clock_ms: 120,
-      raw_payload_sha256: 'abc123mock',
-      hmac_signature: 'valid_hmac_proof_signature'
-    };
+      raw_payload_sha256: payloadHash
+    });
 
     const verified = EvidenceProvenanceVerifier.verifyAndNormalizeOrigin(
       'LIVE_VERIFIED_CAPTURE',
       legitimateProof,
-      'https://indiamart.com/proddetail/ss304-clamp.html'
+      'https://indiamart.com/proddetail/ss304-clamp.html',
+      rawPayload
     );
     expect(verified.origin_class).toBe('LIVE_VERIFIED_CAPTURE');
     expect(verified.is_attested).toBe(true);

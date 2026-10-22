@@ -40,3 +40,5 @@ export * from './terminal/operatorTerminalController.js';
 export * from './agents/evaluation/goldenExtractionBench.js';
 export * from './server/workstationStateManager.js';
 export * from './server/workstationServer.js';
+export * from './mcp/apiQuotaAndRateGovernor.js';
+export * from './mcp/contracts/canonicalMarketGraphContract.js';
