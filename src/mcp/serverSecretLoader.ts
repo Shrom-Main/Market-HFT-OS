@@ -25,6 +25,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { sha256 } from '../canonical/crypto.js';
 
 export type SupportedSecretProvider =
   | 'GEMINI_API'
@@ -38,7 +39,8 @@ export type SupportedSecretProvider =
   | 'OLLAMA_LOCAL'
   | 'OPENROUTER_GATEWAY'
   | 'POSTGRES_STORE'
-  | 'TINYFISH_CRAWLER';
+  | 'TINYFISH_CRAWLER'
+  | 'META_GATEWAY';
 
 export interface SkillsMcpCapabilityItem {
   readonly capability_id: string;
@@ -65,7 +67,7 @@ export interface SkillsMcpCapabilityItem {
 
 const providerKeyStore: Map<SupportedSecretProvider, string> = new Map();
 
-function parseEnvLine(line: string): string | null {
+export function parseEnvLine(line: string): string | null {
   const trimmed = line.trim();
   if (!trimmed || trimmed.startsWith('#')) return null;
   const eqIdx = trimmed.indexOf('=');
@@ -77,7 +79,7 @@ function parseEnvLine(line: string): string | null {
   return val.length > 0 ? val : null;
 }
 
-function resolveSecretFilePath(fileName: string, baseDir?: string): string | null {
+export function resolveSecretFilePath(fileName: string, baseDir?: string): string | null {
   const candidates = [
     baseDir ? path.resolve(baseDir, fileName) : null,
     path.resolve(process.cwd(), fileName),
@@ -215,6 +217,15 @@ const SECRET_MAPPINGS: SecretFileMapping[] = [
     concurrency: 'CONCURRENT',
     description: 'TinyFish structured web scraper and anti-bot HTML source capture substrate',
     roles: ['SourceCaptureWorker', 'MediaChatterWorker']
+  },
+  {
+    provider: 'META_GATEWAY',
+    fileNames: ['MetaGatewayAPI.env'],
+    envVars: ['META_GATEWAY_ACCESS_TOKEN', 'META_ACCESS_TOKEN'],
+    category: 'SOURCE_CAPTURE_CRAWLER',
+    concurrency: 'CONCURRENT',
+    description: 'Meta Graph API & Ad Library access for Facebook/Instagram ad chatter and marketplace surveillance',
+    roles: ['MediaChatterWorker', 'SourceCaptureWorker']
   }
 ];
 
@@ -311,4 +322,145 @@ export function clearServerSecretsForTesting(): void {
 
 export function setMockProviderKeyForTesting(provider: SupportedSecretProvider, key: string): void {
   providerKeyStore.set(provider, key);
+}
+
+export interface ProviderFileStatus {
+  readonly file_name: string;
+  readonly env_var: string;
+  readonly file_exists: boolean;
+  readonly key_configured: boolean;
+  readonly key_sha256_prefix8: string | null;
+}
+
+export interface ProviderConfigMetadata {
+  readonly provider: SupportedSecretProvider;
+  readonly category: SkillsMcpCapabilityItem['skill_category'];
+  readonly description: string;
+  readonly files: readonly ProviderFileStatus[];
+  readonly all_files_exist: boolean;
+  readonly is_configured: boolean;
+  readonly primary_sha256_prefix8: string | null;
+}
+
+export function computeSecretSha256Prefix8(secret: string): string {
+  return sha256(secret.trim()).slice(0, 8);
+}
+
+export function getProviderConfigMetadata(baseDir?: string): readonly ProviderConfigMetadata[] {
+  return SECRET_MAPPINGS.map((item) => {
+    const fileStatuses: ProviderFileStatus[] = [];
+    let primaryHash: string | null = null;
+
+    for (let i = 0; i < item.fileNames.length; i++) {
+      const fileName = item.fileNames[i];
+      const envVar = item.envVars[i] || item.envVars[0];
+      const filePath = resolveSecretFilePath(fileName, baseDir);
+      let fileExists = false;
+      let keyConfigured = false;
+      let hashPrefix: string | null = null;
+
+      if (filePath) {
+        fileExists = true;
+        try {
+          const content = fs.readFileSync(filePath, 'utf8');
+          for (const line of content.split(/\r?\n/)) {
+            const parsed = parseEnvLine(line);
+            if (parsed) {
+              keyConfigured = true;
+              hashPrefix = computeSecretSha256Prefix8(parsed);
+              break;
+            }
+          }
+        } catch {
+          // ignore read error
+        }
+      }
+
+      if (!keyConfigured && process.env[envVar] && process.env[envVar]!.trim().length > 0) {
+        keyConfigured = true;
+        hashPrefix = computeSecretSha256Prefix8(process.env[envVar]!);
+      }
+
+      if (i === 0 && hashPrefix) {
+        primaryHash = hashPrefix;
+      }
+
+      fileStatuses.push({
+        file_name: fileName,
+        env_var: envVar,
+        file_exists: fileExists,
+        key_configured: keyConfigured,
+        key_sha256_prefix8: hashPrefix
+      });
+    }
+
+    const allFilesExist = fileStatuses.every((f) => f.file_exists);
+    const isConfigured = fileStatuses.some((f) => f.key_configured);
+
+    return {
+      provider: item.provider,
+      category: item.category,
+      description: item.description,
+      files: fileStatuses,
+      all_files_exist: allFilesExist,
+      is_configured: isConfigured,
+      primary_sha256_prefix8: primaryHash
+    };
+  });
+}
+
+export function getAlpacaCredentials(baseDir?: string): {
+  keyId: string;
+  secretKey: string;
+  key_sha256_prefix8: string;
+  secret_sha256_prefix8: string;
+} | null {
+  let keyId = process.env.APCA_API_KEY_ID;
+  let secretKey = process.env.APCA_API_SECRET_KEY;
+
+  if (!keyId) {
+    const p = resolveSecretFilePath('Alpaca_Key.env', baseDir);
+    if (p) {
+      try {
+        const raw = fs.readFileSync(p, 'utf8');
+        for (const line of raw.split(/\r?\n/)) {
+          const parsed = parseEnvLine(line);
+          if (parsed) {
+            keyId = parsed;
+            break;
+          }
+        }
+      } catch {
+        // fail-safe
+      }
+    }
+  }
+
+  if (!secretKey) {
+    const p = resolveSecretFilePath('Alpaca_Secret.env', baseDir);
+    if (p) {
+      try {
+        const raw = fs.readFileSync(p, 'utf8');
+        for (const line of raw.split(/\r?\n/)) {
+          const parsed = parseEnvLine(line);
+          if (parsed) {
+            secretKey = parsed;
+            break;
+          }
+        }
+      } catch {
+        // fail-safe
+      }
+    }
+  }
+
+  if (keyId && secretKey) {
+    return {
+      keyId,
+      secretKey,
+      key_sha256_prefix8: computeSecretSha256Prefix8(keyId),
+      secret_sha256_prefix8: computeSecretSha256Prefix8(secretKey)
+    };
+  }
+  return null;
 }

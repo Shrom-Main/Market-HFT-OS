@@ -26,7 +26,8 @@ import {
   FormulaEvaluatorFn,
   FormulaRegistry,
   FormulaTier,
-  VariableUnit
+  VariableUnit,
+  evaluateSymbolicExpression
 } from './formulaRegistry.js';
 
 /**
@@ -459,11 +460,20 @@ Do not include any markdown wrappers or commentary, only the raw JSON object.`;
       inputs['A'] = 1000;
     }
 
-    const expected_output = parsed.canonical_test_vector?.expected_output !== undefined
+    let expected_output = parsed.canonical_test_vector?.expected_output !== undefined
       ? (typeof parsed.canonical_test_vector.expected_output === 'number'
           ? Math.round(parsed.canonical_test_vector.expected_output)
           : Math.round(Number(parsed.canonical_test_vector.expected_output) || 1000))
       : 1000;
+
+    // Harmonize expected_output with symbolic expression if it can be deterministically evaluated,
+    // protecting against LLM arithmetic hallucinations while preserving formula structure
+    try {
+      const computed = evaluateSymbolicExpression(symbolic_expression, inputs);
+      expected_output = Number(computed);
+    } catch {
+      // Retain parsed expected_output if expression requires specialized compiled evaluator
+    }
 
     return {
       formula_id,

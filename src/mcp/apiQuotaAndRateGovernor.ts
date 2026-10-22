@@ -23,7 +23,12 @@ export type ExternalApiProvider =
   | 'GOOGLE_MAPS_PLACES'
   | 'GOOGLE_MAPS_ROUTES'
   | 'GEMINI_API'
-  | 'GROQ_API';
+  | 'GROQ_API'
+  | 'MISTRAL_API'
+  | 'OPENROUTER_API'
+  | 'ALPACA_PAPER_API'
+  | 'EULERPOOL_API'
+  | 'META_API';
 
 export interface QuotaWindowCeilings {
   readonly requests_per_minute: number;
@@ -54,6 +59,33 @@ export const DEFAULT_QUOTA_CEILINGS: Record<ExternalApiProvider, QuotaWindowCeil
     requests_per_day: 14400,
     requests_per_week: 50000,
     token_budget_per_task: 16000
+  },
+  MISTRAL_API: {
+    requests_per_minute: 30,
+    requests_per_day: 10000,
+    requests_per_week: 50000,
+    token_budget_per_task: 16000
+  },
+  OPENROUTER_API: {
+    requests_per_minute: 30,
+    requests_per_day: 10000,
+    requests_per_week: 50000,
+    token_budget_per_task: 16000
+  },
+  ALPACA_PAPER_API: {
+    requests_per_minute: 60,
+    requests_per_day: 2000,
+    requests_per_week: 10000
+  },
+  EULERPOOL_API: {
+    requests_per_minute: 30,
+    requests_per_day: 1000,
+    requests_per_week: 5000
+  },
+  META_API: {
+    requests_per_minute: 60,
+    requests_per_day: 4800,
+    requests_per_week: 25000
   }
 });
 

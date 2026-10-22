@@ -686,6 +686,16 @@ export class DurableEvidenceStore {
           CREATE INDEX IF NOT EXISTS idx_hypo_product
             ON market_hypothesis_ledger(product_id);
 
+          CREATE TABLE IF NOT EXISTS market_provider_audit_log (
+            audit_id TEXT PRIMARY KEY,
+            executed_at_utc TIMESTAMPTZ NOT NULL,
+            summary_json JSONB NOT NULL,
+            providers_json JSONB NOT NULL,
+            jcs_sha256 TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_provider_audit_time
+            ON market_provider_audit_log(executed_at_utc DESC);
+
           -- Seed all 5 canonical connectors into market_connector_telemetry (SLICE3-FIX-02)
           INSERT INTO market_connector_telemetry (connector_id, name, channel, status, last_fetch_utc, error_count, telemetry_json)
           VALUES

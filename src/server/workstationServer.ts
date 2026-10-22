@@ -26,6 +26,7 @@ import type {
 import { FormulaCardInput } from '../research/formulaRegistry.js';
 import { validateExplicitUserIntent } from '../research/bundleEvaluator.js';
 import { loadServerSecrets, getSkillsMcpRegistry } from '../mcp/serverSecretLoader.js';
+import { ProviderCapabilityAuditor } from '../mcp/providerCapabilityAuditor.js';
 import { sha256 } from '../canonical/crypto.js';
 import { canonicalizeJCS } from '../canonical/jcs.js';
 import { sanitizeForJcs } from '../agents/m6AgentFramework.js';
@@ -1181,6 +1182,23 @@ export class WorkstationServer {
         configured_capabilities: registry.filter((c) => c.is_configured).length,
         capabilities: registry
       });
+      return;
+    }
+
+    // Route 28: Provider Capability Audit API (Step 1)
+    if (method === 'GET' && pathname === '/api/health/providers') {
+      try {
+        const pool = this.stateManager.getCentralResearchCore().getEvidenceStore().getPgPool();
+        const auditor = new ProviderCapabilityAuditor({ pgPool: pool });
+        const audit = await auditor.executeAudit();
+        sendJsonResponse(res, 200, audit);
+      } catch (e: any) {
+        const err = createServerErrorEnvelope(
+          e instanceof Error ? e : new Error(String(e)),
+          'server:api:health-providers'
+        );
+        sendJsonResponse(res, 500, err);
+      }
       return;
     }
 
