@@ -10,6 +10,7 @@
  */
 
 import http from 'node:http';
+import { WorkstationServer } from '../server/workstationServer.js';
 
 function assert(condition: any, message: string): asserts condition {
   if (!condition) {
@@ -57,7 +58,19 @@ async function main() {
   console.log(' Server Target: http://127.0.0.1:4310 | Bound Port: 4310');
   console.log('================================================================================\n');
 
-  // Probe 1: Server & Database Health
+  let serverToStop: WorkstationServer | null = null;
+  try {
+    try {
+      await fetchJson('/api/health');
+    } catch {
+      console.log('[Probe] No server detected on port 4310. Starting WorkstationServer on port 4310...');
+      const server = new WorkstationServer({ port: 4310, host: '127.0.0.1' });
+      await server.start();
+      serverToStop = server;
+      console.log('[Probe] WorkstationServer started on port 4310.\n');
+    }
+
+    // Probe 1: Server & Database Health
   console.log('--- PROBE 1: Server & Database Health ---');
   const health = await fetchJson('/api/health');
   console.log('GET /api/health HTTP Status:', health.status);
@@ -117,10 +130,12 @@ async function main() {
   assert(dimKeys.includes('evidence_quality'), 'Must contain evidence_quality');
   assert(dimKeys.includes('execution_feasibility'), 'Must contain execution_feasibility');
 
-  console.log('Overall Score (bps):', scorecard.overall_score_bps);
+  console.log('Unweighted Diagnostic Index (bps):', scorecard.unweighted_diagnostic_index_bps ?? scorecard.overall_score_bps);
+  console.log('Is Authoritative Gate Score:', scorecard.is_authoritative_gate_score);
   console.log('Decision Outcome:', scorecard.decision_outcome);
   console.log('Decision Rationale:', scorecard.decision_rationale);
-  assert(typeof scorecard.overall_score_bps === 'number' && !isNaN(scorecard.overall_score_bps), 'Overall score must be a valid number');
+  assert(typeof (scorecard.unweighted_diagnostic_index_bps ?? scorecard.overall_score_bps) === 'number', 'Diagnostic index must be a valid number');
+  assert(scorecard.is_authoritative_gate_score === false, 'is_authoritative_gate_score must be explicitly false');
   assert(typeof scorecard.decision_outcome === 'string', 'Decision outcome must be present');
   console.log('PROBE 3 PASSED: 8-Dimension scorecard verified with complete structural dimensions.\n');
 
@@ -130,7 +145,7 @@ async function main() {
   console.log('GET /api/hypothesis/list HTTP Status:', hypListRes.status);
   console.log('Hypotheses Found:', hypListRes.json.count);
   assert(hypListRes.status === 200, 'GET /api/hypothesis/list must return HTTP 200');
-  assert(hypListRes.json.count >= 1, 'At least 1 hypothesis must be persisted in database for brass valve');
+  assert(hypListRes.json.count >= 8, 'All 8 structural hypotheses must be persisted in database for brass valve');
 
   const hyp = hypListRes.json.hypotheses[hypListRes.json.hypotheses.length - 1];
   console.log('Hypothesis ID:', hyp.hypothesis_id);
@@ -168,15 +183,25 @@ async function main() {
   console.log('Viable Channels Count:', distViability.viable_channels_count);
   console.log('Best Channel:', distViability.best_channel);
   for (const ch of distViability.channels) {
-    console.log(`  Channel [${ch.channel}]: Retail ASP ₹${ch.retail_selling_price_inr} | Net Contribution ₹${ch.net_contribution_inr} | Margin ${ch.contribution_margin_bps} bps | Viable: ${ch.is_viable}`);
+    console.log(`  Channel [${ch.channel}]: Retail ASP ₹${ch.retail_selling_price_inr} (${ch.price_epistemic_class}) | Net Contribution ₹${ch.net_contribution_inr} | Margin ${ch.contribution_margin_bps} bps | Viable: ${ch.is_viable}`);
     assert(!isNaN(ch.net_contribution_inr), 'Net contribution must not be NaN');
     assert(!isNaN(ch.contribution_margin_bps), 'Margin bps must not be NaN');
+    if (ch.channel === 'B2B_DISTRIBUTION') {
+      assert(ch.price_epistemic_class === 'ESTIMATED_PROXY', 'B2B channel price must be labeled ESTIMATED_PROXY');
+    }
   }
   console.log('PROBE 6 PASSED: Multi-channel pure BigInt arithmetic verified with zero float drift.\n');
 
   console.log('================================================================================');
   console.log(' ALL 6 SLICE 3 LIVE LOOPBACK PROBES COMPLETED SUCCESSFULLY');
   console.log('================================================================================');
+  } finally {
+    if (serverToStop) {
+      console.log('\n[Probe] Stopping in-process WorkstationServer...');
+      await serverToStop.stop();
+      console.log('[Probe] Server stopped cleanly.');
+    }
+  }
 }
 
 main().catch((err) => {

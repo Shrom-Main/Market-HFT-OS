@@ -999,7 +999,72 @@ export class WorkstationServer {
       return;
     }
 
-    // Route 24: Fallback / 404
+    // Route 24: Single-Lead Opportunity Dossier API (Slice 4)
+    if (method === 'GET' && pathname === '/api/research/dossier') {
+      const productId = urlObj.searchParams.get('product_id');
+      const asOfUtc = urlObj.searchParams.get('as_of_utc') || undefined;
+
+      if (!productId) {
+        const err = createServerErrorEnvelope(
+          new Error('E-SRV-MISSING-ARGUMENT: Missing required query parameter "product_id" for dossier retrieval.'),
+          'server:api:research-dossier'
+        );
+        sendJsonResponse(res, 400, err);
+        return;
+      }
+
+      try {
+        const dossier = await this.stateManager.getOpportunityDossier(productId, asOfUtc);
+        sendJsonResponse(res, 200, {
+          product_id: productId,
+          dossier
+        });
+      } catch (e: any) {
+        const statusCode = e?.message?.includes('E-PROD-NOT-FOUND') ? 404 : 400;
+        const err = createServerErrorEnvelope(
+          e instanceof Error ? e : new Error(String(e)),
+          'server:api:research-dossier'
+        );
+        sendJsonResponse(res, statusCode, err);
+      }
+      return;
+    }
+
+    // Route 25: Local-First Research Query API & Opt-In External Provider Synthesis (Slice 4)
+    if (method === 'POST' && pathname === '/api/research/query') {
+      const bodyResult = await readJsonBody(req);
+      if (bodyResult.error) {
+        sendJsonResponse(res, bodyResult.error.status, bodyResult.error.envelope);
+        return;
+      }
+
+      const body = bodyResult.data || {};
+      if (!body.query || typeof body.query !== 'string' || body.query.trim().length === 0) {
+        const err = createServerErrorEnvelope(
+          new Error('E-SRV-MISSING-ARGUMENT: Missing required field "query" for research query execution.'),
+          'server:api:research-query'
+        );
+        sendJsonResponse(res, 400, err);
+        return;
+      }
+
+      try {
+        const result = await this.stateManager.queryResearch(body);
+        sendJsonResponse(res, 200, result);
+      } catch (e: any) {
+        const isRateLimit = e?.statusCode === 429 || e?.message?.includes('DEFERRED_RATE_LIMIT_PROTECTED');
+        const isOptInReq = e?.message?.includes('E-QUERY-EXPLICIT-OPT-IN-REQUIRED');
+        const statusCode = isRateLimit ? 429 : (isOptInReq ? 400 : 500);
+        const err = createServerErrorEnvelope(
+          e instanceof Error ? e : new Error(String(e)),
+          'server:api:research-query'
+        );
+        sendJsonResponse(res, statusCode, err);
+      }
+      return;
+    }
+
+    // Route 26: Fallback / 404
     const err = createServerErrorEnvelope(
       new Error(`E-SRV-NOT-FOUND: Resource ${pathname} with method ${method} not found on workstation server.`),
       'server:http:not-found'

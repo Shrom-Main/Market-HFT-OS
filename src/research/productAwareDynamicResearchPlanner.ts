@@ -164,12 +164,14 @@ export class ProductAwareDynamicResearchPlanner {
     // STAGE 1: CustomerTaskAgent
     // ------------------------------------------------------------------------
     const grievances = product.buyer_grievances || [];
+    const sampleSize = grievances.length > 0 ? grievances.length : 1;
+
     const customerOutput: CustomerTaskOutput = {
       complaint_taxonomy: grievances.map((g, idx) => ({
         failure_mode: g.failure_mode || g.summary || 'Quality Defect',
         failure_severity: g.severity,
-        failure_frequency_pct: g.frequency_pct || Math.max(5, 25 - idx * 5),
-        sample_denominator: 100,
+        failure_frequency_pct: g.frequency_pct || (grievances.length > 0 ? Math.max(5, Math.round(100 / grievances.length)) : 0),
+        sample_denominator: sampleSize,
         representative_quote: g.representative_quote,
         engineered_remediation: g.engineered_remediation
       })),
@@ -177,10 +179,10 @@ export class ProductAwareDynamicResearchPlanner {
         `Core ${product.name} baseline utility`,
         product.upstream_supply?.raw_material_basis || 'Standard material specification'
       ],
-      willingness_to_pay_bps: 1500 // 15% willingness to pay for verified defect-free product
+      willingness_to_pay_bps: 0 // Default 0 bps unless empirical WTP evidence exists
     };
 
-    // Promote customer grievance observation to central store
+    // Promote customer grievance observation to central store truthfully labeled
     const custEvId = `EVID-CUST-${sha256(product.product_id + ':cust:' + nowUtc).slice(0, 8)}`;
     await centralResearchCore.storeEvidence({
       evidence_id: custEvId,
@@ -196,22 +198,16 @@ export class ProductAwareDynamicResearchPlanner {
         negative_review_pct: product.overall_negative_review_pct
       },
       origin: {
-        origin_class: product.evidence_origin?.origin_class === 'LIVE_VERIFIED_CAPTURE'
-          ? 'LIVE_VERIFIED_CAPTURE'
-          : 'RECORDED_GOLDEN_FIXTURE',
+        origin_class: 'RECORDED_GOLDEN_FIXTURE',
         source_url: `corpus://reviews/${product.product_id}`,
         captured_at_utc: nowUtc,
         tool_run_id: runId,
         worker_id: 'worker:customer-agent:v1',
         cryptographic_hash: sha256(JSON.stringify(customerOutput)),
-        is_attested: product.evidence_origin?.origin_class === 'LIVE_VERIFIED_CAPTURE',
-        verification_notes: product.evidence_origin?.origin_class === 'LIVE_VERIFIED_CAPTURE'
-          ? 'Synthesized customer grievance cluster from verified network review corpus'
-          : 'Locally executed research fixture — not an authenticated external network capture'
+        is_attested: false,
+        verification_notes: 'Locally executed research fixture — not an authenticated external network capture'
       },
-      epistemic_class: product.evidence_origin?.origin_class === 'LIVE_VERIFIED_CAPTURE'
-        ? 'OBSERVED_FACT'
-        : 'ESTIMATED_PROXY',
+      epistemic_class: 'ESTIMATED_PROXY',
       jcs_sha256: sha256(canonicalizeJCS(sanitizeForJcs(customerOutput)))
     });
     promotedEvidenceIds.push(custEvId);
@@ -289,53 +285,66 @@ export class ProductAwareDynamicResearchPlanner {
     const inboundFreight = logisticsOutput.inbound_freight_inr;
     const packagingCost = logisticsOutput.packaging_kitting_inr;
 
+    const baseAspSubunits = BigInt(Math.trunc(retailAsp * 10000));
+    const factoryCostSubunits = BigInt(Math.trunc(factoryCost * 10000));
+    const inboundFreightSubunits = BigInt(Math.trunc(inboundFreight * 10000));
+    const packagingCostSubunits = BigInt(Math.trunc(packagingCost * 10000));
+    const landedSubunits = factoryCostSubunits + inboundFreightSubunits + packagingCostSubunits;
+
     const channels: UnitEconomicsTaskOutput['channels'] = [
       'AMAZON_IN' as const,
       'FLIPKART' as const,
       'MEESHO' as const,
       'B2B_DISTRIBUTION' as const
     ].map((ch) => {
-      let asp = retailAsp;
-      let platformFee = 0;
-      let fulfillment = 50.0;
-      let returnRateBps = 300;
+      let channelAspSubunits = baseAspSubunits;
+      let platformFeeSubunits = 0n;
+      let fulfillmentSubunits = 50_0000n;
+      let returnRateBps = 300n;
 
       if (ch === 'AMAZON_IN') {
-        platformFee = asp * 0.12;
-        fulfillment = 55.0;
-        returnRateBps = 350;
+        platformFeeSubunits = (channelAspSubunits * 1200n) / 10000n;
+        fulfillmentSubunits = 55_0000n;
+        returnRateBps = 350n;
       } else if (ch === 'FLIPKART') {
-        platformFee = asp * 0.10;
-        fulfillment = 50.0;
-        returnRateBps = 400;
+        platformFeeSubunits = (channelAspSubunits * 1000n) / 10000n;
+        fulfillmentSubunits = 50_0000n;
+        returnRateBps = 400n;
       } else if (ch === 'MEESHO') {
-        platformFee = asp * 0.02;
-        fulfillment = 75.0;
-        returnRateBps = 1200;
+        platformFeeSubunits = (channelAspSubunits * 200n) / 10000n;
+        fulfillmentSubunits = 75_0000n;
+        returnRateBps = 1200n;
       } else if (ch === 'B2B_DISTRIBUTION') {
-        asp = retailAsp * 0.65;
-        platformFee = 0;
-        fulfillment = 12.0;
-        returnRateBps = 50;
+        channelAspSubunits = (baseAspSubunits * 6500n) / 10000n;
+        platformFeeSubunits = 0n;
+        fulfillmentSubunits = 12_0000n;
+        returnRateBps = 50n;
       }
 
-      const statutoryTax = (platformFee + fulfillment) * 0.18 + asp * 0.02;
-      const returnDrag = ((fulfillment + 60.0 + factoryCost) * returnRateBps) / 10000;
-      const landed = factoryCost + inboundFreight + packagingCost;
-      const netContribution = Number((asp - (landed + platformFee + fulfillment + statutoryTax + returnDrag)).toFixed(2));
-      const marginBps = asp > 0 ? Math.round((netContribution / asp) * 10000) : -10000;
+      const feeGstSubunits = ((platformFeeSubunits + fulfillmentSubunits) * 1800n) / 10000n;
+      const tcsTdsSubunits = (channelAspSubunits * 200n) / 10000n;
+      const statutoryTaxSubunits = feeGstSubunits + tcsTdsSubunits;
+
+      const returnLogisticsSubunits = 60_0000n;
+      const returnDragSubunits = ((fulfillmentSubunits + returnLogisticsSubunits + factoryCostSubunits) * returnRateBps) / 10000n;
+
+      const totalDeductionsSubunits = landedSubunits + platformFeeSubunits + fulfillmentSubunits + statutoryTaxSubunits + returnDragSubunits;
+      const netContributionSubunits = channelAspSubunits - totalDeductionsSubunits;
+      const marginBps = channelAspSubunits > 0n
+        ? Number((netContributionSubunits * 10000n) / channelAspSubunits)
+        : -10000;
 
       return {
         channel: ch,
-        retail_asp_inr: asp,
-        landed_cost_inr: landed,
-        platform_fee_inr: Number(platformFee.toFixed(2)),
-        fulfillment_fee_inr: fulfillment,
-        statutory_tax_inr: Number(statutoryTax.toFixed(2)),
-        return_drag_inr: Number(returnDrag.toFixed(2)),
-        net_contribution_inr: netContribution,
+        retail_asp_inr: Number(channelAspSubunits) / 10000,
+        landed_cost_inr: Number(landedSubunits) / 10000,
+        platform_fee_inr: Number(platformFeeSubunits) / 10000,
+        fulfillment_fee_inr: Number(fulfillmentSubunits) / 10000,
+        statutory_tax_inr: Number(statutoryTaxSubunits) / 10000,
+        return_drag_inr: Number(returnDragSubunits) / 10000,
+        net_contribution_inr: Number(netContributionSubunits) / 10000,
         contribution_margin_bps: marginBps,
-        is_viable: factoryCost > 0 && netContribution > 0 && marginBps >= 1000
+        is_viable: factoryCostSubunits > 0n && netContributionSubunits > 0n && marginBps >= 1000
       };
     });
 
@@ -521,37 +530,90 @@ export class ProductAwareDynamicResearchPlanner {
       }
     ];
 
-    const hypothesisRecord: HypothesisLedgerRecord = {
-      hypothesis_id: hypothesisId,
-      product_id: product.product_id,
-      title: `${product.name} Opportunity Hypothesis`,
-      current_stage: finalStage,
-      explanation_type: dominantExplanation,
-      hypothesis_statement: INCUMBENT_FAILURE_HYPOTHESIS_STATEMENTS[dominantExplanation],
-      supporting_evidence_ids: promotedEvidenceIds,
-      disconfirming_evidence_ids: [],
-      validation_method: 'Product-Aware 6-Agent Research Planner & 8-Dimension Scorecard',
-      verdict: scorecard.decision_outcome === 'ECONOMICS_FAIL' || scorecard.decision_outcome === 'DISTRIBUTION_FAIL'
-        ? 'DISCONFIRMED'
-        : (scorecard.decision_outcome === 'INSUFFICIENT_EVIDENCE' ? 'VALIDATION_REQUIRED' : 'SUPPORTED'),
-      scorecard_result: scorecard,
-      task_outputs: {
-        customer: customerOutput,
-        seller: sellerOutput,
-        supply: supplyOutput,
-        logistics: logisticsOutput,
-        unit_economics: unitEconomicsOutput,
-        adversarial: adversarialOutput
-      },
-      history: hypothesisHistory,
-      created_at_utc: nowUtc,
-      updated_at_utc: nowUtc
-    };
+    // Evaluate and persist all 8 structural incumbent-failure hypotheses (SLICE3-FIX-01)
+    const baseTimeMs = Date.parse(nowUtc);
+    const allExplTypes = Object.keys(INCUMBENT_FAILURE_HYPOTHESIS_STATEMENTS) as IncumbentFailureHypothesisType[];
+    const all8Hypotheses: HypothesisLedgerRecord[] = allExplTypes.map((exp, idx) => {
+      const isDominant = exp === dominantExplanation;
+      const hypId = `HYP-${product.product_id}-${exp}`;
+      const statement = INCUMBENT_FAILURE_HYPOTHESIS_STATEMENTS[exp];
+      const itemTimeUtc = new Date(baseTimeMs + idx * 10).toISOString();
 
-    // Store in PostgreSQL 16.8 market_hypothesis_ledger
-    await centralResearchCore.storeHypothesis(hypothesisRecord);
+      let verdict: HypothesisLedgerRecord['verdict'] = 'VALIDATION_REQUIRED';
+      let stage: HypothesisStage = 'EVIDENCE_GATHERING';
 
-    // If McpRunLedger is provided, log each specialist task agent execution
+      if (isDominant) {
+        stage = finalStage;
+        verdict = (scorecard.decision_outcome === 'ECONOMICS_FAIL' || scorecard.decision_outcome === 'DISTRIBUTION_FAIL')
+          ? 'DISCONFIRMED'
+          : (scorecard.decision_outcome === 'INSUFFICIENT_EVIDENCE' ? 'VALIDATION_REQUIRED' : 'SUPPORTED');
+      } else {
+        const advHyp = adversarialOutput.incumbent_evaluations.find((h) => h.explanation_type === exp);
+        if (advHyp) {
+          verdict = advHyp.status === 'SUPPORTED' ? 'SUPPORTED' : (advHyp.status === 'DISCONFIRMED' ? 'DISCONFIRMED' : 'VALIDATION_REQUIRED');
+          stage = advHyp.status === 'SUPPORTED' ? 'UNDER_CHALLENGE' : 'EVIDENCE_GATHERING';
+        }
+      }
+
+      const initialTransitions = [
+        {
+          from_stage: null,
+          to_stage: 'DETECTED' as HypothesisStage,
+          transitioned_at_utc: itemTimeUtc,
+          rationale: `Structural hypothesis initialized for ${product.name} under ${product.category}.`
+        },
+        {
+          from_stage: 'DETECTED' as HypothesisStage,
+          to_stage: 'EVIDENCE_GATHERING' as HypothesisStage,
+          transitioned_at_utc: itemTimeUtc,
+          rationale: 'Evidence gathering and multi-channel economic synthesis completed.'
+        },
+        {
+          from_stage: 'EVIDENCE_GATHERING' as HypothesisStage,
+          to_stage: 'UNDER_CHALLENGE' as HypothesisStage,
+          transitioned_at_utc: itemTimeUtc,
+          rationale: `Adversarial stress-test executed against 8 incumbent-failure hypotheses (Evaluation: ${exp}).`
+        },
+        {
+          from_stage: 'UNDER_CHALLENGE' as HypothesisStage,
+          to_stage: stage,
+          transitioned_at_utc: itemTimeUtc,
+          rationale: isDominant ? scorecard.decision_rationale : `Evaluated secondary failure mode: verdict ${verdict}.`
+        }
+      ];
+
+      return {
+        hypothesis_id: hypId,
+        product_id: product.product_id,
+        title: `${product.name} — ${exp.replace(/_/g, ' ')} Hypothesis`,
+        current_stage: stage,
+        explanation_type: exp,
+        hypothesis_statement: statement,
+        supporting_evidence_ids: isDominant ? promotedEvidenceIds : [],
+        disconfirming_evidence_ids: [],
+        validation_method: 'Product-Aware 6-Agent Research Planner & 8-Dimension Scorecard',
+        verdict,
+        scorecard_result: scorecard,
+        task_outputs: {
+          customer: customerOutput,
+          seller: sellerOutput,
+          supply: supplyOutput,
+          logistics: logisticsOutput,
+          unit_economics: unitEconomicsOutput,
+          adversarial: adversarialOutput
+        },
+        history: isDominant ? hypothesisHistory : initialTransitions,
+        created_at_utc: itemTimeUtc,
+        updated_at_utc: itemTimeUtc
+      };
+    });
+
+    // Persist all 8 hypotheses into PostgreSQL 16.8 market_hypothesis_ledger
+    for (const hyp of all8Hypotheses) {
+      await centralResearchCore.storeHypothesis(hyp);
+    }
+
+    // Log truthful planner task dispatch events to McpRunLedger
     if (mcpRunLedger) {
       const taskRoles = [
         'CustomerTaskAgent',
@@ -563,9 +625,9 @@ export class ProductAwareDynamicResearchPlanner {
       ];
       for (const role of taskRoles) {
         mcpRunLedger.appendEvent(
-          'TOOL_CALL_INVOKED',
+          'TASK_DISPATCHED',
           `task:${role.toLowerCase()}:${product.product_id}`,
-          `worker:${role.toLowerCase()}:v1`,
+          'planner:research-orchestrator',
           {
             product_id: product.product_id,
             product_name: product.name,
@@ -577,6 +639,8 @@ export class ProductAwareDynamicResearchPlanner {
         );
       }
     }
+
+    const hypothesisRecord = all8Hypotheses.find((h) => h.explanation_type === dominantExplanation)!;
 
     const rawResult: Omit<DynamicResearchExecutionResult, 'jcs_sha256'> = {
       run_id: runId,

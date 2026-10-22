@@ -124,7 +124,9 @@ export interface BitemporalEventOverlay {
     | 'COMMODITY_PRICE_SHIFT'
     | 'STATUTORY_CIRCULAR'
     | 'SUPPLIER_QUOTE_UPDATE'
-    | 'RED_TEAM_WARNING';
+    | 'RED_TEAM_WARNING'
+    | 'FESTIVAL_WINDOW_OPEN'
+    | 'FESTIVAL_DEMAND_SURGE';
   event_timestamp_utc: string;
   as_of_utc: string;
   severity: 'INFO' | 'WARNING' | 'CRITICAL';
@@ -683,6 +685,16 @@ export class DurableEvidenceStore {
           );
           CREATE INDEX IF NOT EXISTS idx_hypo_product
             ON market_hypothesis_ledger(product_id);
+
+          -- Seed all 5 canonical connectors into market_connector_telemetry (SLICE3-FIX-02)
+          INSERT INTO market_connector_telemetry (connector_id, name, channel, status, last_fetch_utc, error_count, telemetry_json)
+          VALUES
+            ('conn:marketplace:amazon-in', 'Amazon India Marketplace Connector', 'MARKETPLACE', 'IDLE', NOW(), 0, '{"connector_id":"conn:marketplace:amazon-in","name":"Amazon India Marketplace Connector","channel":"MARKETPLACE","status":"IDLE","ingested_count":0,"error_count":0}'::jsonb),
+            ('conn:supplier:indiamart', 'IndiaMART Wholesale Supplier Connector', 'SUPPLIER', 'IDLE', NOW(), 0, '{"connector_id":"conn:supplier:indiamart","name":"IndiaMART Wholesale Supplier Connector","channel":"SUPPLIER","status":"IDLE","ingested_count":0,"error_count":0}'::jsonb),
+            ('conn:media:youtube-reviews', 'YouTube Product Review Miner', 'MEDIA', 'IDLE', NOW(), 0, '{"connector_id":"conn:media:youtube-reviews","name":"YouTube Product Review Miner","channel":"MEDIA","status":"IDLE","ingested_count":0,"error_count":0}'::jsonb),
+            ('conn:macro:rbi-fbil-lme', 'Macro Economic & Commodity Feeds', 'MACRO', 'IDLE', NOW(), 0, '{"connector_id":"conn:macro:rbi-fbil-lme","name":"Macro Economic & Commodity Feeds","channel":"MACRO","status":"IDLE","ingested_count":0,"error_count":0}'::jsonb),
+            ('conn:statutory:cbic-msme', 'CBIC Customs & MSME Compliance Feeds', 'STATUTORY', 'IDLE', NOW(), 0, '{"connector_id":"conn:statutory:cbic-msme","name":"CBIC Customs & MSME Compliance Feeds","channel":"STATUTORY","status":"IDLE","ingested_count":0,"error_count":0}'::jsonb)
+          ON CONFLICT (connector_id) DO NOTHING;
         `);
 
         // Evidence is append-only: no destructive in-place DELETE or UPDATE on market_bitemporal_evidence.
@@ -733,9 +745,7 @@ export class DurableEvidenceStore {
         `INSERT INTO market_bitemporal_evidence
            (evidence_id, product_id, channel, observed_at_utc, as_of_utc, payload_sha256, origin_class, epistemic_class, jcs_sha256, record_json)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         ON CONFLICT (evidence_id) DO UPDATE SET
-           record_json = EXCLUDED.record_json,
-           jcs_sha256 = EXCLUDED.jcs_sha256`,
+         ON CONFLICT (evidence_id) DO NOTHING`,
         [
           record.evidence_id,
           record.product_id,
@@ -1014,6 +1024,20 @@ export class DurableEvidenceStore {
   public async storeHypothesis(record: HypothesisLedgerRecord): Promise<void> {
     await this.ensureConnected();
     try {
+      // Check existing hypothesis to preserve and merge prior stage transitions (Audit Blocker 4)
+      const existing = await this.pgPool!.query(
+        'SELECT history FROM market_hypothesis_ledger WHERE hypothesis_id = $1',
+        [record.hypothesis_id]
+      );
+      let mergedHistory = record.history;
+      if (existing.rows.length > 0 && Array.isArray(existing.rows[0].history)) {
+        const priorHistory = existing.rows[0].history;
+        const keyOf = (h: any) => h.transitioned_at_utc ? `${h.from_stage}:${h.to_stage}:${h.transitioned_at_utc}` : `${h.stage}:${h.timestamp_utc}`;
+        const seen = new Set(priorHistory.map(keyOf));
+        const newUnique = (record.history || []).filter((h: any) => !seen.has(keyOf(h)));
+        mergedHistory = [...priorHistory, ...newUnique];
+      }
+
       await this.pgPool!.query(
         `INSERT INTO market_hypothesis_ledger
            (hypothesis_id, product_id, title, current_stage, explanation_type, hypothesis_statement,
@@ -1045,7 +1069,7 @@ export class DurableEvidenceStore {
           record.verdict,
           record.scorecard_result ? JSON.stringify(record.scorecard_result) : null,
           JSON.stringify(record.task_outputs),
-          JSON.stringify(record.history),
+          JSON.stringify(mergedHistory),
           record.created_at_utc,
           record.updated_at_utc
         ]

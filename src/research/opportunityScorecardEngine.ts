@@ -53,6 +53,8 @@ export interface ScorecardDimension {
 export interface DistributionChannelAnalysis {
   readonly channel: MarketplaceChannel;
   readonly retail_selling_price_inr: number;
+  readonly price_epistemic_class: 'OBSERVED_QUOTE' | 'ESTIMATED_PROXY' | 'DATA_REQUIRED';
+  readonly explicit_assumptions: readonly string[];
   readonly factory_cost_inr: number;
   readonly platform_fee_inr: number;
   readonly fulfillment_fee_inr: number;
@@ -85,7 +87,9 @@ export interface OpportunityScorecardResult {
     readonly evidence_quality: ScorecardDimension;
     readonly execution_feasibility: ScorecardDimension;
   };
-  readonly overall_score_bps: number;
+  readonly unweighted_diagnostic_index_bps: number;
+  readonly is_authoritative_gate_score: false;
+  readonly overall_score_bps?: number; // Kept for backwards compatibility
   readonly decision_outcome: DecisionOutcome;
   readonly decision_rationale: string;
   readonly disqualifying_reasons: readonly string[];
@@ -280,69 +284,94 @@ export class OpportunityScorecardEngine {
     const inboundFreight = (product.upstream_supply as any)?.inbound_freight_est_inr || 15.0;
     const packagingCost = (product.upstream_supply as any)?.packaging_kitting_inr || 10.0;
 
+    // Pure BigInt Subunit Arithmetic Standard (1 INR = 10,000 subunits)
+    const baseAspSubunits = BigInt(Math.trunc(retailAsp * 10000));
+    const factoryCostSubunits = BigInt(Math.trunc(factoryCost * 10000));
+    const inboundFreightSubunits = BigInt(Math.trunc(inboundFreight * 10000));
+    const packagingCostSubunits = BigInt(Math.trunc(packagingCost * 10000));
+
     const channelsToEvaluate: MarketplaceChannel[] = ['AMAZON_IN', 'FLIPKART', 'MEESHO', 'B2B_DISTRIBUTION'];
     const channelAnalyses: DistributionChannelAnalysis[] = channelsToEvaluate.map((channel) => {
-      let asp = retailAsp;
-      let platformFee = 0;
-      let fulfillment = 0;
-      let returnRateBps = 300; // 3.00%
-      let freight = inboundFreight;
-      let pkg = packagingCost;
+      let channelAspSubunits = baseAspSubunits;
+      let platformFeeSubunits = 0n;
+      let fulfillmentSubunits = 0n;
+      let returnRateBps = 300n; // 3.00%
+      let freightSubunits = inboundFreightSubunits;
+      let pkgSubunits = packagingCostSubunits;
+      let priceEpistemicClass: 'OBSERVED_QUOTE' | 'ESTIMATED_PROXY' | 'DATA_REQUIRED' =
+        baseAspSubunits > 0n ? 'OBSERVED_QUOTE' : 'DATA_REQUIRED';
+      let explicitAssumptions: string[] = ['Prevailing marketplace retail ASP observed from live listing'];
 
       if (channel === 'AMAZON_IN') {
-        platformFee = asp * 0.12; // 12% referral fee
-        fulfillment = 55.0; // FBA weight fee
-        returnRateBps = 350;
+        platformFeeSubunits = (channelAspSubunits * 1200n) / 10000n; // 12% referral fee
+        fulfillmentSubunits = 55_0000n; // ₹55 FBA weight handling fee
+        returnRateBps = 350n;
+        explicitAssumptions = ['Amazon India 12% category referral fee', '₹55 standard FBA fulfillment fee', '3.5% return rate'];
       } else if (channel === 'FLIPKART') {
-        platformFee = asp * 0.10;
-        fulfillment = 50.0;
-        returnRateBps = 400;
+        platformFeeSubunits = (channelAspSubunits * 1000n) / 10000n; // 10% commission
+        fulfillmentSubunits = 50_0000n; // ₹50 Ekart fulfillment
+        returnRateBps = 400n;
+        explicitAssumptions = ['Flipkart 10% marketplace commission', '₹50 standard fulfillment fee', '4.0% return rate'];
       } else if (channel === 'MEESHO') {
-        platformFee = asp * 0.02; // Very low commission
-        fulfillment = 75.0; // Higher shipping
-        returnRateBps = 1200; // High Meesho return rate (12%)
+        platformFeeSubunits = (channelAspSubunits * 200n) / 10000n; // 2% commission
+        fulfillmentSubunits = 75_0000n; // ₹75 3PL logistics
+        returnRateBps = 1200n; // 12% return rate
+        explicitAssumptions = ['Meesho 2% platform fee', '₹75 3PL transit & kitting', '12.0% high return drag'];
       } else if (channel === 'B2B_DISTRIBUTION') {
-        asp = retailAsp * 0.65; // Wholesale ASP
-        platformFee = 0;
-        fulfillment = 12.0; // Bulk carton freight per unit
-        returnRateBps = 50; // 0.5% B2B return rate
-        freight = inboundFreight * 0.6;
-        pkg = packagingCost * 0.5;
+        channelAspSubunits = (baseAspSubunits * 6500n) / 10000n; // 35% wholesale discount
+        platformFeeSubunits = 0n;
+        fulfillmentSubunits = 12_0000n; // ₹12 bulk carton freight per unit
+        returnRateBps = 50n; // 0.5% return rate
+        freightSubunits = (inboundFreightSubunits * 6000n) / 10000n;
+        pkgSubunits = (packagingCostSubunits * 5000n) / 10000n;
+        priceEpistemicClass = 'ESTIMATED_PROXY';
+        explicitAssumptions = [
+          'Assumed 35% B2B wholesale discount off retail ASP — unverified quote',
+          'Zero platform fee in direct distributor placement',
+          '₹12 bulk freight handling per unit',
+          '0.5% commercial defect return rate'
+        ];
       }
 
-      // GST (18% on platform fees) + Section 52 TCS / Section 194-O TDS
-      const feeGst = (platformFee + fulfillment) * 0.18;
-      const tcsTds = asp * 0.02;
-      const statutoryTax = Number((feeGst + tcsTds).toFixed(2));
+      // GST (18% on platform fees) + Section 52 TCS (1%) / Section 194-O TDS (1%) = 2%
+      const feeGstSubunits = ((platformFeeSubunits + fulfillmentSubunits) * 1800n) / 10000n;
+      const tcsTdsSubunits = (channelAspSubunits * 200n) / 10000n;
+      const statutoryTaxSubunits = feeGstSubunits + tcsTdsSubunits;
 
       // Return drag = (fulfillment + return logistics + factory cost) * return rate
-      const returnDrag = Number((((fulfillment + 60.0 + factoryCost) * returnRateBps) / 10000).toFixed(2));
+      const returnLogisticsSubunits = 60_0000n; // ₹60 return shipping
+      const returnDragSubunits = ((fulfillmentSubunits + returnLogisticsSubunits + factoryCostSubunits) * returnRateBps) / 10000n;
 
-      const totalDeductions = factoryCost + freight + pkg + platformFee + fulfillment + statutoryTax + returnDrag;
-      const netContribution = Number((asp - totalDeductions).toFixed(2));
-      const marginBps = asp > 0 ? Math.round((netContribution / asp) * 10000) : -10000;
+      const totalDeductionsSubunits =
+        factoryCostSubunits + freightSubunits + pkgSubunits + platformFeeSubunits + fulfillmentSubunits + statutoryTaxSubunits + returnDragSubunits;
+      const netContributionSubunits = channelAspSubunits - totalDeductionsSubunits;
+      const marginBps = channelAspSubunits > 0n
+        ? Number((netContributionSubunits * 10000n) / channelAspSubunits)
+        : -10000;
 
-      const isViable = factoryCost > 0 && netContribution > 0 && marginBps >= 1000;
+      const isViable = factoryCostSubunits > 0n && netContributionSubunits > 0n && marginBps >= 1000;
       let disqualReason: string | undefined;
-      if (factoryCost <= 0) {
+      if (factoryCostSubunits <= 0n) {
         disqualReason = 'Missing empirical factory gate cost';
-      } else if (netContribution <= 0) {
-        disqualReason = `Negative unit contribution (-₹${Math.abs(netContribution).toFixed(2)}) after platform fees and freight`;
+      } else if (netContributionSubunits <= 0n) {
+        disqualReason = `Negative unit contribution (-₹${(Number(-netContributionSubunits) / 10000).toFixed(2)}) after platform fees and freight`;
       } else if (marginBps < 1000) {
         disqualReason = `Margin too thin (${marginBps} bps < 1000 bps hurdle)`;
       }
 
       return {
         channel,
-        retail_selling_price_inr: asp,
-        factory_cost_inr: factoryCost,
-        platform_fee_inr: Number(platformFee.toFixed(2)),
-        fulfillment_fee_inr: Number(fulfillment.toFixed(2)),
-        inbound_freight_inr: Number(freight.toFixed(2)),
-        packaging_inr: Number(pkg.toFixed(2)),
-        return_drag_inr: returnDrag,
-        statutory_tax_inr: statutoryTax,
-        net_contribution_inr: netContribution,
+        retail_selling_price_inr: Number(channelAspSubunits) / 10000,
+        price_epistemic_class: priceEpistemicClass,
+        explicit_assumptions: explicitAssumptions,
+        factory_cost_inr: Number(factoryCostSubunits) / 10000,
+        platform_fee_inr: Number(platformFeeSubunits) / 10000,
+        fulfillment_fee_inr: Number(fulfillmentSubunits) / 10000,
+        inbound_freight_inr: Number(freightSubunits) / 10000,
+        packaging_inr: Number(pkgSubunits) / 10000,
+        return_drag_inr: Number(returnDragSubunits) / 10000,
+        statutory_tax_inr: Number(statutoryTaxSubunits) / 10000,
+        net_contribution_inr: Number(netContributionSubunits) / 10000,
         contribution_margin_bps: marginBps,
         is_viable: isViable,
         disqualification_reason: disqualReason
@@ -544,15 +573,25 @@ export class OpportunityScorecardEngine {
     } else if (dimProblemStrength.net_score_bps >= 5000 && dimDemand.net_score_bps < 5000) {
       decisionOutcome = 'MORE_EVIDENCE_REQUIRED';
       decisionRationale = `Strong customer grievance cluster identified (${dimProblemStrength.net_score_bps} bps), but commercial demand volume is uncorroborated. Additional evidence required.`;
-    } else if (dimEvidence.raw_measurement.origin_class === 'LIVE_VERIFIED_CAPTURE' && dimEvidence.raw_measurement.is_attested) {
-      decisionOutcome = 'READY_FOR_HUMAN_REVIEW';
-      decisionRationale = `All 8 dimensions satisfied with authenticated live network capture. Ready for operator review and paper allocation.`;
-    } else if (overallScoreBps >= 5000 && dimFinancial.status === 'SATISFIED' && dimDistribution.status === 'SATISFIED') {
-      decisionOutcome = 'READY_FOR_PAPER_TEST';
-      decisionRationale = `Opportunity satisfies commercial hurdles under fixture-backed inputs (Score: ${overallScoreBps} bps). Capped at READY_FOR_PAPER_TEST pending live network verification.`;
+    } else if (
+      dimProblemStrength.net_score_bps >= 4000 &&
+      dimDemand.net_score_bps >= 4000 &&
+      dimWhitespace.net_score_bps >= 4000 &&
+      dimSupply.status === 'SATISFIED' &&
+      dimFinancial.status === 'SATISFIED' &&
+      dimDistribution.status === 'SATISFIED' &&
+      dimFeasibility.status === 'SATISFIED'
+    ) {
+      if (dimEvidence.raw_measurement.origin_class === 'LIVE_VERIFIED_CAPTURE' && dimEvidence.raw_measurement.is_attested) {
+        decisionOutcome = 'READY_FOR_HUMAN_REVIEW';
+        decisionRationale = `All 8 individual dimensions satisfied with authenticated live network capture. Ready for operator review and paper allocation.`;
+      } else {
+        decisionOutcome = 'READY_FOR_PAPER_TEST';
+        decisionRationale = `Opportunity satisfies per-dimension hard gates under fixture-backed inputs (Diagnostic index: ${overallScoreBps} bps). Capped at READY_FOR_PAPER_TEST pending live network verification.`;
+      }
     } else {
       decisionOutcome = 'PROMISING_BUT_UNVALIDATED';
-      decisionRationale = `Initial signal shows potential (Score: ${overallScoreBps} bps), but requires specialist agent investigation and empirical corroboration.`;
+      decisionRationale = `Initial signal shows potential (Diagnostic index: ${overallScoreBps} bps), but requires specialist agent investigation and empirical corroboration.`;
     }
 
     const rawResult: Omit<OpportunityScorecardResult, 'jcs_sha256'> = {
@@ -568,6 +607,8 @@ export class OpportunityScorecardEngine {
         evidence_quality: dimEvidence,
         execution_feasibility: dimFeasibility
       },
+      unweighted_diagnostic_index_bps: overallScoreBps,
+      is_authoritative_gate_score: false,
       overall_score_bps: overallScoreBps,
       decision_outcome: decisionOutcome,
       decision_rationale: decisionRationale,

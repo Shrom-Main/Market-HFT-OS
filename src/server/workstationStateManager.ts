@@ -92,6 +92,15 @@ import type {
   OpportunityScorecardResult
 } from '../research/opportunityScorecardEngine.js';
 import {
+  OpportunityDossierService,
+  type OpportunityDossier
+} from '../research/opportunityDossierService.js';
+import {
+  LocalFirstResearchQueryEngine,
+  type ResearchQueryRequest,
+  type ResearchQueryResponse
+} from '../research/localFirstResearchQueryEngine.js';
+import {
   M5SiloAndGroupSimulator,
   SiloCandidateInput,
   SS304Diameter,
@@ -216,6 +225,9 @@ export class WorkstationStateManager {
   private entityIdentityResolver: EntityIdentityResolver;
   private seenConnectorCaptures: Set<string> = new Set();
 
+  // Slice 4: Local-First Research Query Engine
+  private localResearchQueryEngine: LocalFirstResearchQueryEngine;
+
   constructor() {
     this.killSwitchController = new KillSwitchController('NORMAL_PAPER_OPERATION');
     this.mcpServer = new McpServerAdapter();
@@ -234,6 +246,12 @@ export class WorkstationStateManager {
     this.centralResearchCore = new CentralResearchCore();
     this.groqSynthesizer = new GroqResearchSynthesizer();
     this.bundleEvaluator = new BundleEvaluator();
+
+    // Slice 4: Initialize Local-First Research Query Engine
+    this.localResearchQueryEngine = new LocalFirstResearchQueryEngine({
+      centralResearchCore: this.centralResearchCore,
+      productDeck: this.productObservationDeck
+    });
 
     // Initialize tables and verify live Postgres connection
     this.centralResearchCore.initialize().then(async () => {
@@ -623,6 +641,22 @@ export class WorkstationStateManager {
     });
 
     return updated;
+  }
+
+  public getLocalResearchQueryEngine(): LocalFirstResearchQueryEngine {
+    return this.localResearchQueryEngine;
+  }
+
+  public async getOpportunityDossier(productId: string, asOfUtc?: string): Promise<OpportunityDossier> {
+    const product = this.productObservationDeck.getProductById(productId);
+    if (!product) {
+      throw new Error(`E-PROD-NOT-FOUND: Product "${productId}" not found in observation deck.`);
+    }
+    return OpportunityDossierService.buildDossier(product, this.centralResearchCore, asOfUtc);
+  }
+
+  public async queryResearch(request: ResearchQueryRequest): Promise<ResearchQueryResponse> {
+    return this.localResearchQueryEngine.query(request);
   }
 
   public getHealthStatus(livePing?: DatabaseHealthStatus): WorkstationHealthStatus {

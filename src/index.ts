@@ -44,3 +44,6 @@ export * from './mcp/apiQuotaAndRateGovernor.js';
 export * from './mcp/contracts/canonicalMarketGraphContract.js';
 export * from './research/opportunityScorecardEngine.js';
 export * from './research/productAwareDynamicResearchPlanner.js';
+export * from './research/reviewAndGrievanceMiner.js';
+export * from './research/opportunityDossierService.js';
+export * from './research/localFirstResearchQueryEngine.js';
