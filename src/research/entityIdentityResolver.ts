@@ -12,9 +12,11 @@
 import { sha256 } from '../canonical/crypto.js';
 import { canonicalizeJCS } from '../canonical/jcs.js';
 import { sanitizeForJcs } from '../agents/m6AgentFramework.js';
+import { OpportunityCategory, inferCategoryFromEntityId } from '../canonical/opportunityCategory.js';
 
 export type EntityResolutionStatus =
   | 'RESOLVED'
+  | 'RESOLVED_NOVEL_CATEGORY'
   | 'UNRESOLVED_ENTITY_HOLD'
   | 'CONFLICT_DETECTED';
 
@@ -29,6 +31,7 @@ export interface CanonicalProductDefinition {
   default_marketplace: string;
   pack_units: number;
   keywords: string[];
+  category?: OpportunityCategory;
 }
 
 export interface RawObservationEnvelope {
@@ -41,12 +44,14 @@ export interface RawObservationEnvelope {
   extracted_fields?: Record<string, unknown>;
   target_sku_id?: string;
   product_id?: string;
+  category?: OpportunityCategory;
   custom_parameters?: Record<string, unknown>;
 }
 
 export interface ResolvedCanonicalIdentity {
   product_id: string;
   sku_id: string;
+  category?: OpportunityCategory;
   supplier_id?: string;
   seller_id?: string;
   marketplace_id: string;
@@ -216,7 +221,12 @@ export class EntityIdentityResolver {
     }
 
     // 1. Explicit ID Resolution
-    const candidateId = envelope.product_id || envelope.custom_parameters?.product_id;
+    const candidateId: string | undefined =
+      typeof envelope.product_id === 'string'
+        ? envelope.product_id
+        : typeof envelope.custom_parameters?.product_id === 'string'
+          ? (envelope.custom_parameters.product_id as string)
+          : undefined;
     let matchedProd: CanonicalProductDefinition | undefined;
 
     if (candidateId) {
@@ -267,9 +277,74 @@ export class EntityIdentityResolver {
 
     // Fail closed if ambiguous or unresolvable
     if (!matchedProd) {
+      const explicitCategory = envelope.category || (extracted.category as OpportunityCategory | undefined);
+      const hasCategoryHint = Boolean(explicitCategory);
+      const explicitId: string | undefined =
+        candidateId ||
+        (typeof extracted.product_id === 'string' ? extracted.product_id : undefined) ||
+        (typeof extracted.sku_id === 'string' ? extracted.sku_id : undefined) ||
+        (typeof envelope.target_sku_id === 'string' ? envelope.target_sku_id : undefined);
+
+      const isExplicitNonHardware = Boolean(
+        explicitId && (
+          explicitId.startsWith('software:') ||
+          explicitId.startsWith('service:') ||
+          explicitId.startsWith('b2b:') ||
+          explicitId.startsWith('novel:') ||
+          explicitId.startsWith('saas:') ||
+          explicitId.startsWith('api:') ||
+          explicitId.startsWith('sla:') ||
+          explicitId.startsWith('dist:') ||
+          explicitId.startsWith('lab:')
+        )
+      );
+
+      if (hasCategoryHint || isExplicitNonHardware) {
+        const entityId = explicitId || `novel:${sha256(rawStr).slice(0, 12)}`;
+        const inferredCat = inferCategoryFromEntityId(entityId, explicitCategory);
+        const isNovel = inferredCat === 'UNRESOLVED_NOVEL' || !['PHYSICAL_GOODS', 'SOFTWARE_DIGITAL', 'SERVICE_CONTRACT', 'B2B_DISTRIBUTION'].includes(inferredCat);
+        const resStatus: EntityResolutionStatus = isNovel ? 'RESOLVED_NOVEL_CATEGORY' : 'RESOLVED';
+        const skuId = (extracted.sku_id as string) || (envelope.target_sku_id as string) || `SKU-${entityId.toUpperCase().replace(/[^A-Z0-9_-]/g, '-')}`;
+        const marketplace = envelope.source_id.includes('amazon') ? 'AMAZON_IN'
+          : envelope.source_id.includes('indiamart') ? 'INDIAMART'
+          : envelope.source_id.includes('saas') ? 'SAAS_MARKETPLACE'
+          : envelope.source_id.includes('services') ? 'SERVICE_PORTAL'
+          : envelope.source_id.includes('ip') || envelope.source_id.includes('licensing') ? 'LICENSING_PORTAL'
+          : 'COMMERCIAL_EXCHANGE';
+
+        const normClaims = {
+          product_id: entityId,
+          sku_id: skuId,
+          category: inferredCat,
+          hsn_code: String(extracted.hsn_code || '00000000'),
+          marketplace_id: marketplace,
+          pack_units: typeof extracted.pack_units === 'number' ? extracted.pack_units : 1,
+          metrics: extracted
+        };
+
+        return {
+          product_id: entityId,
+          sku_id: skuId,
+          category: inferredCat,
+          supplier_id: extracted.supplier_id as string || undefined,
+          seller_id: extracted.seller_id as string || undefined,
+          marketplace_id: marketplace,
+          hsn_code: String(extracted.hsn_code || '00000000'),
+          pack_units: typeof extracted.pack_units === 'number' ? extracted.pack_units : 1,
+          resolution_status: resStatus,
+          resolution_notes: isNovel
+            ? `Preserved novel or unclassified commercial category [${inferredCat}] in discovery funnel without allowlist rejection.`
+            : `Resolved category-agnostic opportunity [${inferredCat}] for entity ${entityId}.`,
+          raw_capture_sha256: rawCaptureSha256,
+          normalized_observation_sha256: sha256(canonicalizeJCS(sanitizeForJcs(normClaims))),
+          extracted_metrics: extracted
+        };
+      }
+
       const unresIdentity: ResolvedCanonicalIdentity = {
         product_id: 'prod:unresolved',
         sku_id: 'SKU-UNRESOLVED',
+        category: 'UNRESOLVED_NOVEL',
         marketplace_id: envelope.source_id.includes('amazon') ? 'AMAZON_IN' : 'UNKNOWN_MARKETPLACE',
         hsn_code: String(extracted.hsn_code || '00000000'),
         pack_units: 1,
@@ -294,6 +369,7 @@ export class EntityIdentityResolver {
     const normClaims = {
       product_id: matchedProd.product_id,
       sku_id: matchedProd.sku_id,
+      category: matchedProd.category || 'PHYSICAL_GOODS',
       hsn_code: matchedProd.hsn_code,
       marketplace_id: marketplaceId,
       sourcing_hub_region: sourcingHub,
@@ -306,6 +382,7 @@ export class EntityIdentityResolver {
     return {
       product_id: matchedProd.product_id,
       sku_id: matchedProd.sku_id,
+      category: matchedProd.category || 'PHYSICAL_GOODS',
       supplier_id: extracted.supplier_id as string || undefined,
       seller_id: extracted.seller_id as string || undefined,
       marketplace_id: marketplaceId,

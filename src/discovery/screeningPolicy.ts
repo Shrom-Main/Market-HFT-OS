@@ -33,7 +33,8 @@ export type InvestigationTaskType =
   | 'GRIEVANCE_SEVERITY_MINING'
   | 'LOGISTICS_ROUTE_VERIFICATION'
   | 'STATUTORY_REGULATORY_CLEARANCE'
-  | 'CONFLICT_ARBITRATION';
+  | 'CONFLICT_ARBITRATION'
+  | 'CATEGORY_CLASSIFICATION_AND_ENRICHMENT';
 
 export interface RecommendedInvestigationTask {
   readonly task_id: string;
@@ -235,9 +236,38 @@ export class ScreeningPolicyEngine {
     prioritizationReasons: string[],
     deferralReasons: string[]
   ): { score_bps: number } {
+    const cat = candidate.category || 'PHYSICAL_GOODS';
     const asp = candidate.current_observation.prevailing_retail_asp_inr;
     const quote = candidate.current_observation.factory_gate_quote_inr;
 
+    if (cat === 'UNRESOLVED_NOVEL') {
+      deferralReasons.push('Unresolved novel category; commercial economics require category triage.');
+      return { score_bps: 0 };
+    }
+
+    if (cat === 'SOFTWARE_DIGITAL' || cat === 'SERVICE_CONTRACT') {
+      if (asp !== null && quote !== null && asp > 0 && quote > 0) {
+        const spread = asp - quote;
+        if (spread <= 0) {
+          deferralReasons.push(`Negative gross spread (₹${quote} delivery cost exceeds ₹${asp} retail rate); negative margin.`);
+          return { score_bps: 0 };
+        }
+        const marginBps = Math.round((spread / asp) * 10000);
+        prioritizationReasons.push(`Estimated gross spread ₹${spread.toFixed(2)} (${marginBps} bps gross margin).`);
+        return { score_bps: Math.min(10000, Math.round((marginBps / 5000) * 10000)) };
+      }
+
+      if (asp === null || asp <= 0) {
+        deferralReasons.push('Missing retail price / contract billing rate; contribution margin cannot be computed.');
+        return { score_bps: 0 };
+      }
+
+      // Retail ASP is known, but direct delivery quote is null
+      deferralReasons.push('Missing direct delivery/infrastructure cost; gross spread cannot be fabricated.');
+      return { score_bps: 0 };
+    }
+
+    // Default: PHYSICAL_GOODS, B2B_DISTRIBUTION
     if (asp === null || quote === null) {
       if (quote === null) {
         deferralReasons.push('Missing factory gate quote; wholesale procurement spread cannot be computed.');
@@ -385,16 +415,30 @@ export class ScreeningPolicyEngine {
     tasks: RecommendedInvestigationTask[]
   ): void {
     const candidateId = candidate.candidate_id;
+    const cat = candidate.category || 'PHYSICAL_GOODS';
 
-    // Missing factory quote
-    if (candidate.current_observation.factory_gate_quote_inr === null) {
+    // Novel / Unresolved Category Task
+    if (cat === 'UNRESOLVED_NOVEL' || !['PHYSICAL_GOODS', 'SOFTWARE_DIGITAL', 'SERVICE_CONTRACT', 'B2B_DISTRIBUTION'].includes(cat)) {
       tasks.push({
-        task_id: `TASK-QUOTE-${candidateId.slice(4, 12)}`,
-        task_type: 'SUPPLIER_QUOTE_ACQUISITION',
-        target_field: 'factory_gate_quote_inr',
-        priority: 'HIGH',
-        rationale: 'Missing factory gate quote prevents gross spread and unit economics calculation.'
+        task_id: `TASK-CATEGORY-${candidateId.slice(4, 12)}`,
+        task_type: 'CATEGORY_CLASSIFICATION_AND_ENRICHMENT',
+        target_field: 'category_classification',
+        priority: 'CRITICAL',
+        rationale: `Novel commercial category [${cat}] requires category classification, commercial triage, and boundary definition.`
       });
+    }
+
+    // Missing factory quote (only for categories requiring upstream quote)
+    if (cat === 'PHYSICAL_GOODS' || cat === 'B2B_DISTRIBUTION') {
+      if (candidate.current_observation.factory_gate_quote_inr === null) {
+        tasks.push({
+          task_id: `TASK-QUOTE-${candidateId.slice(4, 12)}`,
+          task_type: 'SUPPLIER_QUOTE_ACQUISITION',
+          target_field: 'factory_gate_quote_inr',
+          priority: 'HIGH',
+          rationale: 'Missing factory gate quote prevents gross spread and unit economics calculation.'
+        });
+      }
     }
 
     // Missing retail ASP
@@ -404,7 +448,11 @@ export class ScreeningPolicyEngine {
         task_type: 'RETAIL_ASP_VERIFICATION',
         target_field: 'prevailing_retail_asp_inr',
         priority: 'HIGH',
-        rationale: 'Missing prevailing retail ASP prevents market price benchmark and margin evaluation.'
+        rationale: cat === 'SOFTWARE_DIGITAL'
+          ? 'Missing software subscription or license price prevents retail benchmark evaluation.'
+          : cat === 'SERVICE_CONTRACT'
+            ? 'Missing service contract billing rate prevents commercial value benchmark.'
+            : 'Missing prevailing retail ASP prevents market price benchmark and margin evaluation.'
       });
     }
 
@@ -419,8 +467,8 @@ export class ScreeningPolicyEngine {
       });
     }
 
-    // Logistics corridor uncorroborated
-    if (!candidate.evidence_sufficiency.has_logistics_route) {
+    // Logistics corridor uncorroborated (only for physical goods and B2B distribution)
+    if ((cat === 'PHYSICAL_GOODS' || cat === 'B2B_DISTRIBUTION') && !candidate.evidence_sufficiency.has_logistics_route) {
       tasks.push({
         task_id: `TASK-LOGISTICS-${candidateId.slice(4, 12)}`,
         task_type: 'LOGISTICS_ROUTE_VERIFICATION',
@@ -431,13 +479,19 @@ export class ScreeningPolicyEngine {
     }
 
     // Regulatory / HSN clearance uncorroborated
-    if (!candidate.evidence_sufficiency.has_regulatory_clearance) {
+    if (!candidate.evidence_sufficiency.has_regulatory_clearance && cat !== 'UNRESOLVED_NOVEL') {
       tasks.push({
         task_id: `TASK-REGULATORY-${candidateId.slice(4, 12)}`,
         task_type: 'STATUTORY_REGULATORY_CLEARANCE',
-        target_field: 'statutory_hsn_gst_rate',
+        target_field: cat === 'SOFTWARE_DIGITAL' || cat === 'SERVICE_CONTRACT'
+          ? 'statutory_regulatory_clearance'
+          : 'statutory_hsn_gst_rate',
         priority: 'MEDIUM',
-        rationale: 'HSN statutory code and applicable GST tax rate require official regulatory clearance.'
+        rationale: cat === 'SOFTWARE_DIGITAL'
+          ? 'Software licensing, terms of service compliance, and SLA terms require statutory clearance.'
+          : cat === 'SERVICE_CONTRACT'
+            ? 'Professional service accreditation, GST service accounting code, and SLA require statutory clearance.'
+            : 'HSN statutory code and applicable GST tax rate require official regulatory clearance.'
       });
     }
 

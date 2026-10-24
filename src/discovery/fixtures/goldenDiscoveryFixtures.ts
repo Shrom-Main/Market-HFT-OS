@@ -297,6 +297,152 @@ export const GOLDEN_DISCOVERY_FIXTURE_SET_V1: VersionedGoldenFixtureSet = {
         gross_price_inr: 45.0
       },
       provenance_signature: 'sig:golden:generic:unknown-widget:v1'
+    }),
+
+    // 11. Category-Agnostic Unrelated 1: SaaS Developer Tool (Software / Digital)
+    createRawSourceCapture({
+      capture_id: 'FIX-SAAS-DEVTOOL-001',
+      source_connector_id: 'conn:marketplace:developer-saas',
+      source_type: 'MARKETPLACE_RETAIL',
+      origin_class: 'RECORDED_GOLDEN_FIXTURE',
+      target_url: 'https://marketplace.example.com/apps/ebpf-tracer-agent',
+      source_observed_at_utc: '2026-10-24T15:00:00.000Z',
+      retrieval_timestamp_utc: '2026-10-24T15:00:02.000Z',
+      raw_payload: JSON.stringify({
+        product_id: 'software:devtools:distributed-tracing-agent',
+        category: 'SOFTWARE_DIGITAL',
+        title: 'Low-Latency eBPF Distributed Tracing Agent (Team Tier)',
+        gross_price_inr: 4999.0,
+        review_sentiment_summary: 'Sub-millisecond overhead, automated kernel instrumentation, high satisfaction among SRE teams.',
+        has_regulatory_clearance: true
+      }),
+      extracted_fields: {
+        product_id: 'software:devtools:distributed-tracing-agent',
+        category: 'SOFTWARE_DIGITAL',
+        title: 'Low-Latency eBPF Distributed Tracing Agent (Team Tier)',
+        gross_price_inr: 4999.0,
+        review_sentiment_summary: 'Sub-millisecond overhead, automated kernel instrumentation, high satisfaction among SRE teams.',
+        has_regulatory_clearance: true
+      },
+      provenance_signature: 'sig:golden:saas:ebpf-tracer:v1'
+    }),
+
+    // 12. Category-Agnostic Unrelated 2: Metallurgy Testing Lab Service (Service Contract)
+    createRawSourceCapture({
+      capture_id: 'FIX-SERVICE-METALLURGY-001',
+      source_connector_id: 'conn:b2b:services-portal',
+      source_type: 'TRADE_REGISTRY',
+      origin_class: 'RECORDED_GOLDEN_FIXTURE',
+      target_url: 'https://lab-portal.example.com/services/tensile-testing',
+      source_observed_at_utc: '2026-10-24T15:30:00.000Z',
+      retrieval_timestamp_utc: '2026-10-24T15:30:02.000Z',
+      raw_payload: JSON.stringify({
+        product_id: 'service:lab:tensile-spectrometry-testing',
+        category: 'SERVICE_CONTRACT',
+        title: 'NABL Accredited Destructive Tensile & Spectrometry Metal Testing',
+        gross_price_inr: 12500.0,
+        review_sentiment_summary: 'Certified lab test reports delivered within 48h SLA, ISO 17025 accredited.',
+        has_regulatory_clearance: true
+      }),
+      extracted_fields: {
+        product_id: 'service:lab:tensile-spectrometry-testing',
+        category: 'SERVICE_CONTRACT',
+        title: 'NABL Accredited Destructive Tensile & Spectrometry Metal Testing',
+        gross_price_inr: 12500.0,
+        review_sentiment_summary: 'Certified lab test reports delivered within 48h SLA, ISO 17025 accredited.',
+        has_regulatory_clearance: true
+      },
+      provenance_signature: 'sig:golden:service:tensile-test:v1'
+    }),
+
+    // 13. Category-Agnostic Unrelated 3: Industrial Argon Cylinders (B2B Bulk Distribution)
+    createRawSourceCapture({
+      capture_id: 'FIX-B2B-ARGON-GAS-001',
+      source_connector_id: 'conn:b2b:industrial-gases',
+      source_type: 'SUPPLIER_B2B_CATALOG',
+      origin_class: 'RECORDED_GOLDEN_FIXTURE',
+      target_url: 'https://gases.example.com/catalog/argon-47l',
+      source_observed_at_utc: '2026-10-24T16:00:00.000Z',
+      retrieval_timestamp_utc: '2026-10-24T16:00:02.000Z',
+      raw_payload: JSON.stringify({
+        product_id: 'b2b:gas:argon-cylinders-47l',
+        category: 'B2B_DISTRIBUTION',
+        title: 'Industrial High-Purity Grade 5.0 Argon Gas Cylinders (47L)',
+        gross_price_inr: 3200.0,
+        factory_gate_quote_inr: 1850.0,
+        unit_batch_moq: 20,
+        review_sentiment_summary: 'High purity argon for TIG welding and inert purging, certified 99.999% purity.',
+        has_logistics_route: true,
+        has_regulatory_clearance: true
+      }),
+      extracted_fields: {
+        product_id: 'b2b:gas:argon-cylinders-47l',
+        category: 'B2B_DISTRIBUTION',
+        title: 'Industrial High-Purity Grade 5.0 Argon Gas Cylinders (47L)',
+        gross_price_inr: 3200.0,
+        factory_gate_quote_inr: 1850.0,
+        unit_batch_moq: 20,
+        review_sentiment_summary: 'High purity argon for TIG welding and inert purging, certified 99.999% purity.',
+        has_logistics_route: true,
+        has_regulatory_clearance: true
+      },
+      provenance_signature: 'sig:golden:b2b:argon-gas:v1'
+    }),
+
+    // 14. Novel / Unseen Category: Mycelium Bio-Composite License
+    createRawSourceCapture({
+      capture_id: 'FIX-NOVEL-MYCELIUM-001',
+      source_connector_id: 'conn:ip:tech-transfer',
+      source_type: 'GOV_PROCUREMENT',
+      origin_class: 'RECORDED_GOLDEN_FIXTURE',
+      target_url: 'https://techtransfer.example.edu/patents/mycelium-foam-composite',
+      source_observed_at_utc: '2026-10-24T16:30:00.000Z',
+      retrieval_timestamp_utc: '2026-10-24T16:30:02.000Z',
+      raw_payload: JSON.stringify({
+        product_id: 'novel:biomaterial:mycelium-composite-patents',
+        category: 'BIOMATERIAL_PACKAGING_IP',
+        title: 'Exclusive Commercial License: Biodegradable Mycelium Packaging Composite',
+        gross_price_inr: 1500000.0,
+        review_sentiment_summary: 'Proprietary bio-composite technology replacing EPS foam packaging with 100% compostable mycelium.',
+        has_regulatory_clearance: false
+      }),
+      extracted_fields: {
+        product_id: 'novel:biomaterial:mycelium-composite-patents',
+        category: 'BIOMATERIAL_PACKAGING_IP',
+        title: 'Exclusive Commercial License: Biodegradable Mycelium Packaging Composite',
+        gross_price_inr: 1500000.0,
+        review_sentiment_summary: 'Proprietary bio-composite technology replacing EPS foam packaging with 100% compostable mycelium.',
+        has_regulatory_clearance: false
+      },
+      provenance_signature: 'sig:golden:novel:mycelium-ip:v1'
+    }),
+
+    // 15. Missing Category-Specific Input: SaaS Developer Tool with missing subscription price
+    createRawSourceCapture({
+      capture_id: 'FIX-SAAS-DEVTOOL-MISSING-PRICE-002',
+      source_connector_id: 'conn:marketplace:developer-saas',
+      source_type: 'MARKETPLACE_RETAIL',
+      origin_class: 'RECORDED_GOLDEN_FIXTURE',
+      target_url: 'https://marketplace.example.com/apps/unpriced-saas-tool',
+      source_observed_at_utc: '2026-10-24T17:00:00.000Z',
+      retrieval_timestamp_utc: '2026-10-24T17:00:02.000Z',
+      raw_payload: JSON.stringify({
+        product_id: 'software:devtools:unpriced-metric-exporter',
+        category: 'SOFTWARE_DIGITAL',
+        title: 'Custom Metric Exporter SaaS (Enterprise Contact Sales)',
+        gross_price_inr: null,
+        review_sentiment_summary: 'Early beta testers report clean Prometheus metrics export.',
+        has_regulatory_clearance: true
+      }),
+      extracted_fields: {
+        product_id: 'software:devtools:unpriced-metric-exporter',
+        category: 'SOFTWARE_DIGITAL',
+        title: 'Custom Metric Exporter SaaS (Enterprise Contact Sales)',
+        gross_price_inr: null,
+        review_sentiment_summary: 'Early beta testers report clean Prometheus metrics export.',
+        has_regulatory_clearance: true
+      },
+      provenance_signature: 'sig:golden:saas:unpriced:v2'
     })
   ]
 };

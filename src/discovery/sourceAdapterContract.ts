@@ -13,6 +13,7 @@
  */
 
 import { sha256 } from '../canonical/crypto.js';
+import { OpportunityCategory } from '../canonical/opportunityCategory.js';
 
 export type SourceType =
   | 'MARKETPLACE_RETAIL'
@@ -54,6 +55,7 @@ export interface NormalizedDiscoveryObservation {
   readonly strategy_id: string;
   readonly canonical_product_id: string;
   readonly candidate_name: string;
+  readonly category?: OpportunityCategory;
   readonly source_connector_id: string;
   readonly source_type: SourceType;
   readonly origin_class: CaptureOriginClass;

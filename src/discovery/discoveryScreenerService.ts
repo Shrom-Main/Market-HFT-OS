@@ -38,7 +38,7 @@ import { DeltaDetector } from './deltaDetector.js';
 
 export interface DiscoveryScreeningResult {
   readonly capture_id: string;
-  readonly resolution_status: 'RESOLVED' | 'UNRESOLVED_ENTITY_HOLD' | 'CONFLICT_DETECTED';
+  readonly resolution_status: 'RESOLVED' | 'RESOLVED_NOVEL_CATEGORY' | 'UNRESOLVED_ENTITY_HOLD' | 'CONFLICT_DETECTED';
   readonly normalized_observation: NormalizedDiscoveryObservation | null;
   readonly candidate: OpportunityCandidate | null;
   readonly signal: ObservationChangeSignal | null;
@@ -172,6 +172,7 @@ export class DiscoveryScreenerService {
       strategy_id: this.defaultStrategyId,
       canonical_product_id: resolvedIdentity.product_id,
       candidate_name: this.deriveCandidateName(resolvedIdentity),
+      category: resolvedIdentity.category,
       source_connector_id: capture.source_connector_id,
       source_type: capture.source_type,
       origin_class: capture.origin_class,
@@ -214,6 +215,7 @@ export class DiscoveryScreenerService {
       strategy_id: normalizedObs.strategy_id,
       canonical_product_id: normalizedObs.canonical_product_id,
       candidate_name: normalizedObs.candidate_name,
+      category: normalizedObs.category,
       source_connector_id: normalizedObs.source_connector_id,
       prevailing_retail_asp_inr: normalizedObs.prevailing_retail_asp_inr,
       factory_gate_quote_inr: normalizedObs.factory_gate_quote_inr,
@@ -302,6 +304,13 @@ export class DiscoveryScreenerService {
   }
 
   private deriveCandidateName(identity: ResolvedCanonicalIdentity): string {
+    const metrics = identity.extracted_metrics || {};
+    if (typeof metrics.title === 'string' && metrics.title.trim().length > 0) {
+      return metrics.title.trim();
+    }
+    if (typeof metrics.item_name === 'string' && metrics.item_name.trim().length > 0) {
+      return metrics.item_name.trim();
+    }
     const parts = identity.product_id.split(':');
     if (parts.length >= 3) {
       return parts.slice(1).map((s) => s.toUpperCase()).join(' ');

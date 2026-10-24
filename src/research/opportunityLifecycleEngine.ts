@@ -18,6 +18,7 @@
 import type { Pool } from 'pg';
 import { sha256 } from '../canonical/crypto.js';
 import { canonicalizeJCS } from '../canonical/jcs.js';
+import { OpportunityCategory, inferCategoryFromEntityId } from '../canonical/opportunityCategory.js';
 
 // ============================================================================
 // 1. DATA CONTRACTS & TYPES
@@ -99,6 +100,7 @@ export interface OpportunityCandidate {
   readonly strategy_id: string;
   readonly canonical_product_id: string;
   readonly candidate_name: string;
+  readonly category?: OpportunityCategory;
   readonly lifecycle_state: OpportunityLifecycleState;
   readonly active_signals: readonly ObservationChangeSignal[];
   readonly investigation_status: InvestigationStatus;
@@ -131,6 +133,7 @@ export interface IngestObservationInput {
   readonly strategy_id: string;
   readonly canonical_product_id: string;
   readonly candidate_name: string;
+  readonly category?: OpportunityCategory;
   readonly source_connector_id: string;
   readonly prevailing_retail_asp_inr?: number | null;
   readonly factory_gate_quote_inr?: number | null;
@@ -147,6 +150,7 @@ export interface IngestObservationInput {
 
 export interface CandidateFilter {
   readonly strategy_id?: string;
+  readonly category?: OpportunityCategory;
   readonly lifecycle_state?: OpportunityLifecycleState;
   readonly investigation_status?: InvestigationStatus;
   readonly min_attractiveness_rating?: 'VERY_HIGH' | 'HIGH' | 'MODERATE' | 'LOW';
@@ -212,8 +216,11 @@ export class OpportunityLifecycleEngine {
             first_seen_utc TIMESTAMPTZ NOT NULL,
             last_seen_utc TIMESTAMPTZ NOT NULL,
             updated_at_utc TIMESTAMPTZ NOT NULL,
-            jcs_sha256 CHAR(64) NOT NULL
+            jcs_sha256 CHAR(64) NOT NULL,
+            category VARCHAR(64)
           );
+
+          ALTER TABLE market_opportunity_candidates ADD COLUMN IF NOT EXISTS category VARCHAR(64);
 
           CREATE TABLE IF NOT EXISTS market_candidate_lifecycle_events (
             event_id VARCHAR(64) PRIMARY KEY,
@@ -318,6 +325,8 @@ export class OpportunityLifecycleEngine {
       }
     }
 
+    const category = input.category ?? existing?.category ?? inferCategoryFromEntityId(input.canonical_product_id);
+
     // Evaluate evidence sufficiency
     const sufficiency = this.computeSufficiencyProfile({
       quote: newObservation.factory_gate_quote_inr,
@@ -325,13 +334,15 @@ export class OpportunityLifecycleEngine {
       sentiment: newObservation.review_sentiment_summary,
       hasRoute: input.has_logistics_route ?? (existing?.evidence_sufficiency.has_logistics_route ?? false),
       hasReg: input.has_regulatory_clearance ?? (existing?.evidence_sufficiency.has_regulatory_clearance ?? false),
-      nowUtc: observedAtUtc
+      nowUtc: observedAtUtc,
+      category
     });
 
     // Evaluate provisional commercial attractiveness
     const attractiveness = this.computeCommercialAttractiveness(
       newObservation.factory_gate_quote_inr,
-      newObservation.prevailing_retail_asp_inr
+      newObservation.prevailing_retail_asp_inr,
+      category
     );
 
     // Active signals aggregation: keep stale/conflict flags if not resolved
@@ -372,6 +383,7 @@ export class OpportunityLifecycleEngine {
       strategy_id: input.strategy_id,
       canonical_product_id: input.canonical_product_id,
       candidate_name: input.candidate_name,
+      category,
       lifecycle_state: targetState,
       active_signals: activeSignals,
       investigation_status: existing?.investigation_status ?? 'UNSCHEDULED',
@@ -667,7 +679,7 @@ export class OpportunityLifecycleEngine {
     if (this.pgPool) {
       try {
         const res = await this.pgPool.query(
-          `SELECT candidate_id, strategy_id, canonical_product_id, candidate_name,
+          `SELECT candidate_id, strategy_id, canonical_product_id, candidate_name, category,
                   lifecycle_state, active_signals, investigation_status, evidence_sufficiency,
                   commercial_attractiveness, current_observation, observation_history_count,
                   latest_transition_reason, first_seen_utc, last_seen_utc, updated_at_utc, jcs_sha256
@@ -682,6 +694,7 @@ export class OpportunityLifecycleEngine {
             strategy_id: row.strategy_id,
             canonical_product_id: row.canonical_product_id,
             candidate_name: row.candidate_name,
+            category: row.category,
             lifecycle_state: row.lifecycle_state as OpportunityLifecycleState,
             active_signals: row.active_signals,
             investigation_status: row.investigation_status as InvestigationStatus,
@@ -716,7 +729,7 @@ export class OpportunityLifecycleEngine {
     if (this.pgPool) {
       try {
         const res = await this.pgPool.query(
-          `SELECT candidate_id, strategy_id, canonical_product_id, candidate_name,
+          `SELECT candidate_id, strategy_id, canonical_product_id, candidate_name, category,
                   lifecycle_state, active_signals, investigation_status, evidence_sufficiency,
                   commercial_attractiveness, current_observation, observation_history_count,
                   latest_transition_reason, first_seen_utc, last_seen_utc, updated_at_utc, jcs_sha256
@@ -728,6 +741,7 @@ export class OpportunityLifecycleEngine {
           strategy_id: row.strategy_id,
           canonical_product_id: row.canonical_product_id,
           candidate_name: row.candidate_name,
+          category: row.category,
           lifecycle_state: row.lifecycle_state as OpportunityLifecycleState,
           active_signals: row.active_signals,
           investigation_status: row.investigation_status as InvestigationStatus,
@@ -753,6 +767,7 @@ export class OpportunityLifecycleEngine {
 
     return list.filter((c) => {
       if (filter.strategy_id && c.strategy_id !== filter.strategy_id) return false;
+      if (filter.category && c.category !== filter.category) return false;
       if (filter.lifecycle_state && c.lifecycle_state !== filter.lifecycle_state) return false;
       if (filter.investigation_status && c.investigation_status !== filter.investigation_status) return false;
       if (filter.is_sufficient_for_underwriting !== undefined && c.evidence_sufficiency.is_sufficient_for_underwriting !== filter.is_sufficient_for_underwriting) return false;
@@ -808,20 +823,95 @@ export class OpportunityLifecycleEngine {
     hasRoute: boolean;
     hasReg: boolean;
     nowUtc: string;
+    category?: OpportunityCategory;
   }): EvidenceSufficiencyProfile {
+    const category = params.category || 'PHYSICAL_GOODS';
     const missing: string[] = [];
     const uncorroborated: string[] = [];
     let score = 0;
 
     const hasQuote = typeof params.quote === 'number' && !isNaN(params.quote) && params.quote > 0;
+    const hasAsp = typeof params.asp === 'number' && !isNaN(params.asp) && params.asp > 0;
+    const hasReviews = typeof params.sentiment === 'string' && params.sentiment.trim().length > 0;
+
+    if (category === 'SOFTWARE_DIGITAL') {
+      // Software / Digital products: direct retail/subscription pricing, reviews/bug reports, SLA/licensing
+      if (hasAsp) score += 4000;
+      else missing.push('prevailing_retail_asp_inr');
+
+      if (hasReviews) score += 3000;
+      else missing.push('review_sentiment_summary');
+
+      if (params.hasReg) score += 3000;
+      else uncorroborated.push('statutory_regulatory_clearance');
+
+      const isSufficient = hasAsp && hasReviews && params.hasReg;
+      return {
+        is_sufficient_for_underwriting: isSufficient,
+        sufficiency_score_bps: score,
+        has_upstream_quote: hasQuote,
+        has_prevailing_asp: hasAsp,
+        has_verbatim_reviews: hasReviews,
+        has_logistics_route: false, // Not applicable to software
+        has_regulatory_clearance: params.hasReg,
+        missing_critical_fields: missing,
+        uncorroborated_fields: uncorroborated,
+        last_evaluated_at_utc: params.nowUtc
+      };
+    }
+
+    if (category === 'SERVICE_CONTRACT') {
+      // Service contracts: billing rate/ASP, client testimonials/reviews, professional accreditation/SLA
+      if (hasAsp) score += 4000;
+      else missing.push('prevailing_retail_asp_inr');
+
+      if (hasReviews) score += 3000;
+      else missing.push('review_sentiment_summary');
+
+      if (params.hasReg) score += 3000;
+      else uncorroborated.push('statutory_regulatory_clearance');
+
+      const isSufficient = hasAsp && hasReviews && params.hasReg;
+      return {
+        is_sufficient_for_underwriting: isSufficient,
+        sufficiency_score_bps: score,
+        has_upstream_quote: hasQuote,
+        has_prevailing_asp: hasAsp,
+        has_verbatim_reviews: hasReviews,
+        has_logistics_route: false, // Not applicable to services
+        has_regulatory_clearance: params.hasReg,
+        missing_critical_fields: missing,
+        uncorroborated_fields: uncorroborated,
+        last_evaluated_at_utc: params.nowUtc
+      };
+    }
+
+    if (category === 'UNRESOLVED_NOVEL' || (!['PHYSICAL_GOODS', 'B2B_DISTRIBUTION'].includes(category))) {
+      // Unresolved novel or unclassified category
+      missing.push('category_classification_required');
+      missing.push('commercial_market_boundary_definition');
+
+      return {
+        is_sufficient_for_underwriting: false,
+        sufficiency_score_bps: 0,
+        has_upstream_quote: hasQuote,
+        has_prevailing_asp: hasAsp,
+        has_verbatim_reviews: hasReviews,
+        has_logistics_route: params.hasRoute,
+        has_regulatory_clearance: params.hasReg,
+        missing_critical_fields: missing,
+        uncorroborated_fields: uncorroborated,
+        last_evaluated_at_utc: params.nowUtc
+      };
+    }
+
+    // Default: PHYSICAL_GOODS & B2B_DISTRIBUTION
     if (hasQuote) score += 3000;
     else missing.push('factory_gate_quote_inr');
 
-    const hasAsp = typeof params.asp === 'number' && !isNaN(params.asp) && params.asp > 0;
     if (hasAsp) score += 3000;
     else missing.push('prevailing_retail_asp_inr');
 
-    const hasReviews = typeof params.sentiment === 'string' && params.sentiment.trim().length > 0;
     if (hasReviews) score += 2000;
     else missing.push('review_sentiment_summary');
 
@@ -849,8 +939,62 @@ export class OpportunityLifecycleEngine {
 
   private computeCommercialAttractiveness(
     quote: number | null,
-    asp: number | null
+    asp: number | null,
+    category?: OpportunityCategory
   ): CommercialAttractivenessEstimate {
+    const cat = category || 'PHYSICAL_GOODS';
+
+    if (cat === 'UNRESOLVED_NOVEL') {
+      return {
+        estimated_gross_spread_inr: null,
+        estimated_gross_margin_bps: null,
+        attractiveness_rating: 'UNKNOWN',
+        heuristic_rationale: 'Novel commercial category unclassified; commercial market boundaries undefined.',
+        calculation_epistemic_class: 'UNATTESTED_INTAKE'
+      };
+    }
+
+    if (cat === 'SOFTWARE_DIGITAL' || cat === 'SERVICE_CONTRACT') {
+      if (quote !== null && asp !== null && quote > 0 && asp > 0) {
+        const spread = Number((asp - quote).toFixed(2));
+        const marginBps = Math.round((spread / asp) * 10000);
+        let rating: CommercialAttractivenessEstimate['attractiveness_rating'] = 'MODERATE';
+        if (marginBps >= 6000) rating = 'VERY_HIGH';
+        else if (marginBps >= 4000) rating = 'HIGH';
+        else if (marginBps >= 2000) rating = 'MODERATE';
+        else if (marginBps >= 0) rating = 'LOW';
+        else rating = 'NEGATIVE';
+
+        return {
+          estimated_gross_spread_inr: spread,
+          estimated_gross_margin_bps: marginBps,
+          attractiveness_rating: rating,
+          heuristic_rationale: `Gross spread is ₹${spread.toFixed(2)} (${(marginBps / 100).toFixed(2)}% gross margin).`,
+          calculation_epistemic_class: 'ESTIMATED_PROXY'
+        };
+      }
+
+      if (asp === null || asp <= 0) {
+        return {
+          estimated_gross_spread_inr: null,
+          estimated_gross_margin_bps: null,
+          attractiveness_rating: 'UNKNOWN',
+          heuristic_rationale: 'Missing retail price/subscription rate; spread cannot be computed.',
+          calculation_epistemic_class: 'UNATTESTED_INTAKE'
+        };
+      }
+
+      // asp is known, quote is null: no quote fabrication
+      return {
+        estimated_gross_spread_inr: null,
+        estimated_gross_margin_bps: null,
+        attractiveness_rating: 'UNKNOWN',
+        heuristic_rationale: 'Missing direct delivery/infrastructure cost; gross spread cannot be fabricated.',
+        calculation_epistemic_class: 'UNATTESTED_INTAKE'
+      };
+    }
+
+    // Default: PHYSICAL_GOODS, B2B_DISTRIBUTION
     if (quote === null || asp === null || quote <= 0 || asp <= 0) {
       return {
         estimated_gross_spread_inr: null,
@@ -887,13 +1031,14 @@ export class OpportunityLifecycleEngine {
       try {
         await this.pgPool.query(
           `INSERT INTO market_opportunity_candidates (
-            candidate_id, strategy_id, canonical_product_id, candidate_name,
+            candidate_id, strategy_id, canonical_product_id, candidate_name, category,
             lifecycle_state, active_signals, investigation_status, evidence_sufficiency,
             commercial_attractiveness, current_observation, observation_history_count,
             latest_transition_reason, first_seen_utc, last_seen_utc, updated_at_utc, jcs_sha256
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
           ON CONFLICT (candidate_id) DO UPDATE SET
             candidate_name = EXCLUDED.candidate_name,
+            category = EXCLUDED.category,
             lifecycle_state = EXCLUDED.lifecycle_state,
             active_signals = EXCLUDED.active_signals,
             investigation_status = EXCLUDED.investigation_status,
@@ -910,6 +1055,7 @@ export class OpportunityLifecycleEngine {
             candidate.strategy_id,
             candidate.canonical_product_id,
             candidate.candidate_name,
+            candidate.category ?? null,
             candidate.lifecycle_state,
             JSON.stringify(candidate.active_signals),
             candidate.investigation_status,
