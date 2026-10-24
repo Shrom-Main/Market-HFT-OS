@@ -279,32 +279,59 @@ export class EntityIdentityResolver {
     if (!matchedProd) {
       const explicitCategory = envelope.category || (extracted.category as OpportunityCategory | undefined);
       const hasCategoryHint = Boolean(explicitCategory);
-      const explicitId: string | undefined =
-        candidateId ||
-        (typeof extracted.product_id === 'string' ? extracted.product_id : undefined) ||
-        (typeof extracted.sku_id === 'string' ? extracted.sku_id : undefined) ||
-        (typeof envelope.target_sku_id === 'string' ? envelope.target_sku_id : undefined);
+
+      // Distinguish explicit canonical identifiers with recognized URI schemes from raw, source-scoped SKUs
+      const CANONICAL_SCHEMES = ['prod:', 'software:', 'service:', 'b2b:', 'novel:', 'saas:', 'api:', 'sla:', 'dist:', 'lab:'];
+      const rawCandidateId = candidateId || (typeof extracted.product_id === 'string' ? (extracted.product_id as string) : undefined);
+      const explicitCanonicalId = rawCandidateId && CANONICAL_SCHEMES.some((sch) => rawCandidateId.startsWith(sch))
+        ? rawCandidateId
+        : undefined;
+
+      const rawSku = (
+        typeof envelope.target_sku_id === 'string' && envelope.target_sku_id.trim().length > 0
+          ? envelope.target_sku_id.trim()
+          : typeof extracted.sku_id === 'string' && String(extracted.sku_id).trim().length > 0
+            ? String(extracted.sku_id).trim()
+            : typeof extracted.supplier_sku === 'string' && String(extracted.supplier_sku).trim().length > 0
+              ? String(extracted.supplier_sku).trim()
+              : undefined
+      );
 
       const isExplicitNonHardware = Boolean(
-        explicitId && (
-          explicitId.startsWith('software:') ||
-          explicitId.startsWith('service:') ||
-          explicitId.startsWith('b2b:') ||
-          explicitId.startsWith('novel:') ||
-          explicitId.startsWith('saas:') ||
-          explicitId.startsWith('api:') ||
-          explicitId.startsWith('sla:') ||
-          explicitId.startsWith('dist:') ||
-          explicitId.startsWith('lab:')
+        explicitCanonicalId && (
+          explicitCanonicalId.startsWith('software:') ||
+          explicitCanonicalId.startsWith('service:') ||
+          explicitCanonicalId.startsWith('b2b:') ||
+          explicitCanonicalId.startsWith('novel:') ||
+          explicitCanonicalId.startsWith('saas:') ||
+          explicitCanonicalId.startsWith('api:') ||
+          explicitCanonicalId.startsWith('sla:') ||
+          explicitCanonicalId.startsWith('dist:') ||
+          explicitCanonicalId.startsWith('lab:')
         )
       );
 
-      if (hasCategoryHint || isExplicitNonHardware) {
-        const entityId = explicitId || `novel:${sha256(rawStr).slice(0, 12)}`;
-        const inferredCat = inferCategoryFromEntityId(entityId, explicitCategory);
+      if (hasCategoryHint || isExplicitNonHardware || explicitCanonicalId) {
+        let entityId: string;
+        let skuId: string;
+        const inferredCat = inferCategoryFromEntityId(explicitCanonicalId || rawSku || 'unclassified', explicitCategory);
+
+        if (explicitCanonicalId) {
+          // Explicit canonical identity: cross-source observations converge
+          entityId = explicitCanonicalId;
+          skuId = rawSku || `SKU-${entityId.toUpperCase().replace(/[^A-Z0-9_-]/g, '-')}`;
+        } else {
+          // Composite non-canonical identity: scopes raw SKUs to category and source connector
+          // to prevent false merges of unrelated products sharing generic labels
+          const catNamespace = (inferredCat || 'unclassified').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+          const sourceScope = envelope.source_id.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+          const skuSlug = rawSku ? rawSku.toLowerCase().trim() : sha256(rawStr).slice(0, 12);
+          entityId = `noncanonical:${catNamespace}:${sourceScope}:${skuSlug}`;
+          skuId = rawSku || `SKU-${skuSlug.toUpperCase()}`;
+        }
+
         const isNovel = inferredCat === 'UNRESOLVED_NOVEL' || !['PHYSICAL_GOODS', 'SOFTWARE_DIGITAL', 'SERVICE_CONTRACT', 'B2B_DISTRIBUTION'].includes(inferredCat);
         const resStatus: EntityResolutionStatus = isNovel ? 'RESOLVED_NOVEL_CATEGORY' : 'RESOLVED';
-        const skuId = (extracted.sku_id as string) || (envelope.target_sku_id as string) || `SKU-${entityId.toUpperCase().replace(/[^A-Z0-9_-]/g, '-')}`;
         const marketplace = envelope.source_id.includes('amazon') ? 'AMAZON_IN'
           : envelope.source_id.includes('indiamart') ? 'INDIAMART'
           : envelope.source_id.includes('saas') ? 'SAAS_MARKETPLACE'

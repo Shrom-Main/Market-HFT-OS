@@ -144,6 +144,16 @@ export function inferCategoryFromEntityId(entityId: string, hintCategory?: strin
   }
 
   const lower = entityId.toLowerCase();
+  if (lower.startsWith('noncanonical:')) {
+    const parts = lower.split(':');
+    if (parts.length >= 2 && parts[1]) {
+      const rawCat = parts[1].toUpperCase();
+      if (['PHYSICAL_GOODS', 'SOFTWARE_DIGITAL', 'SERVICE_CONTRACT', 'B2B_DISTRIBUTION'].includes(rawCat)) {
+        return rawCat as OpportunityCategory;
+      }
+      return parts[1];
+    }
+  }
   if (lower.startsWith('software:') || lower.startsWith('saas:') || lower.startsWith('api:') || lower.startsWith('app:')) {
     return 'SOFTWARE_DIGITAL';
   }

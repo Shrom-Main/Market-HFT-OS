@@ -82,6 +82,25 @@ export interface CommercialAttractivenessEstimate {
   readonly calculation_epistemic_class: 'ESTIMATED_PROXY' | 'UNATTESTED_INTAKE';
 }
 
+export type EconomicEvaluationStatus =
+  | 'EVALUATED_VIABLE'
+  | 'EVALUATED_UNATTRACTIVE'
+  | 'UNEVALUABLE_INPUTS_MISSING'
+  | 'UNEVALUABLE_UNCLASSIFIED';
+
+export const POLICY_MIN_MARGIN_BPS = 1000; // 10.00% gross margin threshold for paper commitment
+
+export interface EconomicEligibilityProfile {
+  readonly is_economically_eligible: boolean;
+  readonly evaluation_status: EconomicEvaluationStatus;
+  readonly missing_economic_inputs: readonly string[];
+  readonly economic_model_applied: string;
+  readonly policy_min_margin_bps: number;
+  readonly estimated_margin_bps: number | null;
+  readonly policy_evaluation_notes: string;
+  readonly last_evaluated_at_utc: string;
+}
+
 export interface CandidateObservationSnapshot {
   readonly observation_id: string;
   readonly source_connector_id: string;
@@ -106,6 +125,7 @@ export interface OpportunityCandidate {
   readonly investigation_status: InvestigationStatus;
   readonly evidence_sufficiency: EvidenceSufficiencyProfile;
   readonly commercial_attractiveness: CommercialAttractivenessEstimate;
+  readonly economic_eligibility: EconomicEligibilityProfile;
   readonly current_observation: CandidateObservationSnapshot;
   readonly observation_history_count: number;
   readonly latest_transition_reason: string;
@@ -210,6 +230,7 @@ export class OpportunityLifecycleEngine {
             investigation_status VARCHAR(32) NOT NULL,
             evidence_sufficiency JSONB NOT NULL,
             commercial_attractiveness JSONB NOT NULL,
+            economic_eligibility JSONB,
             current_observation JSONB NOT NULL,
             observation_history_count INT NOT NULL DEFAULT 1,
             latest_transition_reason TEXT NOT NULL,
@@ -221,6 +242,7 @@ export class OpportunityLifecycleEngine {
           );
 
           ALTER TABLE market_opportunity_candidates ADD COLUMN IF NOT EXISTS category VARCHAR(64);
+          ALTER TABLE market_opportunity_candidates ADD COLUMN IF NOT EXISTS economic_eligibility JSONB;
 
           CREATE TABLE IF NOT EXISTS market_candidate_lifecycle_events (
             event_id VARCHAR(64) PRIMARY KEY,
@@ -345,6 +367,14 @@ export class OpportunityLifecycleEngine {
       category
     );
 
+    // Evaluate category-specific economic eligibility
+    const economicEligibility = this.computeEconomicEligibility({
+      quote: newObservation.factory_gate_quote_inr,
+      asp: newObservation.prevailing_retail_asp_inr,
+      category,
+      nowUtc: observedAtUtc
+    });
+
     // Active signals aggregation: keep stale/conflict flags if not resolved
     const signalsSet = new Set<ObservationChangeSignal>();
     if (detectedSignal !== 'UNCHANGED') {
@@ -389,6 +419,7 @@ export class OpportunityLifecycleEngine {
       investigation_status: existing?.investigation_status ?? 'UNSCHEDULED',
       evidence_sufficiency: sufficiency,
       commercial_attractiveness: attractiveness,
+      economic_eligibility: economicEligibility,
       current_observation: newObservation,
       observation_history_count: Math.max(1, historyCount),
       latest_transition_reason: transitionReason,
@@ -472,6 +503,38 @@ export class OpportunityLifecycleEngine {
       );
     }
 
+    // Special constraint: transition to PAPER_ELIGIBLE requires evidence sufficiency AND economic eligibility
+    if (nextState === 'PAPER_ELIGIBLE') {
+      if (!candidate.evidence_sufficiency.is_sufficient_for_underwriting) {
+        throw new Error(
+          `E-OPP-INSUFFICIENT-COMMIT-BLOCKED: Cannot transition candidate '${candidateId}' to PAPER_ELIGIBLE. Evidence sufficiency score is ${candidate.evidence_sufficiency.sufficiency_score_bps} bps (requires 10,000 bps). Missing: [${candidate.evidence_sufficiency.missing_critical_fields.join(', ')}]`
+        );
+      }
+      if (!candidate.economic_eligibility?.is_economically_eligible) {
+        throw new Error(
+          `E-OPP-ECONOMIC-ELIGIBILITY-BLOCKED: Cannot transition candidate '${candidateId}' to PAPER_ELIGIBLE. Status: ${candidate.economic_eligibility?.evaluation_status}. Missing inputs: [${candidate.economic_eligibility?.missing_economic_inputs?.join(', ') || 'none'}]. ${candidate.economic_eligibility?.policy_evaluation_notes || ''}`
+        );
+      }
+      if (
+        candidate.commercial_attractiveness.attractiveness_rating === 'UNKNOWN' ||
+        candidate.commercial_attractiveness.attractiveness_rating === 'NEGATIVE'
+      ) {
+        throw new Error(
+          `E-OPP-UNATTRACTIVE-COMMIT-BLOCKED: Cannot transition candidate '${candidateId}' to PAPER_ELIGIBLE. Attractiveness rating is '${candidate.commercial_attractiveness.attractiveness_rating}'.`
+        );
+      }
+      if (candidate.active_signals.includes('EVIDENCE_CONFLICT_DETECTED')) {
+        throw new Error(
+          `E-OPP-CONFLICT-COMMIT-BLOCKED: Cannot transition candidate '${candidateId}' to PAPER_ELIGIBLE while unresolved EVIDENCE_CONFLICT_DETECTED signal is active.`
+        );
+      }
+      if (candidate.active_signals.includes('EVIDENCE_STALE')) {
+        throw new Error(
+          `E-OPP-STALE-COMMIT-BLOCKED: Cannot transition candidate '${candidateId}' to PAPER_ELIGIBLE while EVIDENCE_STALE signal is active.`
+        );
+      }
+    }
+
     const nowUtc = new Date().toISOString();
     const updatedData = {
       ...candidate,
@@ -534,6 +597,33 @@ export class OpportunityLifecycleEngine {
     if (!candidate.evidence_sufficiency.is_sufficient_for_underwriting) {
       throw new Error(
         `E-OPP-INSUFFICIENT-COMMIT-BLOCKED: Candidate '${candidateId}' has incomplete evidence. Missing: [${candidate.evidence_sufficiency.missing_critical_fields.join(', ')}]`
+      );
+    }
+
+    if (!candidate.economic_eligibility?.is_economically_eligible) {
+      throw new Error(
+        `E-OPP-ECONOMIC-ELIGIBILITY-BLOCKED: Candidate '${candidateId}' is not economically eligible for paper simulation. Status: ${candidate.economic_eligibility?.evaluation_status}. Missing inputs: [${candidate.economic_eligibility?.missing_economic_inputs?.join(', ') || 'none'}]. ${candidate.economic_eligibility?.policy_evaluation_notes || ''}`
+      );
+    }
+
+    if (
+      candidate.commercial_attractiveness.attractiveness_rating === 'UNKNOWN' ||
+      candidate.commercial_attractiveness.attractiveness_rating === 'NEGATIVE'
+    ) {
+      throw new Error(
+        `E-OPP-UNATTRACTIVE-COMMIT-BLOCKED: Candidate '${candidateId}' has unattractive or unknown commercial rating: '${candidate.commercial_attractiveness.attractiveness_rating}'.`
+      );
+    }
+
+    if (candidate.active_signals.includes('EVIDENCE_CONFLICT_DETECTED')) {
+      throw new Error(
+        `E-OPP-CONFLICT-COMMIT-BLOCKED: Candidate '${candidateId}' has active unresolved EVIDENCE_CONFLICT_DETECTED signal.`
+      );
+    }
+
+    if (candidate.active_signals.includes('EVIDENCE_STALE')) {
+      throw new Error(
+        `E-OPP-STALE-COMMIT-BLOCKED: Candidate '${candidateId}' has active EVIDENCE_STALE signal.`
       );
     }
 
@@ -681,7 +771,7 @@ export class OpportunityLifecycleEngine {
         const res = await this.pgPool.query(
           `SELECT candidate_id, strategy_id, canonical_product_id, candidate_name, category,
                   lifecycle_state, active_signals, investigation_status, evidence_sufficiency,
-                  commercial_attractiveness, current_observation, observation_history_count,
+                  commercial_attractiveness, economic_eligibility, current_observation, observation_history_count,
                   latest_transition_reason, first_seen_utc, last_seen_utc, updated_at_utc, jcs_sha256
            FROM market_opportunity_candidates
            WHERE candidate_id = $1`,
@@ -689,6 +779,12 @@ export class OpportunityLifecycleEngine {
         );
         if (res.rows.length > 0) {
           const row = res.rows[0];
+          const econ = row.economic_eligibility || this.computeEconomicEligibility({
+            quote: row.current_observation?.factory_gate_quote_inr ?? null,
+            asp: row.current_observation?.prevailing_retail_asp_inr ?? null,
+            category: row.category,
+            nowUtc: row.updated_at_utc?.toISOString ? row.updated_at_utc.toISOString() : String(row.updated_at_utc)
+          });
           return {
             candidate_id: row.candidate_id,
             strategy_id: row.strategy_id,
@@ -700,6 +796,7 @@ export class OpportunityLifecycleEngine {
             investigation_status: row.investigation_status as InvestigationStatus,
             evidence_sufficiency: row.evidence_sufficiency,
             commercial_attractiveness: row.commercial_attractiveness,
+            economic_eligibility: econ,
             current_observation: row.current_observation,
             observation_history_count: row.observation_history_count,
             latest_transition_reason: row.latest_transition_reason,
@@ -731,7 +828,7 @@ export class OpportunityLifecycleEngine {
         const res = await this.pgPool.query(
           `SELECT candidate_id, strategy_id, canonical_product_id, candidate_name, category,
                   lifecycle_state, active_signals, investigation_status, evidence_sufficiency,
-                  commercial_attractiveness, current_observation, observation_history_count,
+                  commercial_attractiveness, economic_eligibility, current_observation, observation_history_count,
                   latest_transition_reason, first_seen_utc, last_seen_utc, updated_at_utc, jcs_sha256
            FROM market_opportunity_candidates
            ORDER BY last_seen_utc DESC`
@@ -747,6 +844,12 @@ export class OpportunityLifecycleEngine {
           investigation_status: row.investigation_status as InvestigationStatus,
           evidence_sufficiency: row.evidence_sufficiency,
           commercial_attractiveness: row.commercial_attractiveness,
+          economic_eligibility: row.economic_eligibility || this.computeEconomicEligibility({
+            quote: row.current_observation?.factory_gate_quote_inr ?? null,
+            asp: row.current_observation?.prevailing_retail_asp_inr ?? null,
+            category: row.category,
+            nowUtc: row.updated_at_utc?.toISOString ? row.updated_at_utc.toISOString() : String(row.updated_at_utc)
+          }),
           current_observation: row.current_observation,
           observation_history_count: row.observation_history_count,
           latest_transition_reason: row.latest_transition_reason,
@@ -1024,6 +1127,137 @@ export class OpportunityLifecycleEngine {
     };
   }
 
+  private computeEconomicEligibility(params: {
+    quote: number | null;
+    asp: number | null;
+    category?: OpportunityCategory;
+    nowUtc: string;
+  }): EconomicEligibilityProfile {
+    const cat = params.category || 'PHYSICAL_GOODS';
+    const hasQuote = typeof params.quote === 'number' && !isNaN(params.quote) && params.quote > 0;
+    const hasAsp = typeof params.asp === 'number' && !isNaN(params.asp) && params.asp > 0;
+
+    if (cat === 'UNRESOLVED_NOVEL' || (!['PHYSICAL_GOODS', 'SOFTWARE_DIGITAL', 'SERVICE_CONTRACT', 'B2B_DISTRIBUTION'].includes(cat))) {
+      return {
+        is_economically_eligible: false,
+        evaluation_status: 'UNEVALUABLE_UNCLASSIFIED',
+        missing_economic_inputs: Object.freeze(['category_economic_model_unspecified', 'unit_cost_and_revenue_metrics']),
+        economic_model_applied: 'UNCLASSIFIED_CATEGORY_MODEL_V1',
+        policy_min_margin_bps: POLICY_MIN_MARGIN_BPS,
+        estimated_margin_bps: null,
+        policy_evaluation_notes: `Category '${cat}' has no formal economic margin model registered; commercial feasibility cannot be evaluated without category-specific model.`,
+        last_evaluated_at_utc: params.nowUtc
+      };
+    }
+
+    if (cat === 'SOFTWARE_DIGITAL') {
+      const missing: string[] = [];
+      if (!hasAsp) missing.push('prevailing_retail_asp_inr');
+      if (!hasQuote) missing.push('infrastructure_or_delivery_cost_inr');
+
+      if (missing.length > 0) {
+        return {
+          is_economically_eligible: false,
+          evaluation_status: 'UNEVALUABLE_INPUTS_MISSING',
+          missing_economic_inputs: Object.freeze(missing),
+          economic_model_applied: 'SOFTWARE_SUBSCRIPTION_MARGIN_V1',
+          policy_min_margin_bps: POLICY_MIN_MARGIN_BPS,
+          estimated_margin_bps: null,
+          policy_evaluation_notes: `Missing software economic inputs [${missing.join(', ')}]; subscription gross margin cannot be evaluated without direct delivery/hosting cost.`,
+          last_evaluated_at_utc: params.nowUtc
+        };
+      }
+
+      const spread = Number((params.asp! - params.quote!).toFixed(2));
+      const marginBps = Math.round((spread / params.asp!) * 10000);
+      const isViable = marginBps >= POLICY_MIN_MARGIN_BPS;
+
+      return {
+        is_economically_eligible: isViable,
+        evaluation_status: isViable ? 'EVALUATED_VIABLE' : 'EVALUATED_UNATTRACTIVE',
+        missing_economic_inputs: Object.freeze([]),
+        economic_model_applied: 'SOFTWARE_SUBSCRIPTION_MARGIN_V1',
+        policy_min_margin_bps: POLICY_MIN_MARGIN_BPS,
+        estimated_margin_bps: marginBps,
+        policy_evaluation_notes: isViable
+          ? `Estimated subscription margin of ${marginBps} bps (${(marginBps / 100).toFixed(2)}%) satisfies policy threshold (>= ${POLICY_MIN_MARGIN_BPS} bps).`
+          : `Estimated subscription margin of ${marginBps} bps (${(marginBps / 100).toFixed(2)}%) is below policy minimum threshold of ${POLICY_MIN_MARGIN_BPS} bps (10.00%).`,
+        last_evaluated_at_utc: params.nowUtc
+      };
+    }
+
+    if (cat === 'SERVICE_CONTRACT') {
+      const missing: string[] = [];
+      if (!hasAsp) missing.push('client_billing_rate_inr');
+      if (!hasQuote) missing.push('direct_labor_fulfillment_cost_inr');
+
+      if (missing.length > 0) {
+        return {
+          is_economically_eligible: false,
+          evaluation_status: 'UNEVALUABLE_INPUTS_MISSING',
+          missing_economic_inputs: Object.freeze(missing),
+          economic_model_applied: 'SERVICE_CONTRACT_FULFILLMENT_V1',
+          policy_min_margin_bps: POLICY_MIN_MARGIN_BPS,
+          estimated_margin_bps: null,
+          policy_evaluation_notes: `Missing service contract economic inputs [${missing.join(', ')}]; fulfillment margin cannot be evaluated without labor cost.`,
+          last_evaluated_at_utc: params.nowUtc
+        };
+      }
+
+      const spread = Number((params.asp! - params.quote!).toFixed(2));
+      const marginBps = Math.round((spread / params.asp!) * 10000);
+      const isViable = marginBps >= POLICY_MIN_MARGIN_BPS;
+
+      return {
+        is_economically_eligible: isViable,
+        evaluation_status: isViable ? 'EVALUATED_VIABLE' : 'EVALUATED_UNATTRACTIVE',
+        missing_economic_inputs: Object.freeze([]),
+        economic_model_applied: 'SERVICE_CONTRACT_FULFILLMENT_V1',
+        policy_min_margin_bps: POLICY_MIN_MARGIN_BPS,
+        estimated_margin_bps: marginBps,
+        policy_evaluation_notes: isViable
+          ? `Estimated service contract gross margin of ${marginBps} bps (${(marginBps / 100).toFixed(2)}%) satisfies policy threshold (>= ${POLICY_MIN_MARGIN_BPS} bps).`
+          : `Estimated service contract margin of ${marginBps} bps (${(marginBps / 100).toFixed(2)}%) is below policy minimum threshold of ${POLICY_MIN_MARGIN_BPS} bps (10.00%).`,
+        last_evaluated_at_utc: params.nowUtc
+      };
+    }
+
+    // Default: PHYSICAL_GOODS, B2B_DISTRIBUTION
+    const missing: string[] = [];
+    if (!hasQuote) missing.push('factory_gate_quote_inr');
+    if (!hasAsp) missing.push('prevailing_retail_asp_inr');
+
+    if (missing.length > 0) {
+      return {
+        is_economically_eligible: false,
+        evaluation_status: 'UNEVALUABLE_INPUTS_MISSING',
+        missing_economic_inputs: Object.freeze(missing),
+        economic_model_applied: 'PHYSICAL_ARBITRAGE_NET_SPREAD_V1',
+        policy_min_margin_bps: POLICY_MIN_MARGIN_BPS,
+        estimated_margin_bps: null,
+        policy_evaluation_notes: `Missing physical arbitrage economic inputs [${missing.join(', ')}]; gross margin cannot be evaluated without factory gate quote and prevailing ASP.`,
+        last_evaluated_at_utc: params.nowUtc
+      };
+    }
+
+    const spread = Number((params.asp! - params.quote!).toFixed(2));
+    const marginBps = Math.round((spread / params.asp!) * 10000);
+    const isViable = marginBps >= POLICY_MIN_MARGIN_BPS;
+
+    return {
+      is_economically_eligible: isViable,
+      evaluation_status: isViable ? 'EVALUATED_VIABLE' : 'EVALUATED_UNATTRACTIVE',
+      missing_economic_inputs: Object.freeze([]),
+      economic_model_applied: 'PHYSICAL_ARBITRAGE_NET_SPREAD_V1',
+      policy_min_margin_bps: POLICY_MIN_MARGIN_BPS,
+      estimated_margin_bps: marginBps,
+      policy_evaluation_notes: isViable
+        ? `Estimated physical gross margin of ${marginBps} bps (${(marginBps / 100).toFixed(2)}%) satisfies policy threshold (>= ${POLICY_MIN_MARGIN_BPS} bps).`
+        : `Estimated physical gross margin of ${marginBps} bps (${(marginBps / 100).toFixed(2)}%) is below policy minimum threshold of ${POLICY_MIN_MARGIN_BPS} bps (10.00%).`,
+      last_evaluated_at_utc: params.nowUtc
+    };
+  }
+
   private async persistCandidate(candidate: OpportunityCandidate): Promise<void> {
     this.inMemoryCandidates.set(candidate.candidate_id, candidate);
 
@@ -1033,9 +1267,9 @@ export class OpportunityLifecycleEngine {
           `INSERT INTO market_opportunity_candidates (
             candidate_id, strategy_id, canonical_product_id, candidate_name, category,
             lifecycle_state, active_signals, investigation_status, evidence_sufficiency,
-            commercial_attractiveness, current_observation, observation_history_count,
+            commercial_attractiveness, economic_eligibility, current_observation, observation_history_count,
             latest_transition_reason, first_seen_utc, last_seen_utc, updated_at_utc, jcs_sha256
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
           ON CONFLICT (candidate_id) DO UPDATE SET
             candidate_name = EXCLUDED.candidate_name,
             category = EXCLUDED.category,
@@ -1044,6 +1278,7 @@ export class OpportunityLifecycleEngine {
             investigation_status = EXCLUDED.investigation_status,
             evidence_sufficiency = EXCLUDED.evidence_sufficiency,
             commercial_attractiveness = EXCLUDED.commercial_attractiveness,
+            economic_eligibility = EXCLUDED.economic_eligibility,
             current_observation = EXCLUDED.current_observation,
             observation_history_count = EXCLUDED.observation_history_count,
             latest_transition_reason = EXCLUDED.latest_transition_reason,
@@ -1061,6 +1296,7 @@ export class OpportunityLifecycleEngine {
             candidate.investigation_status,
             JSON.stringify(candidate.evidence_sufficiency),
             JSON.stringify(candidate.commercial_attractiveness),
+            JSON.stringify(candidate.economic_eligibility),
             JSON.stringify(candidate.current_observation),
             candidate.observation_history_count,
             candidate.latest_transition_reason,
