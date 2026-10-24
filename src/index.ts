@@ -52,3 +52,7 @@ export * from './mcp/providerCapabilityAuditor.js';
 export * from './mcp/skillsMcpServer.js';
 export * from './orchestration/durableIngestionQueue.js';
 export * from './research/opportunityLifecycleEngine.js';
+export * from './discovery/sourceAdapterContract.js';
+export * from './discovery/fixtures/goldenDiscoveryFixtures.js';
+export * from './discovery/fixtureReplayAdapter.js';
+export * from './discovery/discoveryScreenerService.js';
