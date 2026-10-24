@@ -457,4 +457,66 @@ describe('Suite 44: Slice 1 Opportunity Domain & Lifecycle State Machine', () =>
     // Genesis event previous_event_hash is all zeroes
     expect(events[0].previous_event_hash).toBe('0000000000000000000000000000000000000000000000000000000000000000');
   });
+
+  // --------------------------------------------------------------------------
+  // Test 11: Deterministic Replay Semantics (Bit-Identical Invariant)
+  // --------------------------------------------------------------------------
+  it('OPP-DETERMINISTIC-REPLAY-SEMANTICS-011: Proves bit-identical replay across independent engine instances when source observation time is supplied', async () => {
+    const fixedObservedAtUtc = '2026-10-24T12:00:00.000Z';
+    const replayStrategyId = 'strat:india-b2b:replay-verification';
+    const replayProductId = 'prod:din3017:ss304:replay-spec';
+
+    const replayInput = {
+      strategy_id: replayStrategyId,
+      canonical_product_id: replayProductId,
+      candidate_name: 'Deterministic Replay Clamp',
+      source_connector_id: 'conn:marketplace:amazon-in',
+      prevailing_retail_asp_inr: 85.0,
+      factory_gate_quote_inr: 25.0,
+      unit_batch_moq: 100,
+      observed_seller_count: 5,
+      review_sentiment_summary: 'Corrosion-resistant DIN 3017 clamp verified in 12 reviews',
+      raw_payload: '{"asin":"B09XYZ1234","price":85,"moq":100}',
+      observed_at_utc: fixedObservedAtUtc
+    };
+
+    // Run 1: Ingest on fresh in-memory engine A
+    const engineA = new OpportunityLifecycleEngine();
+    await engineA.initialize();
+    const { candidate: candA } = await engineA.ingestObservation(replayInput);
+    const eventsA = await engineA.getEventHistory(candA.candidate_id);
+
+    // Run 2: Ingest identical timestamped payload on fresh in-memory engine B (simulating clean replay)
+    const engineB = new OpportunityLifecycleEngine();
+    await engineB.initialize();
+    const { candidate: candB } = await engineB.ingestObservation(replayInput);
+    const eventsB = await engineB.getEventHistory(candB.candidate_id);
+
+    // 1. Stable identity parity
+    expect(candA.candidate_id).toBe(candB.candidate_id);
+
+    // 2. Observation ID parity
+    expect(candA.current_observation.observation_id).toBe(candB.current_observation.observation_id);
+
+    // 3. Payload SHA-256 parity
+    expect(candA.current_observation.payload_sha256).toBe(candB.current_observation.payload_sha256);
+
+    // 4. Bit-identical RFC 8785 JCS canonical state digest
+    expect(candA.jcs_sha256).toBe(candB.jcs_sha256);
+
+    // 5. Bit-identical event hash and previous_event_hash in hash-linked chain
+    expect(eventsA.length).toBe(1);
+    expect(eventsB.length).toBe(1);
+    expect(eventsA[0].event_hash).toBe(eventsB[0].event_hash);
+    expect(eventsA[0].previous_event_hash).toBe(eventsB[0].previous_event_hash);
+
+    // 6. Contrast with live operational heartbeat: omitting observed_at_utc refreshes operational heartbeat
+    // but preserves deterministic domain identity
+    const liveIngest = await engineA.ingestObservation({
+      ...replayInput,
+      observed_at_utc: undefined // live polling
+    });
+    expect(liveIngest.candidate.candidate_id).toBe(candA.candidate_id);
+    expect(liveIngest.signal).toBe('UNCHANGED');
+  });
 });

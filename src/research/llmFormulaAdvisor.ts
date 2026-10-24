@@ -471,8 +471,10 @@ Do not include any markdown wrappers or commentary, only the raw JSON object.`;
     try {
       const computed = evaluateSymbolicExpression(symbolic_expression, inputs);
       expected_output = Number(computed);
-    } catch {
-      // Retain parsed expected_output if expression requires specialized compiled evaluator
+    } catch (err) {
+      if (this.offlineFallback) {
+        throw new Error(`LLM generated un-evaluable symbolic expression: ${symbolic_expression}`);
+      }
     }
 
     return {

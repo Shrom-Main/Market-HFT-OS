@@ -320,7 +320,7 @@ export class OpportunityLifecycleEngine {
       sentiment: newObservation.review_sentiment_summary,
       hasRoute: input.has_logistics_route ?? (existing?.evidence_sufficiency.has_logistics_route ?? false),
       hasReg: input.has_regulatory_clearance ?? (existing?.evidence_sufficiency.has_regulatory_clearance ?? false),
-      nowUtc
+      nowUtc: observedAtUtc
     });
 
     // Evaluate provisional commercial attractiveness
@@ -376,8 +376,8 @@ export class OpportunityLifecycleEngine {
       observation_history_count: Math.max(1, historyCount),
       latest_transition_reason: transitionReason,
       first_seen_utc: existing?.first_seen_utc ?? observedAtUtc,
-      last_seen_utc: nowUtc,
-      updated_at_utc: nowUtc
+      last_seen_utc: input.observed_at_utc ?? nowUtc,
+      updated_at_utc: input.observed_at_utc ?? nowUtc
     };
 
     const jcsSha256 = sha256(canonicalizeJCS(candidateData));
@@ -398,7 +398,7 @@ export class OpportunityLifecycleEngine {
         signal: detectedSignal,
         trigger: 'OBSERVATION_INGESTED',
         transitionReason,
-        timestampUtc: nowUtc
+        timestampUtc: input.observed_at_utc ?? nowUtc
       });
     }
 
