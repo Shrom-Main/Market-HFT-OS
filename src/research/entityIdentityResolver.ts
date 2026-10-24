@@ -226,8 +226,9 @@ export class EntityIdentityResolver {
     }
 
     // 2. Target SKU Resolution
-    if (!matchedProd && (envelope.target_sku_id || extracted.sku_id)) {
-      const skuQuery = (envelope.target_sku_id || extracted.sku_id as string).trim().toUpperCase();
+    if (!matchedProd && (envelope.target_sku_id || extracted.sku_id || extracted.supplier_sku)) {
+      const rawSku = envelope.target_sku_id || extracted.sku_id || extracted.supplier_sku;
+      const skuQuery = String(rawSku).trim().toUpperCase();
       matchedProd = EntityIdentityResolver.CANONICAL_CATALOG.find((p) =>
         p.sku_id.toUpperCase() === skuQuery ||
         p.supplier_skus.some((s) => s.toUpperCase() === skuQuery)

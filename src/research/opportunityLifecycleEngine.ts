@@ -34,6 +34,7 @@ export type OpportunityLifecycleState =
 
 export type ObservationChangeSignal =
   | 'INITIAL_OBSERVATION'
+  | 'NEW_CANDIDATE'
   | 'PRICE_CHANGED'
   | 'GRIEVANCE_SURFACED'
   | 'SUPPLIER_QUOTE_UPDATED'
@@ -140,6 +141,8 @@ export interface IngestObservationInput {
   readonly has_logistics_route?: boolean;
   readonly has_regulatory_clearance?: boolean;
   readonly observed_at_utc?: string;
+  readonly signal_override?: ObservationChangeSignal;
+  readonly origin_class?: string;
 }
 
 export interface CandidateFilter {
@@ -286,7 +289,9 @@ export class OpportunityLifecycleEngine {
 
     // Delta detection against existing observation
     let detectedSignal: ObservationChangeSignal = 'UNCHANGED';
-    if (isNew) {
+    if (input.signal_override) {
+      detectedSignal = input.signal_override;
+    } else if (isNew) {
       detectedSignal = 'INITIAL_OBSERVATION';
     } else {
       const prevObs = existing.current_observation;

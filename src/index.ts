@@ -56,3 +56,5 @@ export * from './discovery/sourceAdapterContract.js';
 export * from './discovery/fixtures/goldenDiscoveryFixtures.js';
 export * from './discovery/fixtureReplayAdapter.js';
 export * from './discovery/discoveryScreenerService.js';
+export * from './discovery/screeningPolicy.js';
+export * from './discovery/deltaDetector.js';
