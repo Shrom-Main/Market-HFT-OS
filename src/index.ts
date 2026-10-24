@@ -47,3 +47,8 @@ export * from './research/productAwareDynamicResearchPlanner.js';
 export * from './research/reviewAndGrievanceMiner.js';
 export * from './research/opportunityDossierService.js';
 export * from './research/localFirstResearchQueryEngine.js';
+export * from './mcp/serverSecretLoader.js';
+export * from './mcp/providerCapabilityAuditor.js';
+export * from './mcp/skillsMcpServer.js';
+export * from './orchestration/durableIngestionQueue.js';
+export * from './research/opportunityLifecycleEngine.js';

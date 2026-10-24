@@ -263,8 +263,10 @@ export class WorkstationStateManager {
     this.centralResearchCore.initialize().then(async () => {
       const ping = await this.centralResearchCore.pingDatabase();
       this.isPostgresConnected = ping.is_connected;
-    }).catch(() => {
-      // Fallback mode
+    }).catch((err: Error) => {
+      // Fallback mode: database unavailable — log truthfully but continue (Defect 3 fix)
+      console.warn('[WorkstationStateManager] PostgreSQL initialization failed:', err?.message ?? String(err));
+      this.isPostgresConnected = false;
     });
 
     // Register all 5 MCP specialist workers on mcpServer
