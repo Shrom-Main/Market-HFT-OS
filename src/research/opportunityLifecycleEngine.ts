@@ -364,7 +364,7 @@ export interface OpportunityLifecycleEngineOptions {
 }
 
 export class OpportunityLifecycleEngine {
-  private readonly pgPool?: Pool;
+  private pgPool?: Pool;
   private isInitialized = false;
   private readonly requirePaperBudget: boolean;
   private readonly defaultPaperBudgetConfig?: PaperCapitalBudgetConfig;
@@ -379,8 +379,13 @@ export class OpportunityLifecycleEngine {
     this.defaultPaperBudgetConfig = options?.defaultPaperBudgetConfig;
   }
 
+  public setPgPool(pool: Pool): void {
+    this.pgPool = pool;
+    this.isInitialized = false;
+  }
+
   /**
-   * Initializes PostgreSQL schema idempotently.
+   * Initializes PostgreSQL schema idempotently and hydrates existing candidates.
    */
   public async initialize(): Promise<void> {
     if (this.isInitialized) return;
@@ -430,6 +435,51 @@ export class OpportunityLifecycleEngine {
           CREATE INDEX IF NOT EXISTS idx_opp_cand_strat ON market_opportunity_candidates(strategy_id);
           CREATE INDEX IF NOT EXISTS idx_opp_events_cand ON market_candidate_lifecycle_events(candidate_id, timestamp_utc);
         `);
+
+        // Hydrate persisted candidates into memory cache for zero-latency lookups
+        const res = await this.pgPool.query(
+          `SELECT candidate_id, strategy_id, canonical_product_id, candidate_name, category,
+                  lifecycle_state, active_signals, investigation_status, evidence_sufficiency,
+                  commercial_attractiveness, economic_eligibility, current_observation, observation_history_count,
+                  latest_transition_reason, first_seen_utc, last_seen_utc, updated_at_utc, jcs_sha256
+           FROM market_opportunity_candidates
+           ORDER BY last_seen_utc DESC`
+        );
+        for (const row of res.rows) {
+          const candidate: OpportunityCandidate = {
+            candidate_id: row.candidate_id,
+            strategy_id: row.strategy_id,
+            canonical_product_id: row.canonical_product_id,
+            candidate_name: row.candidate_name,
+            category: row.category,
+            lifecycle_state: row.lifecycle_state as OpportunityLifecycleState,
+            active_signals: row.active_signals,
+            investigation_status: row.investigation_status as InvestigationStatus,
+            evidence_sufficiency: row.evidence_sufficiency,
+            commercial_attractiveness: row.commercial_attractiveness,
+            economic_eligibility: row.economic_eligibility || this.computeEconomicEligibility({
+              quote: row.current_observation?.factory_gate_quote_inr ?? null,
+              asp: row.current_observation?.prevailing_retail_asp_inr ?? null,
+              category: row.category,
+              nowUtc: row.updated_at_utc?.toISOString ? row.updated_at_utc.toISOString() : String(row.updated_at_utc),
+              applicable_cost_categories: row.current_observation?.applicable_cost_categories,
+              cost_category_exclusions: row.current_observation?.cost_category_exclusions,
+              inbound_freight_inr: row.current_observation?.inbound_freight_inr,
+              packaging_kitting_inr: row.current_observation?.packaging_kitting_inr,
+              platform_fee_inr: row.current_observation?.platform_fee_inr ?? row.current_observation?.fulfillment_fee_inr,
+              statutory_tax_inr: row.current_observation?.statutory_tax_inr,
+              return_defect_drag_inr: row.current_observation?.return_defect_drag_inr
+            }),
+            current_observation: row.current_observation,
+            observation_history_count: row.observation_history_count,
+            latest_transition_reason: row.latest_transition_reason,
+            first_seen_utc: row.first_seen_utc.toISOString ? row.first_seen_utc.toISOString() : String(row.first_seen_utc),
+            last_seen_utc: row.last_seen_utc.toISOString ? row.last_seen_utc.toISOString() : String(row.last_seen_utc),
+            updated_at_utc: row.updated_at_utc.toISOString ? row.updated_at_utc.toISOString() : String(row.updated_at_utc),
+            jcs_sha256: row.jcs_sha256
+          };
+          this.inMemoryCandidates.set(candidate.candidate_id, candidate);
+        }
       } catch (err: any) {
         console.warn('[OpportunityLifecycleEngine] Postgres table initialization warning:', err?.message ?? String(err));
       }

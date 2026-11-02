@@ -26,6 +26,7 @@ import { WorkstationServer } from '../../src/server/workstationServer.js';
 import { WorkstationStateManager } from '../../src/server/workstationStateManager.js';
 import { renderOperatorTerminalHtml } from '../../src/terminal/operatorTerminalController.js';
 import { exportStandaloneHtml } from '../../src/cli/exportStandaloneHtml.js';
+import { truncateTestDatabase } from '../setup.js';
 
 function httpRequest(options: {
   port: number;
@@ -91,6 +92,7 @@ describe('Suite 60: Bounded Operator UI Integration', () => {
   let brassCandidateId: string;
 
   beforeAll(async () => {
+    await truncateTestDatabase();
     stateManager = new WorkstationStateManager();
     // Ephemeral OS port assignment (port: 0) strictly bound to loopback 127.0.0.1
     server = new WorkstationServer({

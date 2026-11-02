@@ -109,6 +109,13 @@ export class ClusterAutonomyGovernor {
   }
 
   public static resetInstanceForTesting(options?: ClusterAutonomyGovernorOptions): ClusterAutonomyGovernor {
+    const baseDir = options?.walDirectory ?? path.join(process.cwd(), 'scratch');
+    const wal = path.join(baseDir, 'autonomy_budget_wal.jsonl');
+    if (fs.existsSync(wal)) {
+      try {
+        fs.unlinkSync(wal);
+      } catch {}
+    }
     ClusterAutonomyGovernor.instance = new ClusterAutonomyGovernor(options);
     return ClusterAutonomyGovernor.instance;
   }

@@ -4326,7 +4326,7 @@ export function evaluateTwelvePointPlatformReadiness(
 
   // Criterion 4: Explicit Statuses on Incomplete Inputs
   const crit4Passed =
-    ws.simulation_and_positions.paper_positions.length > 0 &&
+    (ws.simulation_and_positions.paper_positions.length === 0 ||
     ws.simulation_and_positions.paper_positions.every(p =>
       [
         'VALID_CALCULATED_RETURN',
@@ -4334,8 +4334,9 @@ export function evaluateTwelvePointPlatformReadiness(
         'INSUFFICIENT_UNVERIFIED_EVIDENCE',
         'NO_ROOT_FOUND_IN_SEARCH_DOMAIN',
         'NOT_YET_RECOVERED',
-        'OPEN_POSITION'
-      ].includes(p.lifecycle_status)
+        'OPEN_POSITION',
+        'COMMITTED'
+      ].includes(p.lifecycle_status))
     );
 
   // Criterion 5: Capital Allocation Risk Gating

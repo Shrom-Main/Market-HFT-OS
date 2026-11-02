@@ -148,8 +148,11 @@ import {
   type EvidenceGapMatrix,
   type BitemporalSeriesPoint,
   type BitemporalEvidenceRecord,
-  type DatabaseHealthStatus
+  type DatabaseHealthStatus,
+  type PaperPositionRecord,
+  type PaperCashLedgerEntry
 } from '../research/centralResearchCore.js';
+import { GovernedHttpConnector } from '../infrastructure/browser/governed_http_connector.js';
 import {
   GroqResearchSynthesizer,
   type MinedGrievanceResponse,
@@ -197,7 +200,18 @@ import { InvestigationMemoryBridge } from '../memory/investigationMemoryBridge.j
 import type { ProductQueueCandidate, ThesisQueueRecord, FormulateThesisParams } from '../gallery/galleryTypes.js';
 
 export interface WorkstationStateEvent {
-  readonly type: 'SNAPSHOT_INITIAL' | 'SNAPSHOT_UPDATED' | 'KILL_SWITCH_CHANGED' | 'DAG_RUN_COMPLETED' | 'WHAT_IF_EVALUATED' | 'SIGNAL_INGESTED' | 'PRODUCT_OBSERVED' | 'PRODUCT_RESEARCHED' | 'GALLERY_EVENT_EMITTED';
+  readonly type:
+    | 'SNAPSHOT_INITIAL'
+    | 'SNAPSHOT_UPDATED'
+    | 'KILL_SWITCH_CHANGED'
+    | 'DAG_RUN_COMPLETED'
+    | 'WHAT_IF_EVALUATED'
+    | 'SIGNAL_INGESTED'
+    | 'PRODUCT_OBSERVED'
+    | 'PRODUCT_RESEARCHED'
+    | 'GALLERY_EVENT_EMITTED'
+    | 'BUNDLE_COMMITTED'
+    | 'POSITION_UPDATED';
   readonly snapshot_jcs_sha256: string;
   readonly kill_switch_scope: KillSwitchHaltScope;
   readonly timestamp_utc: string;
@@ -360,6 +374,16 @@ export class WorkstationStateManager {
     this.centralResearchCore.initialize().then(async () => {
       const ping = await this.centralResearchCore.pingDatabase();
       this.isPostgresConnected = ping.is_connected;
+      const pool = this.centralResearchCore.getPgPool();
+      if (pool) {
+        this.lifecycleEngine.setPgPool(pool);
+        await this.lifecycleEngine.initialize();
+        this.taskQueue.setPgPool(pool);
+        await this.taskQueue.initialize();
+        await this.centralResearchCore.loadPaperPositions();
+        await this.centralResearchCore.loadPaperCashLedger();
+      }
+      this.currentSnapshot = this.projectAuthoritativeSnapshot();
     }).catch((err: Error) => {
       // Fallback mode: database unavailable — log truthfully but continue (Defect 3 fix)
       console.warn('[WorkstationStateManager] PostgreSQL initialization failed:', err?.message ?? String(err));
@@ -1051,6 +1075,99 @@ export class WorkstationStateManager {
     );
     if (outcome?.outcome) {
       await this.centralResearchCore.storeCommittedBundle(outcome.outcome);
+
+      const committedBundle = outcome.outcome;
+      const evaluationResult = committedBundle.evaluation;
+      const nowUtc = new Date().toISOString();
+
+      // Create Paper Position Records for each slice in evaluation
+      if (evaluationResult?.slices && evaluationResult.slices.length > 0) {
+        for (const slice of evaluationResult.slices) {
+          const posId = `POS-${committedBundle.bundle_id}-${slice.product_id.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+          const capitalSubunits = BigInt(Math.round((slice.allocated_capital_inr || 0) * 100)).toString();
+          const landedCostSubunits = BigInt(Math.round((slice.per_unit_landed_cost_inr || 0) * 100)).toString();
+          const targetAspSubunits = BigInt(Math.round((slice.retail_asp_inr || 0) * 100)).toString();
+
+          const posRecord: PaperPositionRecord = {
+            position_id: posId,
+            bundle_id: committedBundle.bundle_id,
+            candidate_id: `cand:${slice.sku_id.toLowerCase()}`,
+            product_id: slice.product_id,
+            batch_quantity: slice.unit_batch_quantity || 1,
+            allocated_capital_subunits: capitalSubunits,
+            entry_landed_cost_subunits: landedCostSubunits,
+            target_asp_subunits: targetAspSubunits,
+            current_asp_subunits: targetAspSubunits,
+            ccc_days: evaluationResult.scenarios?.base?.cash_conversion_cycle_days || 45,
+            dated_cash_flows: [
+              {
+                date_utc: nowUtc,
+                amount_subunits: `-${capitalSubunits}`,
+                flow_type: 'INITIAL_OUTFLOW'
+              }
+            ],
+            xirr_bps: evaluationResult.scenarios?.base?.annualized_rowc_bps || 0,
+            annualized_rowc_bps: evaluationResult.scenarios?.base?.annualized_rowc_bps || 0,
+            unrealized_pnl_subunits: '0',
+            realized_pnl_subunits: '0',
+            lifecycle_status: 'COMMITTED',
+            created_at_utc: nowUtc,
+            updated_at_utc: nowUtc
+          };
+
+          await this.centralResearchCore.storePaperPosition(posRecord);
+        }
+      }
+
+      // Debit Paper Cash Ledger
+      const debitSubunits = BigInt(Math.round((committedBundle.allocated_capital_inr || 0) * 100)).toString();
+      const cashBal = this.centralResearchCore.getInMemoryPaperCashBalance();
+      const priorBalance = BigInt(cashBal.availableSubunits);
+      const newBalance = priorBalance - BigInt(debitSubunits);
+
+      const cashEntry: PaperCashLedgerEntry = {
+        entry_id: `CASH-${Date.now()}-${committedBundle.bundle_id}`,
+        account_id: 'TREASURY_MAIN',
+        entry_type: 'ALLOCATION_DEBIT',
+        amount_subunits: `-${debitSubunits}`,
+        balance_after_subunits: newBalance.toString(),
+        currency: 'INR',
+        reference_id: committedBundle.bundle_id,
+        description: `Allocation for bundle ${committedBundle.bundle_id}: ${confirmation.explicit_rationale}`,
+        operator_id: confirmation.operator_id,
+        jcs_sha256: committedBundle.jcs_sha256,
+        created_at_utc: nowUtc
+      };
+
+      await this.centralResearchCore.recordPaperCashEntry(cashEntry);
+
+      // Re-project snapshot
+      this.currentSnapshot = this.projectAuthoritativeSnapshot();
+
+      // Broadcast WebSocket events
+      this.notifyListeners({
+        type: 'BUNDLE_COMMITTED',
+        kill_switch_scope: this.killSwitchController.getState().active_scope,
+        snapshot_jcs_sha256: this.currentSnapshot.snapshot_jcs_sha256,
+        timestamp_utc: nowUtc,
+        details: {
+          bundle_id: committedBundle.bundle_id,
+          allocated_capital_inr: committedBundle.allocated_capital_inr,
+          operator_id: confirmation.operator_id,
+          position_count: evaluationResult?.slices?.length || 0
+        }
+      });
+      this.notifyListeners({
+        type: 'POSITION_UPDATED',
+        kill_switch_scope: this.killSwitchController.getState().active_scope,
+        snapshot_jcs_sha256: this.currentSnapshot.snapshot_jcs_sha256,
+        timestamp_utc: nowUtc,
+        details: {
+          action: 'BUNDLE_POSITION_CREATED',
+          bundle_id: committedBundle.bundle_id,
+          remaining_treasury_subunits: newBalance.toString()
+        }
+      });
     }
     return outcome;
   }
@@ -1754,11 +1871,29 @@ export class WorkstationStateManager {
         resolvedSourceIdentity = `fixture://${conn.connector_id}`;
       }
     } else if (executionMode === 'LIVE_HTTPS_CAPTURE') {
-      originClass = 'LIVE_VERIFIED_CAPTURE';
-      resolvedSourceIdentity = targetUrl;
-      rawHtml = `<div id="telemetry-${conn.connector_id}" data-price="250000" data-moq="500" data-freight="15000" data-packaging="10000">Live capture placeholder for ${conn.name}</div>`;
+      try {
+        const fetchRes = await GovernedHttpConnector.fetch(targetUrl, {
+          timeout_ms: 10_000,
+          allow_redirects: true
+        });
+        rawHtml = fetchRes.bodyText;
+        originClass = 'LIVE_VERIFIED_CAPTURE';
+        resolvedSourceIdentity = targetUrl;
+      } catch (fetchErr: any) {
+        conn = {
+          ...conn,
+          error_count: conn.error_count + 1,
+          status: 'DEGRADED'
+        };
+        this.sourceConnectors[connIdx] = conn;
+        throw new Error(
+          `E-CONNECTOR-LIVE-FETCH-FAILED: Governed HTTPS fetch failed for ${targetUrl}: ${fetchErr?.message ?? String(fetchErr)}`
+        );
+      }
     } else {
-      rawHtml = `<div id="telemetry-${conn.connector_id}" data-price="250000" data-moq="500" data-freight="15000" data-packaging="10000">Live capture placeholder for ${conn.name}</div>`;
+      rawHtml = SourceCaptureFixtureRegistry.getFixture('howrah_ss304_supplier') || '';
+      originClass = 'RECORDED_GOLDEN_FIXTURE';
+      resolvedSourceIdentity = 'fixture://default_fallback';
     }
 
     const rawCaptureSha256 = sha256(rawHtml);
@@ -3021,24 +3156,29 @@ export class WorkstationStateManager {
 
     const allCapitalOpportunities = [...capitalOpportunities, ...dynamicCapitalRows];
 
-    const paperPositions: readonly PaperPositionItem[] = [
-      {
-        position_id: 'POS-001',
-        candidate_id: 'CAND-SS304-16-25MM-P10',
-        allocated_capital_inr: '19105.00',
-        lifecycle_status: 'VALID_CALCULATED_RETURN',
-        inventory_conservation_proven: true,
-        badge: createSemanticStatusBadge('POS_VALID', '[OK]', 'ACTIVE')
-      },
-      {
-        position_id: 'POS-002',
-        candidate_id: 'CAND-SS304-20-32MM-P20',
-        allocated_capital_inr: '0.00',
-        lifecycle_status: 'INSUFFICIENT_UNVERIFIED_EVIDENCE',
-        inventory_conservation_proven: true,
-        badge: createSemanticStatusBadge('POS_UNVERIFIED', '[WARN]', 'EVIDENCE_INSUFFICIENT')
-      }
-    ];
+    const inMemPositions = this.centralResearchCore.getInMemoryPaperPositions();
+    const paperPositions: PaperPositionItem[] = inMemPositions.length > 0
+      ? inMemPositions.map((pos) => {
+          const allocatedInr = (Number(BigInt(pos.allocated_capital_subunits || '0')) / 100).toFixed(2);
+          const isHealthy = pos.lifecycle_status === 'COMMITTED' || pos.lifecycle_status === 'FBA_AVAILABLE';
+          return {
+            position_id: pos.position_id,
+            candidate_id: pos.candidate_id,
+            allocated_capital_inr: allocatedInr,
+            lifecycle_status: isHealthy ? 'VALID_CALCULATED_RETURN' : 'INSUFFICIENT_UNVERIFIED_EVIDENCE',
+            inventory_conservation_proven: true,
+            badge: createSemanticStatusBadge(
+              isHealthy ? 'POS_VALID' : 'POS_UNVERIFIED',
+              isHealthy ? '[OK]' : '[WARN]',
+              pos.lifecycle_status
+            )
+          };
+        })
+      : [];
+
+    const cashBal = this.centralResearchCore.getInMemoryPaperCashBalance();
+    const availableTreasuryInr = (Number(BigInt(cashBal.availableSubunits)) / 100).toFixed(2);
+    const committedTreasuryInr = (Number(BigInt(cashBal.committedSubunits)) / 100).toFixed(2);
 
     const sevenBucketInventory: SevenBucketInventoryModel = {
       raw_material: 200,
@@ -3137,13 +3277,13 @@ export class WorkstationStateManager {
       as_of_timestamp_utc: asOfUtc,
       command_center: {
         available_treasury_capital_inr: {
-          value: '30895.00',
+          value: availableTreasuryInr,
           unit: 'INR',
           classification: 'SIMULATED',
           source_lineage_ref: 'treasury://paper/simulated_reserve'
         },
         committed_paper_capital_inr: {
-          value: '19105.00',
+          value: committedTreasuryInr,
           unit: 'INR',
           classification: 'SIMULATED',
           source_lineage_ref: 'treasury://paper/allocated'
@@ -3214,7 +3354,7 @@ export class WorkstationStateManager {
         allocated_paper_capital_inr: {
           value: this.currentPortfolioDeck && this.underwritingDecisions.size > 0
             ? this.currentPortfolioDeck.total_allocated_capital_inr.toFixed(2)
-            : '19105.00',
+            : committedTreasuryInr,
           unit: 'INR',
           classification: 'SIMULATED',
           source_lineage_ref: 'allocator://portfolio_deck'
@@ -3222,7 +3362,7 @@ export class WorkstationStateManager {
         unallocated_paper_capital_inr: {
           value: this.currentPortfolioDeck && this.underwritingDecisions.size > 0
             ? this.currentPortfolioDeck.remaining_budget_inr.toFixed(2)
-            : '30895.00',
+            : availableTreasuryInr,
           unit: 'INR',
           classification: 'SIMULATED',
           source_lineage_ref: 'allocator://unallocated'
@@ -3240,7 +3380,7 @@ export class WorkstationStateManager {
       },
       simulation_and_positions: {
         cash_ledger_balance_inr: {
-          value: '50000.00',
+          value: availableTreasuryInr,
           unit: 'INR',
           classification: 'ACTUAL',
           source_lineage_ref: 'ledger://paper/cash_head'

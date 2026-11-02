@@ -221,14 +221,6 @@ export class AdaptiveInvestigationPlannerBridge {
   }
 
   private async cancelTaskInQueue(taskId: string, reason: string): Promise<void> {
-    const rawQueue = (this.taskQueue as any).tasks as Map<string, any> | undefined;
-    if (rawQueue && rawQueue.has(taskId)) {
-      const record = rawQueue.get(taskId);
-      if (record && record.state === 'QUEUED') {
-        record.state = 'CANCELLED_SUPERSEDED';
-        record.last_error_message = reason;
-        record.updated_at_utc = new Date().toISOString();
-      }
-    }
+    await this.taskQueue.cancelTask(taskId, reason);
   }
 }

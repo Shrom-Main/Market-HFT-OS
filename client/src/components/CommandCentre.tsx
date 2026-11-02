@@ -196,7 +196,7 @@ export const CommandCentre: React.FC<CommandCentreProps> = ({
             </div>
             <div className="text-[10px] text-[#35B88A] font-mono flex items-center space-x-1 mt-0.5">
               <span className="w-1.5 h-1.5 rounded-full bg-[#35B88A]" />
-              <span>POSTGRES: 75.4ms LATENCY</span>
+              <span>POSTGRES 16: CONNECTED ({wsStatus})</span>
             </div>
           </div>
           <div className="text-[10px] text-[#738397] font-mono border-t border-[#263342]/60 pt-1 flex justify-between">
@@ -285,10 +285,10 @@ export const CommandCentre: React.FC<CommandCentreProps> = ({
           </div>
           <div className="my-2">
             <div className="text-xl font-bold text-[#E6EDF5] font-mono tabular-nums">
-              $1.42 <span className="text-xs text-[#738397] font-normal">/ $10.00</span>
+              ₹0.00 <span className="text-xs text-[#738397] font-normal">/ ₹1,000.00</span>
             </div>
             <div className="w-full bg-[#080B10] h-1.5 rounded-full overflow-hidden mt-1 border border-[#263342]">
-              <div className="bg-[#35B88A] h-full" style={{ width: '14.2%' }} />
+              <div className="bg-[#35B88A] h-full" style={{ width: '0%' }} />
             </div>
           </div>
           <div className="text-[10px] text-[#738397] font-mono border-t border-[#263342]/60 pt-1 flex justify-between">
@@ -308,10 +308,11 @@ export const CommandCentre: React.FC<CommandCentreProps> = ({
           </div>
           <div className="my-2">
             <div className="text-xl font-bold text-[#35B88A] font-mono tabular-nums">
-              19 / 19 <span className="text-xs text-[#A6B4C3] font-normal">OPERATIONAL</span>
+              {connectorData?.connectors ? `${connectorData.connectors.filter((c: any) => c.status !== 'FAILED').length} / ${connectorData.connectors.length}` : '5 / 5'}{' '}
+              <span className="text-xs text-[#A6B4C3] font-normal">OPERATIONAL</span>
             </div>
             <div className="text-[10px] text-[#738397] font-mono truncate mt-0.5">
-              0 Open Circuits | 10 Capabilities
+              {connectorData?.capabilities ? `${connectorData.capabilities.length} Capabilities Active` : '5 Connectors Active'}
             </div>
           </div>
           <div className="text-[10px] text-[#738397] font-mono border-t border-[#263342]/60 pt-1 flex justify-between group-hover:text-[#4C9FE8]">
@@ -596,10 +597,10 @@ export const CommandCentre: React.FC<CommandCentreProps> = ({
               <div className="space-y-1">
                 <div className="flex justify-between text-[10px] font-mono">
                   <span className="text-[#738397]">LLM Spend:</span>
-                  <span className="text-[#E6EDF5] font-semibold tabular-nums">$1.42 / $10.00</span>
+                  <span className="text-[#E6EDF5] font-semibold tabular-nums">₹0.00 / ₹1,000.00</span>
                 </div>
                 <div className="w-full bg-[#080B10] h-1.5 rounded-full overflow-hidden border border-[#263342]">
-                  <div className="bg-[#35B88A] h-full" style={{ width: '14.2%' }} />
+                  <div className="bg-[#35B88A] h-full" style={{ width: '0%' }} />
                 </div>
               </div>
 

@@ -39,3 +39,6 @@ __pycache__/
 # Operating system files
 .DS_Store
 Thumbs.db
+
+# Audit bundles
+audit_*.txt

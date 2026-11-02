@@ -178,6 +178,35 @@ export class CitedReportExporter {
       });
     }
 
+    if (citations.length === 0) {
+      if (product.sell_side?.listing_url) {
+        const quote = `${product.name} prevailing retail ASP ₹${product.sell_side.prevailing_retail_asp_inr || 0}`;
+        citations.push({
+          citation_id: `CIT-${citIdx++}`,
+          evidence_id: `ev:catalog:${product.product_id}`,
+          source_url_or_fixture: product.sell_side.listing_url,
+          verbatim_quote: quote,
+          start_char_offset: 0,
+          end_char_offset: quote.length,
+          sha256: sha256(quote),
+          epistemic_badge: 'OBSERVED_FACT'
+        });
+      }
+      if (product.upstream_supply?.hub_name) {
+        const quote = `Factory Gate Quote ₹${product.upstream_supply.factory_gate_quote_inr || 0} ex-${product.upstream_supply.hub_name}`;
+        citations.push({
+          citation_id: `CIT-${citIdx++}`,
+          evidence_id: `ev:supply:${product.product_id}`,
+          source_url_or_fixture: `fixture://upstream/${product.product_id}`,
+          verbatim_quote: quote,
+          start_char_offset: 0,
+          end_char_offset: quote.length,
+          sha256: sha256(quote),
+          epistemic_badge: 'OBSERVED_FACT'
+        });
+      }
+    }
+
     // Assumptions Table
     const assumptions: CitedReportAssumptionRow[] = [
       {

@@ -27,6 +27,7 @@
 
 import { sha256 } from '../canonical/crypto.js';
 import { canonicalizeJCS } from '../canonical/jcs.js';
+import type { Pool } from 'pg';
 import {
   InvestigationTask,
   InvestigationAgentRole,
@@ -86,12 +87,107 @@ export interface CommitResult {
 
 export class InvestigationTaskQueue {
   private readonly tasks: Map<string, InvestigationTaskRecord> = new Map();
+  private pgPool?: Pool;
+  private isInitialized = false;
+
+  constructor(options?: { pgPool?: Pool }) {
+    this.pgPool = options?.pgPool;
+  }
+
+  public setPgPool(pool: Pool): void {
+    this.pgPool = pool;
+    this.isInitialized = false;
+  }
+
+  /**
+   * Initializes PostgreSQL task queue schema idempotently and hydrates active tasks.
+   */
+  public async initialize(): Promise<void> {
+    if (this.isInitialized) return;
+
+    if (this.pgPool) {
+      try {
+        await this.pgPool.query(`
+          CREATE TABLE IF NOT EXISTS market_investigation_tasks (
+            task_id TEXT PRIMARY KEY,
+            candidate_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            task_type TEXT NOT NULL,
+            target_role TEXT NOT NULL,
+            target_field TEXT NOT NULL,
+            priority INT NOT NULL DEFAULT 5,
+            description TEXT NOT NULL,
+            payload JSONB NOT NULL,
+            state TEXT NOT NULL DEFAULT 'QUEUED',
+            attempts INT NOT NULL DEFAULT 0,
+            fencing_token INT NOT NULL DEFAULT 0,
+            lease_owner_id TEXT,
+            leased_until_utc TIMESTAMPTZ,
+            result_payload_sha256 TEXT,
+            result_envelope JSONB,
+            committed_envelope_json TEXT,
+            last_error_message TEXT,
+            created_at_utc TIMESTAMPTZ NOT NULL,
+            updated_at_utc TIMESTAMPTZ NOT NULL,
+            completed_at_utc TIMESTAMPTZ
+          );
+          CREATE INDEX IF NOT EXISTS idx_tasks_state_priority ON market_investigation_tasks(state, priority DESC, created_at_utc ASC);
+          CREATE INDEX IF NOT EXISTS idx_tasks_candidate ON market_investigation_tasks(candidate_id, state);
+        `);
+
+        // Reset expired leases back to QUEUED on boot/initialization
+        await this.pgPool.query(`
+          UPDATE market_investigation_tasks
+          SET state = 'QUEUED', lease_owner_id = NULL, leased_until_utc = NULL, updated_at_utc = NOW()
+          WHERE state = 'LEASED' AND leased_until_utc < NOW()
+        `);
+
+        // Hydrate persisted tasks into memory cache
+        const res = await this.pgPool.query(`
+          SELECT * FROM market_investigation_tasks
+          WHERE state IN ('QUEUED', 'LEASED', 'RETRYING')
+          ORDER BY priority DESC, created_at_utc ASC
+        `);
+
+        for (const row of res.rows) {
+          this.tasks.set(row.task_id, {
+            task_id: row.task_id,
+            candidate_id: row.candidate_id,
+            generation_id: row.generation_id,
+            task_type: row.task_type,
+            target_role: row.target_role,
+            target_field: row.target_field,
+            priority: Number(row.priority),
+            description: row.description,
+            payload: typeof row.payload === 'object' && row.payload !== null ? row.payload : JSON.parse(row.payload || '{}'),
+            state: row.state,
+            attempts: Number(row.attempts),
+            fencing_token: Number(row.fencing_token),
+            lease_owner_id: row.lease_owner_id,
+            leased_until_utc: row.leased_until_utc ? new Date(row.leased_until_utc).toISOString() : null,
+            result_payload_sha256: row.result_payload_sha256,
+            result_envelope: row.result_envelope,
+            committed_envelope_json: row.committed_envelope_json,
+            last_error_message: row.last_error_message,
+            created_at_utc: new Date(row.created_at_utc).toISOString(),
+            updated_at_utc: new Date(row.updated_at_utc).toISOString(),
+            completed_at_utc: row.completed_at_utc ? new Date(row.completed_at_utc).toISOString() : undefined
+          });
+        }
+      } catch (err: any) {
+        console.warn('[InvestigationTaskQueue] Postgres initialization warning:', err?.message ?? String(err));
+      }
+    }
+
+    this.isInitialized = true;
+  }
 
   /**
    * Enqueues tasks into the durable queue.
    * Duplicate task IDs are safely ignored (idempotent submission).
    */
   public async enqueueTasks(tasks: readonly InvestigationTask[]): Promise<number> {
+    await this.initialize();
     let enqueuedCount = 0;
     const nowUtc = new Date().toISOString();
 
@@ -117,6 +213,39 @@ export class InvestigationTaskQueue {
         };
         this.tasks.set(t.task_id, record);
         enqueuedCount++;
+
+        if (this.pgPool) {
+          try {
+            await this.pgPool.query(
+              `INSERT INTO market_investigation_tasks
+                 (task_id, candidate_id, generation_id, task_type, target_role, target_field,
+                  priority, description, payload, state, attempts, fencing_token,
+                  lease_owner_id, leased_until_utc, created_at_utc, updated_at_utc)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+               ON CONFLICT (task_id) DO NOTHING`,
+              [
+                record.task_id,
+                record.candidate_id,
+                record.generation_id,
+                record.task_type,
+                record.target_role,
+                record.target_field,
+                record.priority,
+                record.description,
+                JSON.stringify(record.payload),
+                record.state,
+                record.attempts,
+                record.fencing_token,
+                record.lease_owner_id,
+                record.leased_until_utc,
+                record.created_at_utc,
+                record.updated_at_utc
+              ]
+            );
+          } catch (err: any) {
+            console.warn('[InvestigationTaskQueue] enqueue task PG warning:', err?.message);
+          }
+        }
       }
     }
 
@@ -214,6 +343,19 @@ export class InvestigationTaskQueue {
       task.leased_until_utc = new Date(nowMs + leaseDuration).toISOString();
       task.updated_at_utc = new Date(nowMs).toISOString();
 
+      if (this.pgPool) {
+        try {
+          await this.pgPool.query(
+            `UPDATE market_investigation_tasks
+             SET fencing_token = $1, attempts = $2, state = $3, lease_owner_id = $4, leased_until_utc = $5, updated_at_utc = $6
+             WHERE task_id = $7`,
+            [task.fencing_token, task.attempts, task.state, task.lease_owner_id, task.leased_until_utc, task.updated_at_utc, task.task_id]
+          );
+        } catch (err: any) {
+          console.warn('[InvestigationTaskQueue] claimNextTask PG warning:', err?.message);
+        }
+      }
+
       return { ...task };
     }
 
@@ -309,6 +451,27 @@ export class InvestigationTaskQueue {
     task.completed_at_utc = new Date(nowMs).toISOString();
     task.updated_at_utc = new Date(nowMs).toISOString();
 
+    if (this.pgPool) {
+      try {
+        await this.pgPool.query(
+          `UPDATE market_investigation_tasks
+           SET state = $1, result_payload_sha256 = $2, result_envelope = $3, committed_envelope_json = $4, completed_at_utc = $5, updated_at_utc = $6
+           WHERE task_id = $7`,
+          [
+            task.state,
+            task.result_payload_sha256,
+            JSON.stringify(task.result_envelope),
+            task.committed_envelope_json,
+            task.completed_at_utc,
+            task.updated_at_utc,
+            task.task_id
+          ]
+        );
+      } catch (err: any) {
+        console.warn('[InvestigationTaskQueue] commitTaskResult PG warning:', err?.message);
+      }
+    }
+
     return {
       status: 'COMMITTED',
       task_id: task.task_id,
@@ -351,6 +514,20 @@ export class InvestigationTaskQueue {
       task.state = 'DEAD_LETTER_QUARANTINE';
       task.lease_owner_id = null;
       task.leased_until_utc = null;
+
+      if (this.pgPool) {
+        try {
+          await this.pgPool.query(
+            `UPDATE market_investigation_tasks
+             SET state = $1, lease_owner_id = NULL, leased_until_utc = NULL, last_error_message = $2, attempts = $3, updated_at_utc = $4
+             WHERE task_id = $5`,
+            [task.state, task.last_error_message, task.attempts, task.updated_at_utc, task.task_id]
+          );
+        } catch (err: any) {
+          console.warn('[InvestigationTaskQueue] recordTaskFailure PG warning:', err?.message);
+        }
+      }
+
       return { state: 'DEAD_LETTER_QUARANTINE', attempts: task.attempts };
     }
 
@@ -358,7 +535,50 @@ export class InvestigationTaskQueue {
     task.state = 'RETRYING';
     task.lease_owner_id = null;
     task.leased_until_utc = null;
+
+    if (this.pgPool) {
+      try {
+        await this.pgPool.query(
+          `UPDATE market_investigation_tasks
+           SET state = $1, lease_owner_id = NULL, leased_until_utc = NULL, last_error_message = $2, attempts = $3, updated_at_utc = $4
+           WHERE task_id = $5`,
+          [task.state, task.last_error_message, task.attempts, task.updated_at_utc, task.task_id]
+        );
+      } catch (err: any) {
+        console.warn('[InvestigationTaskQueue] recordTaskFailure PG warning:', err?.message);
+      }
+    }
+
     return { state: 'RETRYING', attempts: task.attempts };
+  }
+
+  /**
+   * Explicitly cancels a task if it is still queued or retrying.
+   */
+  public async cancelTask(taskId: string, reason: string): Promise<boolean> {
+    const task = this.tasks.get(taskId);
+    if (!task) return false;
+    if (task.state === 'QUEUED' || task.state === 'RETRYING') {
+      task.state = 'CANCELLED_SUPERSEDED';
+      task.last_error_message = reason;
+      task.lease_owner_id = null;
+      task.leased_until_utc = null;
+      task.updated_at_utc = new Date().toISOString();
+      if (this.pgPool) {
+        try {
+          await this.pgPool.query(
+            `UPDATE market_investigation_tasks
+             SET state = $1, last_error_message = $2, lease_owner_id = NULL, leased_until_utc = NULL, updated_at_utc = $3
+             WHERE task_id = $4`,
+            [task.state, task.last_error_message, task.updated_at_utc, task.task_id]
+          );
+        } catch (err: any) {
+          console.warn('[InvestigationTaskQueue] cancelTask PG warning:', err?.message);
+        }
+      }
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -400,6 +620,22 @@ export class InvestigationTaskQueue {
         task.updated_at_utc = nowUtc;
         sweptToQueued++;
       }
+    }
+
+    if (this.pgPool && (sweptToQueued > 0 || movedToDlq > 0)) {
+      this.pgPool.query(`
+        UPDATE market_investigation_tasks
+        SET state = CASE
+          WHEN attempts >= ${MAX_TASK_ATTEMPTS} THEN 'DEAD_LETTER_QUARANTINE'
+          ELSE 'QUEUED'
+        END,
+        lease_owner_id = NULL,
+        leased_until_utc = NULL,
+        updated_at_utc = NOW()
+        WHERE (state = 'LEASED' AND leased_until_utc <= NOW()) OR state = 'RETRYING'
+      `).catch((err: any) => {
+        console.warn('[InvestigationTaskQueue] sweepExpiredLeases PG warning:', err?.message);
+      });
     }
 
     return { sweptToQueued, movedToDlq };

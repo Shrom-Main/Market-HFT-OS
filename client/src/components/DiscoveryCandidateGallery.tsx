@@ -218,6 +218,26 @@ export const CANDIDATE_CROSS_MAP: Record<
   }
 };
 
+export function getCandidateCrossMetadata(c?: ProductQueueCandidateItem | null) {
+  if (!c) return undefined;
+  const staticMeta = CANDIDATE_CROSS_MAP[c.candidate_id];
+  if (staticMeta) return staticMeta;
+
+  const loc = (c as any).locations?.[0];
+  const thesisId = (c as any).related_theses?.[0];
+  const entity = (c as any).entities?.[0];
+
+  return {
+    atlasNodeId: loc?.location_id,
+    thesisId: thesisId,
+    entityId: entity?.entity_id,
+    unlocatedReason: loc ? undefined : 'Unlocated / Distributed: No physical factory gate or estate centroid coordinates.',
+    clusterPrecision: loc ? 'INDUSTRIAL_ESTATE_CENTROID' : 'UNVERIFIED_LOCATION',
+    precisionRadius: loc ? '±1,500m' : 'Virtual',
+    regionName: loc ? `${loc.cluster_name} (${loc.state})` : 'Unlocated'
+  };
+}
+
 const SYSTEM_VIEW_PRESETS: SavedResearchView[] = [
   {
     id: 'sys-all',
@@ -554,7 +574,8 @@ export const DiscoveryCandidateGallery: React.FC<DiscoveryCandidateGalleryProps>
 
   // Cross-Navigation Handler with Truthful Unlocated Fallback
   const handleAtlasNavigation = (candidateId: string) => {
-    const meta = CANDIDATE_CROSS_MAP[candidateId];
+    const cand = candidates.find((c) => c.candidate_id === candidateId);
+    const meta = getCandidateCrossMetadata(cand) || CANDIDATE_CROSS_MAP[candidateId];
     if (meta?.atlasNodeId && onNavigateToAtlas) {
       onNavigateToAtlas(meta.atlasNodeId);
       setUnlocatedNotice(null);

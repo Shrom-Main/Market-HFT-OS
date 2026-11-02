@@ -109,9 +109,9 @@ export default function App() {
 
       setProducts(deck.products || []);
       setSnapshot(snap);
-      setCandidates(galleryProds);
-      setEventsCount(galleryEvts.length || 9);
-      setThesesCount(galleryThs.length || 2);
+      setCandidates(galleryProds || []);
+      setEventsCount(Array.isArray(galleryEvts) ? galleryEvts.length : 0);
+      setThesesCount(Array.isArray(galleryThs) ? galleryThs.length : 0);
 
       if (deck.products?.length > 0 && !selectedSplitProductId) {
         setSelectedSplitProductId(deck.products[0].product_id);
@@ -128,11 +128,18 @@ export default function App() {
 
     // Connect to WebSocket broadcast
     const disconnectWs = WorkstationApiClient.connectWebSocket(
-      (newSnapshot) => {
-        if (newSnapshot?.snapshot) {
-          setSnapshot(newSnapshot.snapshot);
-        } else if (newSnapshot?.snapshot_id) {
-          setSnapshot(newSnapshot);
+      (envelope) => {
+        if (envelope?.snapshot) {
+          setSnapshot(envelope.snapshot);
+        } else if (envelope?.snapshot_id) {
+          setSnapshot(envelope);
+        }
+
+        // React dynamically to domain events without full page reload
+        if (envelope?.event || envelope?.details?.action) {
+          WorkstationApiClient.getGalleryProducts().then((p) => setCandidates(p || [])).catch(() => {});
+          WorkstationApiClient.getGalleryEvents().then((evs) => setEventsCount(Array.isArray(evs) ? evs.length : 0)).catch(() => {});
+          WorkstationApiClient.getGalleryTheses().then((ths) => setThesesCount(Array.isArray(ths) ? ths.length : 0)).catch(() => {});
         }
       },
       (status) => setWsStatus(status)

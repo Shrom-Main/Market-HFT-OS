@@ -221,6 +221,41 @@ export interface DatabaseHealthStatus {
   error?: string;
 }
 
+export interface PaperPositionRecord {
+  readonly position_id: string;
+  readonly bundle_id: string;
+  readonly candidate_id: string;
+  readonly product_id: string;
+  readonly batch_quantity: number;
+  readonly allocated_capital_subunits: string;
+  readonly entry_landed_cost_subunits: string;
+  readonly target_asp_subunits: string;
+  readonly current_asp_subunits: string;
+  readonly ccc_days: number;
+  readonly dated_cash_flows: Array<{ date_utc: string; amount_subunits: string; flow_type: string }>;
+  readonly xirr_bps: number | null;
+  readonly annualized_rowc_bps: number;
+  readonly unrealized_pnl_subunits: string;
+  readonly realized_pnl_subunits: string;
+  readonly lifecycle_status: 'COMMITTED' | 'PO_ISSUED' | 'IN_TRANSIT' | 'FBA_AVAILABLE' | 'SOLD' | 'SETTLED' | 'CANCELLED';
+  readonly created_at_utc: string;
+  readonly updated_at_utc: string;
+}
+
+export interface PaperCashLedgerEntry {
+  readonly entry_id: string;
+  readonly account_id: string;
+  readonly entry_type: 'INITIAL_TREASURY' | 'ALLOCATION_DEBIT' | 'PROCEEDS_CREDIT' | 'FEE_DEBIT';
+  readonly amount_subunits: string;
+  readonly balance_after_subunits: string;
+  readonly currency: string;
+  readonly reference_id: string;
+  readonly description: string;
+  readonly operator_id: string;
+  readonly jcs_sha256: string;
+  readonly created_at_utc: string;
+}
+
 // ============================================================================
 // 2. HELPER FUNCTIONS
 // ============================================================================
@@ -439,6 +474,8 @@ export class EvidenceProvenanceVerifier {
 export class DurableEvidenceStore {
   private inMemoryEvidence: Map<string, BitemporalEvidenceRecord> = new Map();
   private inMemoryEvents: BitemporalEventOverlay[] = [];
+  private inMemoryPaperPositions: Map<string, PaperPositionRecord> = new Map();
+  private inMemoryPaperCashLedger: PaperCashLedgerEntry[] = [];
   private pgPool: pg.Pool | null = null;
   private isPgAvailable = false;
   private connectionAttempted = false;
@@ -705,6 +742,73 @@ export class DurableEvidenceStore {
             ('conn:macro:rbi-fbil-lme', 'Macro Economic & Commodity Feeds', 'MACRO', 'IDLE', NOW(), 0, '{"connector_id":"conn:macro:rbi-fbil-lme","name":"Macro Economic & Commodity Feeds","channel":"MACRO","status":"IDLE","ingested_count":0,"error_count":0}'::jsonb),
             ('conn:statutory:cbic-msme', 'CBIC Customs & MSME Compliance Feeds', 'STATUTORY', 'IDLE', NOW(), 0, '{"connector_id":"conn:statutory:cbic-msme","name":"CBIC Customs & MSME Compliance Feeds","channel":"STATUTORY","status":"IDLE","ingested_count":0,"error_count":0}'::jsonb)
           ON CONFLICT (connector_id) DO NOTHING;
+
+          -- 7. Persistent Paper Positions Ledger
+          CREATE TABLE IF NOT EXISTS market_paper_positions (
+            position_id TEXT PRIMARY KEY,
+            bundle_id TEXT NOT NULL,
+            candidate_id TEXT NOT NULL,
+            product_id TEXT NOT NULL,
+            batch_quantity INT NOT NULL,
+            allocated_capital_subunits TEXT NOT NULL,
+            entry_landed_cost_subunits TEXT NOT NULL,
+            target_asp_subunits TEXT NOT NULL,
+            current_asp_subunits TEXT NOT NULL,
+            ccc_days INT NOT NULL,
+            dated_cash_flows JSONB NOT NULL DEFAULT '[]'::jsonb,
+            xirr_bps INT,
+            annualized_rowc_bps INT NOT NULL,
+            unrealized_pnl_subunits TEXT NOT NULL DEFAULT '0',
+            realized_pnl_subunits TEXT NOT NULL DEFAULT '0',
+            lifecycle_status TEXT NOT NULL DEFAULT 'COMMITTED',
+            created_at_utc TIMESTAMPTZ NOT NULL,
+            updated_at_utc TIMESTAMPTZ NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_paper_positions_status ON market_paper_positions(lifecycle_status);
+          CREATE INDEX IF NOT EXISTS idx_paper_positions_candidate ON market_paper_positions(candidate_id);
+
+          -- 8. Persistent Paper Cash Treasury Ledger
+          CREATE TABLE IF NOT EXISTS market_paper_cash_ledger (
+            entry_id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL DEFAULT 'PAPER_TREASURY_MAIN',
+            entry_type TEXT NOT NULL,
+            amount_subunits TEXT NOT NULL,
+            balance_after_subunits TEXT NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'INR',
+            reference_id TEXT NOT NULL,
+            description TEXT NOT NULL,
+            operator_id TEXT NOT NULL,
+            jcs_sha256 TEXT NOT NULL,
+            created_at_utc TIMESTAMPTZ NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_paper_cash_account ON market_paper_cash_ledger(account_id, created_at_utc DESC);
+
+          -- 9. Durable Investigation Task Queue
+          CREATE TABLE IF NOT EXISTS market_investigation_tasks (
+            task_id TEXT PRIMARY KEY,
+            candidate_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            task_type TEXT NOT NULL,
+            target_role TEXT NOT NULL,
+            target_field TEXT NOT NULL,
+            priority INT NOT NULL DEFAULT 5,
+            description TEXT NOT NULL,
+            payload JSONB NOT NULL,
+            state TEXT NOT NULL DEFAULT 'QUEUED',
+            attempts INT NOT NULL DEFAULT 0,
+            fencing_token INT NOT NULL DEFAULT 0,
+            lease_owner_id TEXT,
+            leased_until_utc TIMESTAMPTZ,
+            result_payload_sha256 TEXT,
+            result_envelope JSONB,
+            committed_envelope_json TEXT,
+            last_error_message TEXT,
+            created_at_utc TIMESTAMPTZ NOT NULL,
+            updated_at_utc TIMESTAMPTZ NOT NULL,
+            completed_at_utc TIMESTAMPTZ
+          );
+          CREATE INDEX IF NOT EXISTS idx_tasks_state_priority ON market_investigation_tasks(state, priority DESC, created_at_utc ASC);
+          CREATE INDEX IF NOT EXISTS idx_tasks_candidate ON market_investigation_tasks(candidate_id, state);
         `);
 
         // Evidence is append-only: no destructive in-place DELETE or UPDATE on market_bitemporal_evidence.
@@ -738,6 +842,47 @@ export class DurableEvidenceStore {
             });
           }
         }
+
+        // Hydrate existing paper positions
+        const posRows = await client.query('SELECT * FROM market_paper_positions');
+        for (const row of posRows.rows) {
+          this.inMemoryPaperPositions.set(row.position_id, {
+            position_id: row.position_id,
+            bundle_id: row.bundle_id,
+            candidate_id: row.candidate_id,
+            product_id: row.product_id,
+            batch_quantity: Number(row.batch_quantity),
+            allocated_capital_subunits: row.allocated_capital_subunits,
+            entry_landed_cost_subunits: row.entry_landed_cost_subunits,
+            target_asp_subunits: row.target_asp_subunits,
+            current_asp_subunits: row.current_asp_subunits,
+            ccc_days: Number(row.ccc_days),
+            dated_cash_flows: Array.isArray(row.dated_cash_flows) ? row.dated_cash_flows : [],
+            xirr_bps: row.xirr_bps !== null ? Number(row.xirr_bps) : null,
+            annualized_rowc_bps: Number(row.annualized_rowc_bps),
+            unrealized_pnl_subunits: row.unrealized_pnl_subunits,
+            realized_pnl_subunits: row.realized_pnl_subunits,
+            lifecycle_status: row.lifecycle_status,
+            created_at_utc: new Date(row.created_at_utc).toISOString(),
+            updated_at_utc: new Date(row.updated_at_utc).toISOString()
+          });
+        }
+
+        // Hydrate existing paper cash ledger
+        const cashRows = await client.query('SELECT * FROM market_paper_cash_ledger ORDER BY created_at_utc ASC');
+        this.inMemoryPaperCashLedger = cashRows.rows.map((row) => ({
+          entry_id: row.entry_id,
+          account_id: row.account_id,
+          entry_type: row.entry_type,
+          amount_subunits: row.amount_subunits,
+          balance_after_subunits: row.balance_after_subunits,
+          currency: row.currency,
+          reference_id: row.reference_id,
+          description: row.description,
+          operator_id: row.operator_id,
+          jcs_sha256: row.jcs_sha256,
+          created_at_utc: new Date(row.created_at_utc).toISOString()
+        }));
 
         this.isPgAvailable = true;
       } finally {
@@ -1131,6 +1276,171 @@ export class DurableEvidenceStore {
     }
   }
 
+  public async storePaperPosition(pos: PaperPositionRecord): Promise<void> {
+    this.inMemoryPaperPositions.set(pos.position_id, pos);
+    if (!this.pgPool) return;
+    try {
+      await this.pgPool.query(
+        `INSERT INTO market_paper_positions
+           (position_id, bundle_id, candidate_id, product_id, batch_quantity, allocated_capital_subunits,
+            entry_landed_cost_subunits, target_asp_subunits, current_asp_subunits, ccc_days,
+            dated_cash_flows, xirr_bps, annualized_rowc_bps, unrealized_pnl_subunits, realized_pnl_subunits,
+            lifecycle_status, created_at_utc, updated_at_utc)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+         ON CONFLICT (position_id) DO UPDATE SET
+           allocated_capital_subunits = EXCLUDED.allocated_capital_subunits,
+           current_asp_subunits = EXCLUDED.current_asp_subunits,
+           unrealized_pnl_subunits = EXCLUDED.unrealized_pnl_subunits,
+           realized_pnl_subunits = EXCLUDED.realized_pnl_subunits,
+           lifecycle_status = EXCLUDED.lifecycle_status,
+           updated_at_utc = EXCLUDED.updated_at_utc`,
+        [
+          pos.position_id,
+          pos.bundle_id,
+          pos.candidate_id,
+          pos.product_id,
+          pos.batch_quantity,
+          pos.allocated_capital_subunits,
+          pos.entry_landed_cost_subunits,
+          pos.target_asp_subunits,
+          pos.current_asp_subunits,
+          pos.ccc_days,
+          JSON.stringify(pos.dated_cash_flows),
+          pos.xirr_bps,
+          pos.annualized_rowc_bps,
+          pos.unrealized_pnl_subunits,
+          pos.realized_pnl_subunits,
+          pos.lifecycle_status,
+          pos.created_at_utc,
+          pos.updated_at_utc
+        ]
+      );
+    } catch (err: any) {
+      console.warn('[DurableEvidenceStore] storePaperPosition PG error:', err?.message);
+    }
+  }
+
+  public async loadPaperPositions(status?: string): Promise<PaperPositionRecord[]> {
+    if (this.pgPool) {
+      try {
+        const query = status
+          ? 'SELECT * FROM market_paper_positions WHERE lifecycle_status = $1 ORDER BY created_at_utc DESC'
+          : 'SELECT * FROM market_paper_positions ORDER BY created_at_utc DESC';
+        const params = status ? [status] : [];
+        const res = await this.pgPool.query(query, params);
+        if (res.rows.length > 0) {
+          return res.rows.map((row) => ({
+            position_id: row.position_id,
+            bundle_id: row.bundle_id,
+            candidate_id: row.candidate_id,
+            product_id: row.product_id,
+            batch_quantity: Number(row.batch_quantity),
+            allocated_capital_subunits: row.allocated_capital_subunits,
+            entry_landed_cost_subunits: row.entry_landed_cost_subunits,
+            target_asp_subunits: row.target_asp_subunits,
+            current_asp_subunits: row.current_asp_subunits,
+            ccc_days: Number(row.ccc_days),
+            dated_cash_flows: Array.isArray(row.dated_cash_flows) ? row.dated_cash_flows : [],
+            xirr_bps: row.xirr_bps !== null ? Number(row.xirr_bps) : null,
+            annualized_rowc_bps: Number(row.annualized_rowc_bps),
+            unrealized_pnl_subunits: row.unrealized_pnl_subunits,
+            realized_pnl_subunits: row.realized_pnl_subunits,
+            lifecycle_status: row.lifecycle_status,
+            created_at_utc: new Date(row.created_at_utc).toISOString(),
+            updated_at_utc: new Date(row.updated_at_utc).toISOString()
+          }));
+        }
+      } catch (err: any) {
+        console.warn('[DurableEvidenceStore] loadPaperPositions PG error:', err?.message);
+      }
+    }
+    const all = Array.from(this.inMemoryPaperPositions.values());
+    return status ? all.filter((p) => p.lifecycle_status === status) : all;
+  }
+
+  public async recordPaperCashEntry(entry: PaperCashLedgerEntry): Promise<void> {
+    this.inMemoryPaperCashLedger.push(entry);
+    if (!this.pgPool) return;
+    try {
+      await this.pgPool.query(
+        `INSERT INTO market_paper_cash_ledger
+           (entry_id, account_id, entry_type, amount_subunits, balance_after_subunits, currency,
+            reference_id, description, operator_id, jcs_sha256, created_at_utc)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         ON CONFLICT (entry_id) DO NOTHING`,
+        [
+          entry.entry_id,
+          entry.account_id,
+          entry.entry_type,
+          entry.amount_subunits,
+          entry.balance_after_subunits,
+          entry.currency,
+          entry.reference_id,
+          entry.description,
+          entry.operator_id,
+          entry.jcs_sha256,
+          entry.created_at_utc
+        ]
+      );
+    } catch (err: any) {
+      console.warn('[DurableEvidenceStore] recordPaperCashEntry PG error:', err?.message);
+    }
+  }
+
+  public async loadPaperCashLedger(): Promise<PaperCashLedgerEntry[]> {
+    if (this.pgPool) {
+      try {
+        const res = await this.pgPool.query(
+          'SELECT * FROM market_paper_cash_ledger ORDER BY created_at_utc ASC'
+        );
+        if (res.rows.length > 0) {
+          return res.rows.map((row) => ({
+            entry_id: row.entry_id,
+            account_id: row.account_id,
+            entry_type: row.entry_type,
+            amount_subunits: row.amount_subunits,
+            balance_after_subunits: row.balance_after_subunits,
+            currency: row.currency,
+            reference_id: row.reference_id,
+            description: row.description,
+            operator_id: row.operator_id,
+            jcs_sha256: row.jcs_sha256,
+            created_at_utc: new Date(row.created_at_utc).toISOString()
+          }));
+        }
+      } catch (err: any) {
+        console.warn('[DurableEvidenceStore] loadPaperCashLedger PG error:', err?.message);
+      }
+    }
+    return [...this.inMemoryPaperCashLedger];
+  }
+
+  public getInMemoryPaperPositions(): PaperPositionRecord[] {
+    return Array.from(this.inMemoryPaperPositions.values());
+  }
+
+  public getInMemoryPaperCashBalance(): { availableSubunits: string; committedSubunits: string } {
+    let committedBig = 0n;
+    for (const pos of this.inMemoryPaperPositions.values()) {
+      if (
+        pos.lifecycle_status === 'COMMITTED' ||
+        pos.lifecycle_status === 'PO_ISSUED' ||
+        pos.lifecycle_status === 'IN_TRANSIT' ||
+        pos.lifecycle_status === 'FBA_AVAILABLE'
+      ) {
+        committedBig += BigInt(pos.allocated_capital_subunits || '0');
+      }
+    }
+    let balanceSubunits = '5000000'; // Default 50,000 INR = 5,000,000 subunits
+    if (this.inMemoryPaperCashLedger.length > 0) {
+      balanceSubunits = this.inMemoryPaperCashLedger[this.inMemoryPaperCashLedger.length - 1].balance_after_subunits;
+    }
+    return {
+      availableSubunits: balanceSubunits,
+      committedSubunits: committedBig.toString()
+    };
+  }
+
   public async close(): Promise<void> {
     if (this.pgPool) {
       await this.pgPool.end().catch(() => {});
@@ -1313,9 +1623,6 @@ export class CentralResearchCore {
 
   public async initialize(): Promise<void> {
     await this.evidenceStore.initializeTables();
-    if (this.evidenceStore.getEvidenceCount() === 0 && this.evidenceStore.isPostgresConnected()) {
-      await this.seedCanonicalEvidenceFixtures();
-    }
   }
 
   public getEvidenceStore(): DurableEvidenceStore {
@@ -1340,6 +1647,34 @@ export class CentralResearchCore {
 
   public async pingDatabase(): Promise<DatabaseHealthStatus> {
     return this.evidenceStore.pingDatabase();
+  }
+
+  public getPgPool(): pg.Pool | null {
+    return this.evidenceStore.getPgPool();
+  }
+
+  public async storePaperPosition(pos: PaperPositionRecord): Promise<void> {
+    return this.evidenceStore.storePaperPosition(pos);
+  }
+
+  public async loadPaperPositions(status?: string): Promise<PaperPositionRecord[]> {
+    return this.evidenceStore.loadPaperPositions(status);
+  }
+
+  public async recordPaperCashEntry(entry: PaperCashLedgerEntry): Promise<void> {
+    return this.evidenceStore.recordPaperCashEntry(entry);
+  }
+
+  public async loadPaperCashLedger(): Promise<PaperCashLedgerEntry[]> {
+    return this.evidenceStore.loadPaperCashLedger();
+  }
+
+  public getInMemoryPaperPositions(): PaperPositionRecord[] {
+    return this.evidenceStore.getInMemoryPaperPositions();
+  }
+
+  public getInMemoryPaperCashBalance(): { availableSubunits: string; committedSubunits: string } {
+    return this.evidenceStore.getInMemoryPaperCashBalance();
   }
 
   public async close(): Promise<void> {
@@ -1689,81 +2024,83 @@ export class CentralResearchCore {
   /**
    * Generates linked bitemporal time series points with event overlays.
    * Supports historical replay by filtering on asOfUtc.
+   * Truthful implementation: Reads genuine stored observations and overlays.
+   * If no evidence exists for the product, returns an honest empty series [].
    */
   public getBitemporalSeries(productId: string, asOfUtc?: string): BitemporalSeriesPoint[] {
     const events = this.evidenceStore.queryEventOverlays(productId, asOfUtc);
     const evidence = this.evidenceStore.queryEvidence(productId, asOfUtc);
 
-    // Baseline 30-day series
-    const daysCount = 30;
-    const now = new Date();
-    const series: BitemporalSeriesPoint[] = [];
-
-    let baseFactoryGate = 25.0;
-    let baseRetail = 499.0;
-    let baseLanded = 38.21;
-    let baseDefectPct = 4.2;
-
-    if (productId.includes('brass-valve')) {
-      baseFactoryGate = 145.0;
-      baseRetail = 380.0;
-      baseLanded = 182.5;
-      baseDefectPct = 6.8;
-    } else if (productId.includes('mcb')) {
-      baseFactoryGate = 68.0;
-      baseRetail = 175.0;
-      baseLanded = 89.4;
-      baseDefectPct = 5.4;
-    } else if (productId.includes('diya')) {
-      baseFactoryGate = 45.0;
-      baseRetail = 199.0;
-      baseLanded = 68.2;
-      baseDefectPct = 14.5;
-    } else if (productId.includes('candle')) {
-      baseFactoryGate = 110.0;
-      baseRetail = 349.0;
-      baseLanded = 148.0;
-      baseDefectPct = 7.1;
-    } else if (productId.includes('fairy-lights')) {
-      baseFactoryGate = 75.0;
-      baseRetail = 249.0;
-      baseLanded = 104.5;
-      baseDefectPct = 12.0;
-    } else if (productId.includes('hex-bolt')) {
-      baseFactoryGate = 185.0;
-      baseRetail = 450.0;
-      baseLanded = 236.0;
-      baseDefectPct = 3.5;
-    } else if (productId.includes('oring')) {
-      baseFactoryGate = 85.0;
-      baseRetail = 299.0;
-      baseLanded = 118.0;
-      baseDefectPct = 8.2;
+    // Honest empty result when no observations exist
+    if (evidence.length === 0 && events.length === 0) {
+      return [];
     }
 
-    for (let i = daysCount; i >= 0; i--) {
-      const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
-      const dateIso = d.toISOString().slice(0, 10);
-      const pointAsOf = d.toISOString();
+    // Map evidence by observation date
+    const dateMap = new Map<string, {
+      asOfUtc: string;
+      factoryGate: number;
+      landedCost: number;
+      retailAsp: number;
+      defectPct: number;
+    }>();
 
-      // Small deterministic drift
-      const drift = Math.sin(i * 0.4) * 1.5;
-      const factoryGate = Number((baseFactoryGate + drift * 0.2).toFixed(2));
-      const landed = Number((baseLanded + drift * 0.3).toFixed(2));
-      const retail = baseRetail;
-      const grossSpread = Number((retail - landed).toFixed(2));
+    for (const ev of evidence) {
+      const dateIso = (ev.observed_at_utc || ev.as_of_utc).slice(0, 10);
+      const claims = ev.extracted_claims || {};
+      const quote = typeof claims.factory_gate_quote_inr === 'number'
+        ? claims.factory_gate_quote_inr
+        : typeof claims.unit_price_inr === 'number'
+          ? claims.unit_price_inr
+          : 0;
+      const asp = typeof claims.prevailing_retail_asp_inr === 'number'
+        ? claims.prevailing_retail_asp_inr
+        : typeof claims.gross_price_inr === 'number'
+          ? claims.gross_price_inr
+          : 0;
+      const defect = typeof claims.negative_review_pct === 'number' ? claims.negative_review_pct : 0;
+      const landed = quote > 0 ? Number((quote * 1.25).toFixed(2)) : 0;
 
-      // Match events occurring on this date
-      const matchingEvents = events.filter((ev) => ev.event_timestamp_utc.slice(0, 10) === dateIso);
+      const existing = dateMap.get(dateIso);
+      if (!existing || new Date(ev.as_of_utc).getTime() >= new Date(existing.asOfUtc).getTime()) {
+        dateMap.set(dateIso, {
+          asOfUtc: ev.as_of_utc,
+          factoryGate: quote,
+          landedCost: landed,
+          retailAsp: asp,
+          defectPct: defect
+        });
+      }
+    }
 
+    // Also include dates for standalone events
+    for (const ev of events) {
+      const dateIso = (ev.event_timestamp_utc || ev.as_of_utc).slice(0, 10);
+      if (!dateMap.has(dateIso)) {
+        dateMap.set(dateIso, {
+          asOfUtc: ev.as_of_utc,
+          factoryGate: 0,
+          landedCost: 0,
+          retailAsp: 0,
+          defectPct: 0
+        });
+      }
+    }
+
+    const series: BitemporalSeriesPoint[] = [];
+    const sortedDates = Array.from(dateMap.keys()).sort();
+
+    for (const dateIso of sortedDates) {
+      const point = dateMap.get(dateIso)!;
+      const matchingEvents = events.filter((ev) => (ev.event_timestamp_utc || ev.as_of_utc).slice(0, 10) === dateIso);
       series.push({
         date_iso: dateIso,
-        as_of_utc: pointAsOf,
-        factory_gate_quote_inr: factoryGate,
-        landed_cost_inr: landed,
-        prevailing_retail_asp_inr: retail,
-        gross_spread_inr: grossSpread,
-        negative_review_rate_pct: baseDefectPct,
+        as_of_utc: point.asOfUtc,
+        factory_gate_quote_inr: point.factoryGate,
+        landed_cost_inr: point.landedCost,
+        prevailing_retail_asp_inr: point.retailAsp,
+        gross_spread_inr: Number((point.retailAsp - point.landedCost).toFixed(2)),
+        negative_review_rate_pct: point.defectPct,
         events: matchingEvents
       });
     }
@@ -1771,7 +2108,7 @@ export class CentralResearchCore {
     return series;
   }
 
-  private seedCanonicalEvidenceFixtures(): void {
+  public async seedCanonicalEvidenceFixtures(): Promise<void> {
     const nowUtc = new Date().toISOString();
     // Seed initial event overlays
     this.evidenceStore.storeEventOverlay({
