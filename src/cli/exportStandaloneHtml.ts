@@ -19,7 +19,10 @@ import path from 'node:path';
 import { WorkstationStateManager } from '../server/workstationStateManager.js';
 import { renderOperatorTerminalHtml } from '../terminal/operatorTerminalController.js';
 
-export function exportStandaloneHtml(targetPath?: string): { filePath: string; byteLength: number; snapshotSha256: string } {
+export function exportStandaloneHtml(
+  targetPath?: string,
+  stateManager?: WorkstationStateManager
+): { filePath: string; byteLength: number; snapshotSha256: string } {
   const outputPath = targetPath || path.resolve(process.cwd(), 'dist', 'POC-001_Standalone_Workstation.html');
   const outputDir = path.dirname(outputPath);
 
@@ -27,11 +30,11 @@ export function exportStandaloneHtml(targetPath?: string): { filePath: string; b
     fs.mkdirSync(outputDir, { recursive: true });
   }
 
-  const stateManager = new WorkstationStateManager();
-  const snapshot = stateManager.getSnapshot();
-  const inbox = stateManager.getSignalsInbox();
-  const variants = stateManager.getSS304Variants();
-  const deck = stateManager.getProductObservationDeck();
+  const manager = stateManager ?? new WorkstationStateManager();
+  const snapshot = manager.getSnapshot();
+  const inbox = manager.getSignalsInbox();
+  const variants = manager.getSS304Variants();
+  const deck = manager.getProductObservationDeck();
   const html = renderOperatorTerminalHtml(snapshot, {
     connectors: inbox.connectors,
     variants,

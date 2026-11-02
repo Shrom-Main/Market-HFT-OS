@@ -27,12 +27,14 @@ import { ProductObservationItem } from '../types/product';
 import { TerminalSnapshot } from '../types/workstation';
 import { WorkstationApiClient } from '../services/api';
 
-interface InstitutionalResearchTerminalProps {
+export interface InstitutionalResearchTerminalProps {
   products: ProductObservationItem[];
   snapshot: TerminalSnapshot | null;
   wsStatus: string;
   onRefreshData: () => Promise<void>;
   onOpenKillSwitchModal: () => void;
+  selectedProductId?: string;
+  onSelectProduct?: (productId: string) => void;
 }
 
 export function InstitutionalResearchTerminal({
@@ -41,11 +43,27 @@ export function InstitutionalResearchTerminal({
   wsStatus,
   onRefreshData,
   onOpenKillSwitchModal,
+  selectedProductId: propsSelectedProductId,
+  onSelectProduct
 }: InstitutionalResearchTerminalProps) {
   // Selected Product State
   const [selectedProductId, setSelectedProductId] = useState<string>(
-    products[0]?.product_id || 'prod:din3017:ss304:16-25mm:pack-10'
+    propsSelectedProductId || products[0]?.product_id || 'prod:din3017:ss304:16-25mm:pack-10'
   );
+
+  useEffect(() => {
+    if (propsSelectedProductId) {
+      // Find if matches product_id or canonical
+      const matched = products.find(
+        (p) => p.product_id === propsSelectedProductId || p.canonical_product_id === propsSelectedProductId
+      );
+      if (matched) {
+        setSelectedProductId(matched.product_id);
+      } else {
+        setSelectedProductId(propsSelectedProductId);
+      }
+    }
+  }, [propsSelectedProductId, products]);
 
   // Filters & Search
   const [selectedArchetype, setSelectedArchetype] = useState<string>('ALL');

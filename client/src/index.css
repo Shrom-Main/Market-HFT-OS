@@ -1,54 +1,150 @@
 @import "tailwindcss";
 
 @layer base {
+  :root {
+    --bg-void: #080B10;
+    --bg-shell: #0C1118;
+    --bg-panel: #111923;
+    --bg-panel-raised: #172230;
+    --bg-panel-hover: #1C2938;
+    --bg-input: #0A1017;
+    --border-subtle: #263342;
+    --border-strong: #394B5E;
+    --text-primary: #E6EDF5;
+    --text-secondary: #A6B4C3;
+    --text-muted: #738397;
+    --text-disabled: #4F6072;
+    --signal-positive: #35B88A;
+    --signal-negative: #E36C73;
+    --signal-warning: #E5AC55;
+    --signal-info: #63A9E8;
+    --signal-active: #4C9FE8;
+    --signal-neutral: #8A9AAC;
+  }
+
   * {
-    border-color: rgba(51, 65, 85, 0.4);
+    border-color: #263342;
   }
+
   body {
-    background-color: #020617;
-    color: #f8fafc;
+    background-color: #080B10;
+    color: #E6EDF5;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
-  code, pre, .font-mono {
-    font-family: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  code, pre, .font-mono, .tabular-nums {
+    font-family: 'IBM Plex Mono', 'JetBrains Mono', monospace;
+    font-variant-numeric: tabular-nums lining-nums;
   }
 }
 
-/* Custom Financial / Bloomberg Terminal Scrollbars */
+/* Institutional Terminal Scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #020617;
+  background: #080B10;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1e293b;
-  border-radius: 3px;
+  background: #1C2938;
+  border-radius: 2px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+  background: #263342;
 }
 
-/* Glassmorphism & Glow Utilities */
-.glass-panel {
-  background: rgba(15, 23, 42, 0.85);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(51, 65, 85, 0.45);
+/* Institutional Surfaces & Cards */
+.surface-void {
+  background-color: #080B10;
+}
+.surface-shell {
+  background-color: #0C1118;
+}
+.surface-panel {
+  background-color: #111923;
+  border: 1px solid #263342;
+}
+.surface-panel-raised {
+  background-color: #172230;
+  border: 1px solid #394B5E;
+}
+.surface-panel-hover:hover {
+  background-color: #1C2938;
 }
 
-.terminal-glow-cyan {
-  box-shadow: 0 0 24px -6px rgba(6, 182, 212, 0.2);
+/* Institutional Epistemic Status Badges */
+.badge-epistemic {
+  display: inline-flex;
+  align-items: center;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 2px;
+  text-transform: uppercase;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
-.terminal-glow-emerald {
-  box-shadow: 0 0 24px -6px rgba(16, 185, 129, 0.2);
+.badge-verified {
+  background-color: #1B3D2F;
+  color: #35B88A;
+  border: 1px solid #2D664E;
 }
 
-.terminal-glow-amber {
-  box-shadow: 0 0 24px -6px rgba(245, 158, 11, 0.2);
+.badge-corroborated {
+  background-color: #163545;
+  color: #4EB3D3;
+  border: 1px solid #255B77;
 }
 
-.terminal-glow-rose {
-  box-shadow: 0 0 24px -6px rgba(244, 63, 94, 0.2);
+.badge-observed {
+  background-color: #1A2D42;
+  color: #63A9E8;
+  border: 1px solid #2A4B6E;
+}
+
+.badge-historical {
+  background-color: #2B1D3D;
+  color: #B07CE8;
+  border: 1px solid #4F3272;
+}
+
+.badge-assumption {
+  background-color: #3D2E14;
+  color: #E5AC55;
+  border: 1px solid #694E21;
+}
+
+.badge-synthetic {
+  background-color: #3D1B1B;
+  color: #E36C73;
+  border: 1px solid #6B2D2D;
+}
+
+.badge-fixture {
+  background-color: #221E3B;
+  color: #968AE2;
+  border: 1px solid #3E356A;
+}
+
+.badge-contradicted {
+  background-color: #4D1418;
+  color: #FF6B6B;
+  border: 1px solid #802026;
+}
+
+.badge-unverified {
+  background-color: #1E252E;
+  color: #8A9AAC;
+  border: 1px solid #364353;
+}
+
+.badge-data-required {
+  background-color: #3D2512;
+  color: #F08C42;
+  border: 1px solid #6E3F1D;
 }

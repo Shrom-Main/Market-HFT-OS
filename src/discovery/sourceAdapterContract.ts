@@ -21,7 +21,9 @@ export type SourceType =
   | 'GOV_PROCUREMENT'
   | 'IMPORT_EXPORT_MANIFEST'
   | 'TRADE_REGISTRY'
-  | 'FIXTURE_REPLAY';
+  | 'FIXTURE_REPLAY'
+  | 'B2B_DIRECTORY'
+  | 'FIELD_VISIT';
 
 export type PermissionScope =
   | 'READ_PUBLIC_LISTINGS'
@@ -45,6 +47,7 @@ export interface RawSourceCapture {
   readonly payload_sha256: string;
   readonly source_observed_at_utc: string; // T_source
   readonly retrieval_timestamp_utc: string; // T_ingest
+  readonly capture_timestamp_utc?: string;
   readonly extracted_fields?: Record<string, unknown>;
   readonly provenance_signature?: string;
 }

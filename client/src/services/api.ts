@@ -296,5 +296,143 @@ export class WorkstationApiClient {
     }
     return res.json();
   }
+
+  // 19. Stage C/D Living Product Gallery API
+  public static async getGalleryProducts(filter?: { category?: string; lifecycle_state?: string }): Promise<any[]> {
+    const params = new URLSearchParams();
+    if (filter?.category) params.append('category', filter.category);
+    if (filter?.lifecycle_state) params.append('lifecycle_state', filter.lifecycle_state);
+    const url = params.toString() ? `${BASE_URL}/api/gallery/products?${params.toString()}` : `${BASE_URL}/api/gallery/products`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`Failed to load gallery products: ${res.statusText}`);
+    }
+    const data = await res.json();
+    return data.candidates || [];
+  }
+
+  // 20. Stage C/D Living Thesis Gallery API
+  public static async getGalleryTheses(filter?: { scope?: string; lifecycle_state?: string }): Promise<any[]> {
+    const params = new URLSearchParams();
+    if (filter?.scope) params.append('scope', filter.scope);
+    if (filter?.lifecycle_state) params.append('lifecycle_state', filter.lifecycle_state);
+    const url = params.toString() ? `${BASE_URL}/api/gallery/theses?${params.toString()}` : `${BASE_URL}/api/gallery/theses`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`Failed to load gallery theses: ${res.statusText}`);
+    }
+    const data = await res.json();
+    return data.theses || [];
+  }
+
+  // 21. Stage C/D Living Gallery Event Stream
+  public static async getGalleryEvents(sinceSequence: number = 0): Promise<any[]> {
+    const res = await fetch(`${BASE_URL}/api/gallery/events?since=${encodeURIComponent(sinceSequence)}`);
+    if (!res.ok) {
+      return [];
+    }
+    const data = await res.json();
+    return data.events || [];
+  }
+
+  // 22. Discovery Screening Ingestion
+  public static async screenDiscovery(payload: { capture?: any; fixture_id?: string }): Promise<any> {
+    const res = await fetch(`${BASE_URL}/api/discovery/screen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.operator_message || `Discovery screening failed: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  // 23. Query Gallery Grounded LLM
+  public static async queryGalleryLlm(query: string, candidateId?: string, thesisId?: string): Promise<any> {
+    const res = await fetch(`${BASE_URL}/api/gallery/ask`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, candidate_id: candidateId, thesis_id: thesisId })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.operator_message || `Gallery inquiry failed: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  // 24. Formulate Thesis
+  public static async formulateThesis(payload: {
+    title: string;
+    scope: string;
+    hypothesis_statement: string;
+    primary_candidate_id: string;
+    supporting_candidate_ids?: string[];
+  }): Promise<any> {
+    const res = await fetch(`${BASE_URL}/api/gallery/theses/formulate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.operator_message || `Thesis formulation failed: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  // 25. Connector Gateway Operations Telemetry
+  public static async getConnectorOperations(): Promise<any> {
+    const res = await fetch(`${BASE_URL}/api/connectors/operations`);
+    if (!res.ok) {
+      throw new Error(`Failed to load connector operations: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  // 26. Candidate Multi-Comparison API (Slice 2F)
+  public static async getCandidatesCompare(): Promise<any[]> {
+    const res = await fetch(`${BASE_URL}/api/candidates/compare`);
+    if (!res.ok) {
+      throw new Error(`Failed to load candidate comparison: ${res.statusText}`);
+    }
+    const data = await res.json();
+    return data.candidates || [];
+  }
+
+  // 27. Candidate Detail Inspection API (Slice 2E)
+  public static async getCandidateDetail(candidateId: string): Promise<any> {
+    const res = await fetch(`${BASE_URL}/api/candidates/${encodeURIComponent(candidateId)}`);
+    if (!res.ok) {
+      throw new Error(`Failed to load candidate detail: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  // 28. Candidate Underwriting Execution API (Slice 2E)
+  public static async underwriteCandidate(candidateId: string, budgetConfig?: any): Promise<any> {
+    const res = await fetch(`${BASE_URL}/api/candidates/${encodeURIComponent(candidateId)}/underwrite`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ budgetConfig }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.operator_message || `Candidate underwriting failed: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  // 29. Candidate Underwriting Decision API (Slice 2E)
+  public static async getCandidateDecision(candidateId: string): Promise<any> {
+    const res = await fetch(`${BASE_URL}/api/candidates/${encodeURIComponent(candidateId)}/decision`);
+    if (!res.ok) {
+      if (res.status === 404) return null;
+      throw new Error(`Failed to load underwriting decision: ${res.statusText}`);
+    }
+    return res.json();
+  }
 }
 

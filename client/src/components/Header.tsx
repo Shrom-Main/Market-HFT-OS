@@ -14,9 +14,18 @@ import {
 } from 'lucide-react';
 import { TerminalSnapshot, KillSwitchTier } from '../types/workstation';
 
+export type ActiveWorkstationView =
+  | 'DISCOVERY_GALLERY'
+  | 'RESEARCH_TERMINAL'
+  | 'COCKPIT'
+  | 'BLOOMBERG_TERMINAL'
+  | 'AGENTS_DESK'
+  | 'SIGNALS_STREAM'
+  | 'AUDIT_GATE';
+
 interface HeaderProps {
-  activeView: 'RESEARCH_TERMINAL' | 'COCKPIT' | 'BLOOMBERG_TERMINAL' | 'AGENTS_DESK' | 'SIGNALS_STREAM' | 'AUDIT_GATE';
-  onSelectView: (view: 'RESEARCH_TERMINAL' | 'COCKPIT' | 'BLOOMBERG_TERMINAL' | 'AGENTS_DESK' | 'SIGNALS_STREAM' | 'AUDIT_GATE') => void;
+  activeView: ActiveWorkstationView;
+  onSelectView: (view: ActiveWorkstationView) => void;
   snapshot: TerminalSnapshot | null;
   wsStatus: 'CONNECTING' | 'CONNECTED' | 'DISCONNECTED';
   onOpenKillSwitchModal: () => void;
@@ -106,6 +115,20 @@ export const Header: React.FC<HeaderProps> = ({
       <div className="px-4 py-2.5 flex flex-wrap items-center justify-between gap-4">
         {/* Navigation Tabs */}
         <nav className="flex items-center gap-1.5" role="tablist">
+          <button
+            role="tab"
+            aria-selected={activeView === 'DISCOVERY_GALLERY'}
+            onClick={() => onSelectView('DISCOVERY_GALLERY')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-medium font-mono transition-all ${
+              activeView === 'DISCOVERY_GALLERY'
+                ? 'bg-sky-950/80 text-sky-200 border border-sky-500/50 shadow-[0_0_15px_rgba(56,189,248,0.2)]'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900 border border-transparent'
+            }`}
+          >
+            <Layers className="w-4 h-4 text-sky-400" />
+            <span>Candidate Gallery</span>
+          </button>
+
           <button
             role="tab"
             aria-selected={activeView === 'RESEARCH_TERMINAL'}

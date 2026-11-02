@@ -30,6 +30,8 @@ import { ProviderCapabilityAuditor } from '../mcp/providerCapabilityAuditor.js';
 import { sha256 } from '../canonical/crypto.js';
 import { canonicalizeJCS } from '../canonical/jcs.js';
 import { sanitizeForJcs } from '../agents/m6AgentFramework.js';
+import { GoldenDiscoveryFixtureRegistry } from '../discovery/fixtures/goldenDiscoveryFixtures.js';
+import { FixtureReplayAdapter } from '../discovery/fixtureReplayAdapter.js';
 
 export interface WorkstationServerOptions {
   readonly port?: number; // default: 4310; supports port: 0 for ephemeral OS assignment (SRV-04)
@@ -369,6 +371,21 @@ export class WorkstationServer {
       }
     }
 
+    // Route 0: Institutional Workstation SPA (Stage UI.1)
+    if (method === 'GET' && (pathname === '/ui' || pathname === '/ui/' || pathname === '/workstation')) {
+      const clientHtmlPath = path.resolve(process.cwd(), 'dist/client/index.html');
+      if (fs.existsSync(clientHtmlPath)) {
+        const fileContent = fs.readFileSync(clientHtmlPath);
+        applySecurityHeaders(res);
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Length': fileContent.length,
+        });
+        res.end(fileContent);
+        return;
+      }
+    }
+
     // Route 1: Root Workstation HTML
     if ((method === 'GET' || method === 'HEAD') && (pathname === '/' || pathname === '/index.html')) {
       const snapshot = this.stateManager.getSnapshot();
@@ -651,6 +668,25 @@ export class WorkstationServer {
           'server:api:connectors-run'
         );
         sendJsonResponse(res, statusCode, err);
+      }
+      return;
+    }
+
+    // Route 9c: Connector Operations Telemetry & Gateway Routing API
+    if (method === 'GET' && pathname === '/api/connectors/operations') {
+      try {
+        const ops = this.stateManager.getConnectorOperations();
+        sendJsonResponse(res, 200, {
+          success: true,
+          report: ops,
+          timestamp_utc: new Date().toISOString()
+        });
+      } catch (e: any) {
+        const err = createServerErrorEnvelope(
+          e instanceof Error ? e : new Error(String(e)),
+          'server:api:connectors-operations'
+        );
+        sendJsonResponse(res, 500, err);
       }
       return;
     }
@@ -1198,6 +1234,339 @@ export class WorkstationServer {
           'server:api:health-providers'
         );
         sendJsonResponse(res, 500, err);
+      }
+      return;
+    }
+
+    // Route 29: Discovery Screening API (Slice 2E)
+    if (method === 'POST' && pathname === '/api/discovery/screen') {
+      const bodyResult = await readJsonBody(req);
+      if (bodyResult.error) {
+        sendJsonResponse(res, bodyResult.error.status, bodyResult.error.envelope);
+        return;
+      }
+      const body = bodyResult.data || {};
+      let capture = body.capture;
+      if (!capture && body.fixture_id) {
+        capture = GoldenDiscoveryFixtureRegistry.getFixtureById(body.fixture_id);
+        if (!capture) {
+          const err = createServerErrorEnvelope(
+            new Error(`E-FIXTURE-NOT-FOUND: Golden fixture '${body.fixture_id}' not found in registry.`),
+            'server:api:discovery-screen'
+          );
+          sendJsonResponse(res, 404, err);
+          return;
+        }
+      }
+      if (!capture) {
+        const err = createServerErrorEnvelope(
+          new Error('E-INVALID-ARGUMENT: Either capture or fixture_id must be provided to /api/discovery/screen.'),
+          'server:api:discovery-screen'
+        );
+        sendJsonResponse(res, 400, err);
+        return;
+      }
+      try {
+        const result = await this.stateManager.screenDiscoveryCapture(capture);
+        sendJsonResponse(res, 200, result);
+      } catch (e: any) {
+        const err = createServerErrorEnvelope(
+          e instanceof Error ? e : new Error(String(e)),
+          'server:api:discovery-screen'
+        );
+        sendJsonResponse(res, 500, err);
+      }
+      return;
+    }
+
+    // Route 30: Discovery Investigation API (Slice 2E: Claim & Evidence Commit)
+    if (method === 'POST' && pathname === '/api/discovery/investigate') {
+      const bodyResult = await readJsonBody(req);
+      if (bodyResult.error) {
+        sendJsonResponse(res, bodyResult.error.status, bodyResult.error.envelope);
+        return;
+      }
+      const body = bodyResult.data || {};
+      if (body.action === 'claim') {
+        if (!body.worker_id) {
+          const err = createServerErrorEnvelope(
+            new Error('E-INVALID-ARGUMENT: worker_id is required to claim an investigation task.'),
+            'server:api:discovery-investigate'
+          );
+          sendJsonResponse(res, 400, err);
+          return;
+        }
+        try {
+          const task = await this.stateManager.claimInvestigationTask(body.worker_id, {
+            candidateId: body.candidate_id,
+            targetRole: body.target_role
+          });
+          sendJsonResponse(res, 200, { task });
+        } catch (e: any) {
+          const err = createServerErrorEnvelope(
+            e instanceof Error ? e : new Error(String(e)),
+            'server:api:discovery-investigate'
+          );
+          sendJsonResponse(res, 500, err);
+        }
+        return;
+      }
+
+      // Default: submit investigation result
+      try {
+        const outcome = await this.stateManager.submitInvestigationEvidence(body);
+        sendJsonResponse(res, 200, outcome);
+      } catch (e: any) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        const isFencingError = errMsg.includes('E-QUEUE-STALE-LEASE-FENCE-REJECTED') ||
+          errMsg.includes('E-QUEUE-LEASE-EXPIRED-AT-COMMIT') ||
+          errMsg.includes('E-QUEUE-COMMIT-ENVELOPE-MISMATCH') ||
+          errMsg.includes('FENCE') ||
+          errMsg.includes('LEASE');
+        const statusCode = isFencingError ? 409 : 400;
+        const err = createServerErrorEnvelope(
+          e instanceof Error ? e : new Error(String(e)),
+          'server:api:discovery-investigate'
+        );
+        sendJsonResponse(res, statusCode, err);
+      }
+      return;
+    }
+
+    // Route 31: Candidate Underwriting API (Slice 2E)
+    const underwriteMatch = pathname.match(/^\/api\/candidates\/([^/]+)\/underwrite$/);
+    if (method === 'POST' && underwriteMatch) {
+      const candidateId = decodeURIComponent(underwriteMatch[1]);
+      const bodyResult = await readJsonBody(req);
+      if (bodyResult.error) {
+        sendJsonResponse(res, bodyResult.error.status, bodyResult.error.envelope);
+        return;
+      }
+      const body = bodyResult.data || {};
+      try {
+        const decision = await this.stateManager.underwriteDiscoveredCandidate(candidateId, {
+          budgetConfig: body.budgetConfig
+        });
+        sendJsonResponse(res, 200, decision);
+      } catch (e: any) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        const statusCode = errMsg.includes('not found') || errMsg.includes('E-NOT-FOUND') ? 404 : 400;
+        const err = createServerErrorEnvelope(
+          e instanceof Error ? e : new Error(String(e)),
+          'server:api:candidate-underwrite'
+        );
+        sendJsonResponse(res, statusCode, err);
+      }
+      return;
+    }
+
+    // Route 32: Candidate Underwriting Decision API (Slice 2E)
+    const decisionMatch = pathname.match(/^\/api\/candidates\/([^/]+)\/decision$/);
+    if (method === 'GET' && decisionMatch) {
+      const candidateId = decodeURIComponent(decisionMatch[1]);
+      const decision = this.stateManager.getUnderwritingDecision(candidateId);
+      if (!decision) {
+        const err = createServerErrorEnvelope(
+          new Error(`E-NOT-FOUND: No underwriting decision found for candidate '${candidateId}'.`),
+          'server:api:candidate-decision'
+        );
+        sendJsonResponse(res, 404, err);
+        return;
+      }
+      sendJsonResponse(res, 200, decision);
+      return;
+    }
+
+    // Route 34: Multi-Candidate Comparison API (Slice 2F)
+    if (method === 'GET' && pathname === '/api/candidates/compare') {
+      try {
+        const rows = await this.stateManager.compareCandidates();
+        sendJsonResponse(res, 200, {
+          candidates: rows,
+          count: rows.length,
+          timestamp_utc: new Date().toISOString()
+        });
+      } catch (err: any) {
+        const envelope = createServerErrorEnvelope(
+          err instanceof Error ? err : new Error(String(err)),
+          'server:api:candidates-compare'
+        );
+        sendJsonResponse(res, 500, envelope);
+      }
+      return;
+    }
+
+    // Route 33: Candidate Inspection API (Slice 2E)
+    const candidateMatch = pathname.match(/^\/api\/candidates\/([^/]+)$/);
+    if (method === 'GET' && candidateMatch) {
+      const candidateId = decodeURIComponent(candidateMatch[1]);
+      const candidate = await this.stateManager.getDiscoveredCandidate(candidateId);
+      if (!candidate) {
+        const err = createServerErrorEnvelope(
+          new Error(`E-NOT-FOUND: Candidate '${candidateId}' not found.`),
+          'server:api:candidate-get'
+        );
+        sendJsonResponse(res, 404, err);
+        return;
+      }
+      sendJsonResponse(res, 200, candidate);
+      return;
+    }
+
+    // Route 35: Portfolio Paper Budget Evaluation API (Slice 2F)
+    if (method === 'POST' && pathname === '/api/portfolio/evaluate-budget') {
+      const bodyResult = await readJsonBody(req);
+      if (bodyResult.error) {
+        sendJsonResponse(res, bodyResult.error.status, bodyResult.error.envelope);
+        return;
+      }
+      const body = bodyResult.data || {};
+      const budgetInr = Number(body?.total_paper_budget_inr);
+      if (!Number.isFinite(budgetInr) || budgetInr <= 0) {
+        const err = createServerErrorEnvelope(
+          new Error('E-INVALID-ARGUMENT: total_paper_budget_inr must be a positive finite number.'),
+          'server:api:portfolio-evaluate-budget'
+        );
+        sendJsonResponse(res, 400, err);
+        return;
+      }
+      const maxSingleInr = body?.max_single_allocation_inr === null
+        ? null
+        : body?.max_single_allocation_inr != null
+          ? Number(body.max_single_allocation_inr)
+          : undefined;
+      try {
+        const deck = this.stateManager.evaluatePortfolioBudget({
+          total_paper_budget_inr: budgetInr,
+          max_single_allocation_inr: maxSingleInr
+        });
+        sendJsonResponse(res, 200, {
+          deck,
+          timestamp_utc: new Date().toISOString()
+        });
+      } catch (err: any) {
+        const envelope = createServerErrorEnvelope(
+          err instanceof Error ? err : new Error(String(err)),
+          'server:api:portfolio-evaluate-budget'
+        );
+        sendJsonResponse(res, 500, envelope);
+      }
+      return;
+    }
+
+    // Route 36: Portfolio Allocation Deck Retrieval API (Slice 2F)
+    if (method === 'GET' && pathname === '/api/portfolio/deck') {
+      try {
+        const deck = this.stateManager.getPortfolioDeck();
+        sendJsonResponse(res, 200, {
+          deck,
+          timestamp_utc: new Date().toISOString()
+        });
+      } catch (err: any) {
+        const envelope = createServerErrorEnvelope(
+          err instanceof Error ? err : new Error(String(err)),
+          'server:api:portfolio-deck'
+        );
+        sendJsonResponse(res, 500, envelope);
+      }
+      return;
+    }
+
+    // Route 37: Living Product Gallery API (Stage C)
+    if (method === 'GET' && pathname === '/api/gallery/products') {
+      const url = new URL(req.url || '/', `http://${this.host}:${this.boundPort}`);
+      const category = url.searchParams.get('category') || undefined;
+      const lifecycleState = (url.searchParams.get('lifecycle_state') as any) || undefined;
+      const candidates = this.stateManager.getGalleryProducts({ category, lifecycle_state: lifecycleState });
+      sendJsonResponse(res, 200, {
+        candidates,
+        count: candidates.length,
+        timestamp_utc: new Date().toISOString()
+      });
+      return;
+    }
+
+    // Route 38: Living Thesis Gallery API (Stage C)
+    if (method === 'GET' && pathname === '/api/gallery/theses') {
+      const url = new URL(req.url || '/', `http://${this.host}:${this.boundPort}`);
+      const scope = (url.searchParams.get('scope') as any) || undefined;
+      const lifecycleState = (url.searchParams.get('lifecycle_state') as any) || undefined;
+      const theses = this.stateManager.getGalleryTheses({ scope, lifecycle_state: lifecycleState });
+      sendJsonResponse(res, 200, {
+        theses,
+        count: theses.length,
+        timestamp_utc: new Date().toISOString()
+      });
+      return;
+    }
+
+    // Route 39: Living Gallery Events API (Stage C)
+    if (method === 'GET' && pathname === '/api/gallery/events') {
+      const url = new URL(req.url || '/', `http://${this.host}:${this.boundPort}`);
+      const since = parseInt(url.searchParams.get('since') || '0', 10);
+      const events = this.stateManager.getGalleryEvents(isNaN(since) ? 0 : since);
+      sendJsonResponse(res, 200, {
+        events,
+        count: events.length,
+        timestamp_utc: new Date().toISOString()
+      });
+      return;
+    }
+
+    // Route 40: Gallery Grounded Intelligence Agent Interaction API (Stage C)
+    if (method === 'POST' && pathname === '/api/gallery/ask') {
+      const bodyResult = await readJsonBody(req);
+      if (bodyResult.error) {
+        sendJsonResponse(res, bodyResult.error.status, bodyResult.error.envelope);
+        return;
+      }
+      const body = bodyResult.data || {};
+      if (!body.query || typeof body.query !== 'string') {
+        const err = createServerErrorEnvelope(
+          new Error('E-INVALID-ARGUMENT: "query" is required for /api/gallery/ask.'),
+          'server:api:gallery-ask'
+        );
+        sendJsonResponse(res, 400, err);
+        return;
+      }
+      try {
+        const response = await this.stateManager.queryGalleryLlm(body.query, body.candidate_id, body.thesis_id);
+        sendJsonResponse(res, 200, response);
+      } catch (err: any) {
+        const envelope = createServerErrorEnvelope(
+          err instanceof Error ? err : new Error(String(err)),
+          'server:api:gallery-ask'
+        );
+        sendJsonResponse(res, 500, envelope);
+      }
+      return;
+    }
+
+    // Route 41: Formulate Thesis API (Stage C)
+    if (method === 'POST' && pathname === '/api/gallery/theses/formulate') {
+      const bodyResult = await readJsonBody(req);
+      if (bodyResult.error) {
+        sendJsonResponse(res, bodyResult.error.status, bodyResult.error.envelope);
+        return;
+      }
+      const body = bodyResult.data || {};
+      if (!body.title || !body.scope || !body.hypothesis_statement) {
+        const err = createServerErrorEnvelope(
+          new Error('E-INVALID-ARGUMENT: "title", "scope", and "hypothesis_statement" are required for /api/gallery/theses/formulate.'),
+          'server:api:gallery-theses-formulate'
+        );
+        sendJsonResponse(res, 400, err);
+        return;
+      }
+      try {
+        const thesis = await this.stateManager.formulateThesis(body);
+        sendJsonResponse(res, 200, thesis);
+      } catch (err: any) {
+        const envelope = createServerErrorEnvelope(
+          err instanceof Error ? err : new Error(String(err)),
+          'server:api:gallery-theses-formulate'
+        );
+        sendJsonResponse(res, 500, envelope);
       }
       return;
     }

@@ -129,6 +129,10 @@ import type {
 import {
   ProductObservationDeckRegistry
 } from '../research/productObservationDeckRegistry.js';
+import {
+  ConnectorGateway,
+  type GatewayOperationalReport
+} from '../mcp/connectorGateway.js';
 import type {
   ProductObservationItem,
   ProductObservationDeckResponse,
@@ -157,11 +161,43 @@ import {
   type BundleEvaluationResult,
   type CommittedBundleRecord
 } from '../research/bundleEvaluator.js';
+import {
+  DiscoveryScreenerService,
+  type DiscoveryScreeningResult,
+  type SubmitInvestigationResultParams,
+  type SubmitInvestigationResultOutcome
+} from '../discovery/discoveryScreenerService.js';
+import { InvestigationTaskQueue } from '../discovery/investigationTaskQueue.js';
+import type { InvestigationAgentRole } from '../discovery/investigationPlanner.js';
+import {
+  OpportunityLifecycleEngine,
+  type OpportunityCandidate,
+  type CandidateUnderwritingDecision,
+  type PaperCapitalBudgetConfig
+} from '../research/opportunityLifecycleEngine.js';
+import type { RawSourceCapture } from '../discovery/sourceAdapterContract.js';
 import { sha256 } from '../canonical/crypto.js';
 import { canonicalizeJCS } from '../canonical/jcs.js';
+import {
+  buildCandidateComparisonRows,
+  evaluatePortfolioAllocationDeck
+} from '../research/portfolioAllocationEngine.js';
+import type {
+  CandidateComparisonRow,
+  PortfolioAllocationDeck,
+  PortfolioAllocationItem,
+  PortfolioEvaluationOptions
+} from '../research/portfolioAllocationTypes.js';
+import { PersistentGalleryStore } from '../gallery/persistentGalleryStore.js';
+import { DiscoveryGalleryPipeline } from '../gallery/discoveryGalleryPipeline.js';
+import { GalleryIntelligenceAgent } from '../gallery/galleryIntelligenceAgent.js';
+import { PersistentMemoryStore } from '../memory/persistentMemoryStore.js';
+import { ContextualMemoryRetriever } from '../memory/contextualMemoryRetriever.js';
+import { InvestigationMemoryBridge } from '../memory/investigationMemoryBridge.js';
+import type { ProductQueueCandidate, ThesisQueueRecord, FormulateThesisParams } from '../gallery/galleryTypes.js';
 
 export interface WorkstationStateEvent {
-  readonly type: 'SNAPSHOT_INITIAL' | 'SNAPSHOT_UPDATED' | 'KILL_SWITCH_CHANGED' | 'DAG_RUN_COMPLETED' | 'WHAT_IF_EVALUATED' | 'SIGNAL_INGESTED' | 'PRODUCT_OBSERVED' | 'PRODUCT_RESEARCHED';
+  readonly type: 'SNAPSHOT_INITIAL' | 'SNAPSHOT_UPDATED' | 'KILL_SWITCH_CHANGED' | 'DAG_RUN_COMPLETED' | 'WHAT_IF_EVALUATED' | 'SIGNAL_INGESTED' | 'PRODUCT_OBSERVED' | 'PRODUCT_RESEARCHED' | 'GALLERY_EVENT_EMITTED';
   readonly snapshot_jcs_sha256: string;
   readonly kill_switch_scope: KillSwitchHaltScope;
   readonly timestamp_utc: string;
@@ -233,6 +269,25 @@ export class WorkstationStateManager {
   // Slice 4: Local-First Research Query Engine
   private localResearchQueryEngine: LocalFirstResearchQueryEngine;
 
+  // Slice 2E & 2F: Discovery Screener & Opportunity Lifecycle Integration
+  private lifecycleEngine: OpportunityLifecycleEngine;
+  private taskQueue: InvestigationTaskQueue;
+  private discoveryScreener: DiscoveryScreenerService;
+  private underwritingDecisions: Map<string, CandidateUnderwritingDecision> = new Map();
+  private portfolioBudgetConfig: PortfolioEvaluationOptions = {
+    total_paper_budget_inr: 50000,
+    max_single_allocation_inr: undefined
+  };
+  private currentPortfolioDeck: PortfolioAllocationDeck | null = null;
+
+  // Stage C & 64A: Living Product Gallery, Thesis Gallery, Stage B Memory & Reasoning
+  private galleryStore: PersistentGalleryStore;
+  private memoryStore: PersistentMemoryStore;
+  private memoryRetriever: ContextualMemoryRetriever;
+  private memoryBridge: InvestigationMemoryBridge;
+  private galleryPipeline: DiscoveryGalleryPipeline;
+  private galleryAgent: GalleryIntelligenceAgent;
+
   constructor() {
     this.killSwitchController = new KillSwitchController('NORMAL_PAPER_OPERATION');
     this.mcpServer = new McpServerAdapter();
@@ -246,6 +301,48 @@ export class WorkstationStateManager {
 
     // Slice 2: Initialize Entity Identity Resolver
     this.entityIdentityResolver = new EntityIdentityResolver();
+
+    // Slice 2E & Stage C: Initialize Task Queue, Memory, Gallery & Discovery Screener
+    this.lifecycleEngine = new OpportunityLifecycleEngine({
+      requirePaperBudget: true
+    });
+    this.taskQueue = new InvestigationTaskQueue();
+
+    this.galleryStore = new PersistentGalleryStore();
+    this.memoryStore = new PersistentMemoryStore();
+    this.memoryRetriever = new ContextualMemoryRetriever(this.memoryStore);
+    this.memoryBridge = new InvestigationMemoryBridge(this.memoryStore, this.memoryRetriever, this.taskQueue);
+    this.galleryPipeline = new DiscoveryGalleryPipeline(
+      this.galleryStore,
+      this.memoryStore,
+      this.memoryRetriever,
+      this.memoryBridge,
+      this.taskQueue
+    );
+    this.galleryAgent = new GalleryIntelligenceAgent(this.galleryStore, this.memoryStore, this.taskQueue);
+
+    // Forward durable gallery events to workstation WebSocket/HTTP listeners
+    this.galleryStore.subscribe((event) => {
+      this.notifyListeners({
+        type: 'GALLERY_EVENT_EMITTED',
+        kill_switch_scope: this.killSwitchController.getState().active_scope,
+        snapshot_jcs_sha256: this.currentSnapshot?.snapshot_jcs_sha256 || 'snapshot-sha',
+        timestamp_utc: new Date().toISOString(),
+        details: {
+          action: 'GALLERY_EVENT_EMITTED',
+          event_type: event.event_type,
+          event_id: event.event_id,
+          payload: event.details
+        }
+      });
+    });
+
+    this.discoveryScreener = new DiscoveryScreenerService({
+      lifecycleEngine: this.lifecycleEngine,
+      identityResolver: this.entityIdentityResolver,
+      taskQueue: this.taskQueue,
+      galleryPipeline: this.galleryPipeline
+    });
 
     // Gate M8.0: Initialize Central Research Core, Groq Synthesizer & Bundle Evaluator
     this.centralResearchCore = new CentralResearchCore();
@@ -577,6 +674,10 @@ export class WorkstationStateManager {
     return this.sourceConnectors;
   }
 
+  public getConnectorOperations(): GatewayOperationalReport {
+    return ConnectorGateway.getInstance().getOperationalStatus();
+  }
+
   public async pushProductObservation(request: PushProductObservationRequest): Promise<ProductObservationItem> {
     const item = this.productObservationDeck.pushProductObservation(request);
     await this.centralResearchCore.getEvidenceStore().storeProductDeckItem(item);
@@ -680,6 +781,195 @@ export class WorkstationStateManager {
       stateManager: this,
       as_of_utc: asOfUtc
     });
+  }
+
+  // --------------------------------------------------------------------------
+  // Slice 2E: Discovery Screener & Opportunity Lifecycle Methods
+  // --------------------------------------------------------------------------
+
+  public async screenDiscoveryCapture(capture: RawSourceCapture): Promise<DiscoveryScreeningResult> {
+    const result = await this.discoveryScreener.screenCapture(capture);
+    this.currentSnapshot = this.projectAuthoritativeSnapshot();
+    this.notifyListeners({
+      type: 'SNAPSHOT_UPDATED',
+      kill_switch_scope: this.killSwitchController.getState().active_scope,
+      snapshot_jcs_sha256: this.currentSnapshot.snapshot_jcs_sha256,
+      timestamp_utc: new Date().toISOString(),
+      details: {
+        action: 'DISCOVERY_CANDIDATE_SCREENED',
+        candidate_id: result.candidate?.candidate_id,
+        resolution_status: result.resolution_status
+      }
+    });
+    return result;
+  }
+
+  public async claimInvestigationTask(
+    workerId: string,
+    options?: { candidateId?: string; targetRole?: InvestigationAgentRole; leaseDurationMs?: number }
+  ) {
+    return this.discoveryScreener.claimNextTask(workerId, options);
+  }
+
+  public async submitInvestigationEvidence(
+    params: SubmitInvestigationResultParams
+  ): Promise<SubmitInvestigationResultOutcome> {
+    const outcome = await this.discoveryScreener.submitInvestigationResult(params);
+    this.currentSnapshot = this.projectAuthoritativeSnapshot();
+    this.notifyListeners({
+      type: 'SNAPSHOT_UPDATED',
+      kill_switch_scope: this.killSwitchController.getState().active_scope,
+      snapshot_jcs_sha256: this.currentSnapshot.snapshot_jcs_sha256,
+      timestamp_utc: new Date().toISOString(),
+      details: {
+        action: 'INVESTIGATION_EVIDENCE_COMMITTED',
+        task_id: params.task_id,
+        candidate_id: params.candidate_id,
+        commit_status: outcome.commit_status
+      }
+    });
+    return outcome;
+  }
+
+  public async underwriteDiscoveredCandidate(
+    candidateId: string,
+    options?: { budgetConfig?: PaperCapitalBudgetConfig }
+  ): Promise<CandidateUnderwritingDecision> {
+    const decision = await this.discoveryScreener.underwriteCandidate(candidateId, options);
+    this.underwritingDecisions.set(candidateId, decision);
+    this.recomputePortfolioDeck();
+    this.currentSnapshot = this.projectAuthoritativeSnapshot();
+    this.notifyListeners({
+      type: 'SNAPSHOT_UPDATED',
+      kill_switch_scope: this.killSwitchController.getState().active_scope,
+      snapshot_jcs_sha256: this.currentSnapshot.snapshot_jcs_sha256,
+      timestamp_utc: new Date().toISOString(),
+      details: {
+        action: 'CANDIDATE_UNDERWRITTEN',
+        candidate_id: candidateId,
+        outcome: decision.outcome,
+        margin_bps: decision.unit_economics.estimated_margin_bps
+      }
+    });
+    return decision;
+  }
+
+  private recomputePortfolioDeck(): PortfolioAllocationDeck {
+    const decisions = Array.from(this.underwritingDecisions.values());
+    this.currentPortfolioDeck = evaluatePortfolioAllocationDeck(decisions, this.portfolioBudgetConfig);
+    return this.currentPortfolioDeck;
+  }
+
+  public evaluatePortfolioBudget(options?: Partial<PortfolioEvaluationOptions> & { max_single_allocation_inr?: number | null }): PortfolioAllocationDeck {
+    if (options?.total_paper_budget_inr != null) {
+      this.portfolioBudgetConfig = {
+        total_paper_budget_inr: options.total_paper_budget_inr,
+        max_single_allocation_inr: options.max_single_allocation_inr === null
+          ? undefined
+          : options.max_single_allocation_inr !== undefined
+            ? options.max_single_allocation_inr
+            : undefined
+      };
+    } else if (options?.max_single_allocation_inr !== undefined) {
+      this.portfolioBudgetConfig = {
+        total_paper_budget_inr: this.portfolioBudgetConfig.total_paper_budget_inr,
+        max_single_allocation_inr: options.max_single_allocation_inr === null
+          ? undefined
+          : options.max_single_allocation_inr
+      };
+    }
+    const deck = this.recomputePortfolioDeck();
+    this.currentSnapshot = this.projectAuthoritativeSnapshot();
+    this.notifyListeners({
+      type: 'SNAPSHOT_UPDATED',
+      kill_switch_scope: this.killSwitchController.getState().active_scope,
+      snapshot_jcs_sha256: this.currentSnapshot.snapshot_jcs_sha256,
+      timestamp_utc: new Date().toISOString(),
+      details: {
+        action: 'PORTFOLIO_BUDGET_EVALUATED',
+        total_budget_inr: deck.total_configured_budget_inr,
+        allocated_inr: deck.total_allocated_capital_inr,
+        remaining_inr: deck.remaining_budget_inr,
+        allocated_count: deck.summary.total_allocated_count,
+        deferred_count: deck.summary.total_deferred_count
+      }
+    });
+    return deck;
+  }
+
+  public getPortfolioDeck(): PortfolioAllocationDeck {
+    if (!this.currentPortfolioDeck) {
+      this.recomputePortfolioDeck();
+    }
+    return this.currentPortfolioDeck!;
+  }
+
+  public async compareCandidates(candidateIds?: readonly string[]): Promise<readonly CandidateComparisonRow[]> {
+    const allCandidates = this.discoveryScreener.getCandidates();
+    const filtered = candidateIds && candidateIds.length > 0
+      ? allCandidates.filter(c => candidateIds.includes(c.candidate_id))
+      : allCandidates;
+    return buildCandidateComparisonRows(filtered, this.underwritingDecisions);
+  }
+
+  public getAllUnderwritingDecisions(): readonly CandidateUnderwritingDecision[] {
+    return Array.from(this.underwritingDecisions.values());
+  }
+
+  public getUnderwritingDecision(candidateId: string): CandidateUnderwritingDecision | undefined {
+    return this.underwritingDecisions.get(candidateId);
+  }
+
+  public async getDiscoveredCandidate(candidateId: string): Promise<OpportunityCandidate | null> {
+    return this.discoveryScreener.getCandidate(candidateId);
+  }
+
+  public getDiscoveryScreener(): DiscoveryScreenerService {
+    return this.discoveryScreener;
+  }
+
+  public getLifecycleEngine(): OpportunityLifecycleEngine {
+    return this.lifecycleEngine;
+  }
+
+  public getInvestigationTaskQueue(): InvestigationTaskQueue {
+    return this.taskQueue;
+  }
+
+  public getGalleryStore(): PersistentGalleryStore {
+    return this.galleryStore;
+  }
+
+  public getGalleryPipeline(): DiscoveryGalleryPipeline {
+    return this.galleryPipeline;
+  }
+
+  public getGalleryAgent(): GalleryIntelligenceAgent {
+    return this.galleryAgent;
+  }
+
+  public getMemoryStore(): PersistentMemoryStore {
+    return this.memoryStore;
+  }
+
+  public getGalleryProducts(filter?: { category?: string; lifecycle_state?: any }): readonly ProductQueueCandidate[] {
+    return this.galleryStore.getAllCandidates(filter);
+  }
+
+  public getGalleryTheses(filter?: { scope?: any; lifecycle_state?: any }): readonly ThesisQueueRecord[] {
+    return this.galleryStore.getAllTheses(filter);
+  }
+
+  public getGalleryEvents(sinceSequence: number = 0): readonly any[] {
+    return this.galleryStore.replayEvents(sinceSequence);
+  }
+
+  public async queryGalleryLlm(query: string, candidateId?: string, thesisId?: string) {
+    return this.galleryAgent.interact({ query, candidate_id: candidateId, thesis_id: thesisId });
+  }
+
+  public async formulateThesis(params: FormulateThesisParams): Promise<ThesisQueueRecord> {
+    return this.galleryStore.formulateThesis(params);
   }
 
   public getHealthStatus(livePing?: DatabaseHealthStatus): WorkstationHealthStatus {
@@ -2272,6 +2562,55 @@ export class WorkstationStateManager {
       }
     ];
 
+    const discoveredCandidates = this.discoveryScreener?.getCandidates() ?? [];
+    const dynamicRadarItems: OpportunityRadarItem[] = discoveredCandidates.map((cand) => {
+      const nowMs = Date.now();
+      const obsTimeMs = cand.current_observation?.observed_at_utc
+        ? new Date(cand.current_observation.observed_at_utc).getTime()
+        : nowMs;
+      const ageSec = Math.max(0, Math.floor((nowMs - obsTimeMs) / 1000));
+      const originClass = cand.current_observation?.origin_class ?? 'RECORDED_GOLDEN_FIXTURE';
+      const badge = createEvidenceOriginBadge(
+        originClass as any,
+        cand.current_observation?.source_connector_id ?? 'conn:fixture',
+        'fixture://' + cand.canonical_product_id
+      );
+
+      return {
+        candidate_id: cand.candidate_id,
+        sku_id: cand.canonical_product_id,
+        source_freshness_age_seconds: {
+          value: ageSec,
+          unit: 'DAYS',
+          classification: 'OBSERVED',
+          source_lineage_ref: cand.current_observation?.source_connector_id ?? 'conn:fixture'
+        },
+        edge_decay_regime: 'SUSTAINED_STRUCTURAL_SIGNAL',
+        half_life_days: {
+          value: 30,
+          unit: 'DAYS',
+          classification: 'ESTIMATED',
+          source_lineage_ref: 'regime:structural:default'
+        },
+        evidence_gap_status: cand.evidence_sufficiency?.is_sufficient_for_underwriting ? 'DATA_COMPLETE' : 'DATA_REQUIRED',
+        timers: [
+          {
+            timer_name: 'Observation Recorded',
+            deadline_or_duration: cand.current_observation?.observed_at_utc ?? asOfUtc,
+            classification: 'MEASURED_DEADLINE'
+          }
+        ],
+        evidence_origin: badge,
+        badge: createSemanticStatusBadge(
+          'OPP_' + cand.lifecycle_state,
+          cand.lifecycle_state === 'VERIFIED' || cand.lifecycle_state === 'PAPER_ELIGIBLE' ? '[OK]' : '[WARN]',
+          cand.lifecycle_state
+        )
+      };
+    });
+
+    const allOpportunities = [...opportunities, ...dynamicRadarItems];
+
     const evidenceRecords: readonly EvidenceWorkbenchRecord[] = [
       {
         claim_id: hasLiveCapture
@@ -2542,6 +2881,146 @@ export class WorkstationStateManager {
       }
     ];
 
+    const dynamicCapitalRows: TenDimensionOpportunityComparisonRow[] = [];
+    if (this.underwritingDecisions && this.underwritingDecisions.size > 0) {
+      const deckMap = new Map<string, PortfolioAllocationItem>();
+      if (this.currentPortfolioDeck?.items) {
+        for (const item of this.currentPortfolioDeck.items) {
+          deckMap.set(item.candidate_id, item);
+        }
+      }
+
+      for (const [, decision] of this.underwritingDecisions.entries()) {
+        const originClass = decision.evidence_confidence?.primary_origin_class ?? 'RECORDED_GOLDEN_FIXTURE';
+        const evBadge = createEvidenceOriginBadge(
+          originClass as any,
+          decision.evidence_confidence?.source_connector_id ?? 'conn:fixture',
+          'fixture://' + decision.canonical_product_id
+        );
+
+        const portfolioItem = deckMap.get(decision.candidate_id);
+        let allocatedAmt = '0.00';
+        let rationale = decision.capital_allocation?.budget_allocation_notes || decision.explanation;
+        const gateBadge = createSemanticStatusBadge(
+          'GATE_' + decision.outcome,
+          decision.outcome === 'ELIGIBLE' ? '[OK]' : '[BLOCKED]',
+          decision.outcome
+        );
+
+        if (portfolioItem) {
+          if (portfolioItem.allocation_status === 'ALLOCATED') {
+            allocatedAmt = portfolioItem.allocated_capital_inr.toFixed(2);
+            rationale = portfolioItem.ranking_rationale;
+          } else if (portfolioItem.allocation_status === 'DEFERRED_BUDGET_EXCEEDED') {
+            allocatedAmt = '0.00';
+            rationale = portfolioItem.ranking_rationale;
+          } else if (portfolioItem.allocation_status === 'REJECTED_INSUFFICIENT_EVIDENCE') {
+            allocatedAmt = '0.00';
+            rationale = portfolioItem.ranking_rationale;
+          } else if (portfolioItem.allocation_status === 'REJECTED_UNECONOMIC') {
+            allocatedAmt = '0.00';
+            rationale = portfolioItem.ranking_rationale;
+          }
+        } else {
+          const isAllocated = decision.capital_allocation?.capital_allocation_decision === 'ALLOCATE_CAPITAL';
+          allocatedAmt = isAllocated
+            ? (decision.unit_economics.initial_cash_requirement_inr ?? 0).toFixed(2)
+            : '0.00';
+        }
+
+        dynamicCapitalRows.push({
+          candidate_id: decision.candidate_id,
+          expected_return_bps: {
+            value: decision.unit_economics.estimated_margin_bps ?? 0,
+            unit: 'BPS',
+            classification: 'ESTIMATED',
+            source_lineage_ref: 'underwriting://gross_margin'
+          },
+          return_after_costs_and_taxes_bps: {
+            value: decision.unit_economics.contribution_margin_bps ?? 0,
+            unit: 'BPS',
+            classification: 'ESTIMATED',
+            source_lineage_ref: 'underwriting://contribution_margin'
+          },
+          risk_and_downside_buffer_bps: {
+            value: 1000,
+            unit: 'BPS',
+            classification: 'ESTIMATED',
+            source_lineage_ref: 'policy://min_margin'
+          },
+          capital_requirement_inr: {
+            value: (decision.unit_economics.initial_cash_requirement_inr ?? 0).toFixed(2),
+            unit: 'INR',
+            classification: 'ESTIMATED',
+            source_lineage_ref: 'underwriting://initial_cash'
+          },
+          time_to_execution_days: {
+            value: 7,
+            unit: 'DAYS',
+            classification: 'ESTIMATED',
+            source_lineage_ref: 'logistics://lead_time'
+          },
+          cash_recovery_ccc_days: {
+            value: decision.unit_economics.cash_conversion_cycle_days ?? 30,
+            unit: 'DAYS',
+            classification: 'ESTIMATED',
+            source_lineage_ref: 'underwriting://ccc'
+          },
+          liquidity_lockup_ratio_bps: {
+            value: 2500,
+            unit: 'BPS',
+            classification: 'ESTIMATED',
+            source_lineage_ref: 'treasury://lockup'
+          },
+          opportunity_cost_benchmark_bps: {
+            value: 650,
+            unit: 'BPS',
+            classification: 'OBSERVED',
+            source_lineage_ref: 'rbi://91d_tbill'
+          },
+          edge_decay_half_life_days: {
+            value: 30,
+            unit: 'DAYS',
+            classification: 'ESTIMATED',
+            source_lineage_ref: 'regime://half_life'
+          },
+          evidence_conviction_score_bps: {
+            value: decision.evidence_summary.sufficiency_score_bps,
+            unit: 'BPS',
+            classification: 'ESTIMATED',
+            source_lineage_ref: 'evidence://conviction'
+          },
+          allocated_capital_inr: {
+            value: allocatedAmt,
+            unit: 'INR',
+            classification: 'SIMULATED',
+            source_lineage_ref: 'allocator://decision'
+          },
+          conviction_vs_allocation_rationale: rationale,
+          evidence_origin: evBadge,
+          drilldown_lineage: {
+            headline_return_ref: 'underwriting://decision/' + decision.decision_id,
+            fee_tax_assumption_ref: 'underwriting://cost_assessments',
+            source_document_sha256: decision.jcs_sha256
+          },
+          gate_badge: gateBadge
+        });
+      }
+
+      // Sort dynamic capital rows by ranking if portfolio deck is available
+      if (this.currentPortfolioDeck?.items) {
+        dynamicCapitalRows.sort((a, b) => {
+          const itemA = deckMap.get(a.candidate_id);
+          const itemB = deckMap.get(b.candidate_id);
+          const rankA = itemA?.rank ?? 999;
+          const rankB = itemB?.rank ?? 999;
+          return rankA - rankB;
+        });
+      }
+    }
+
+    const allCapitalOpportunities = [...capitalOpportunities, ...dynamicCapitalRows];
+
     const paperPositions: readonly PaperPositionItem[] = [
       {
         position_id: 'POS-001',
@@ -2660,8 +3139,8 @@ export class WorkstationStateManager {
         available_treasury_capital_inr: {
           value: '30895.00',
           unit: 'INR',
-          classification: 'ACTUAL',
-          source_lineage_ref: 'treasury://reserve/available'
+          classification: 'SIMULATED',
+          source_lineage_ref: 'treasury://paper/simulated_reserve'
         },
         committed_paper_capital_inr: {
           value: '19105.00',
@@ -2704,13 +3183,13 @@ export class WorkstationStateManager {
       },
       opportunity_radar: {
         total_active_opportunities: {
-          value: opportunities.length,
+          value: allOpportunities.length,
           unit: 'UNITS',
           classification: 'OBSERVED',
           source_lineage_ref: 'radar://active_count'
         },
         badge: createSemanticStatusBadge('RADAR_OK', '[OK]', 'SCANNING'),
-        opportunities
+        opportunities: allOpportunities
       },
       evidence_workbench: {
         conflict_holds_count: {
@@ -2725,25 +3204,39 @@ export class WorkstationStateManager {
       economics_lab: economicsLab,
       capital_allocator: {
         total_paper_budget_inr: {
-          value: '50000.00',
+          value: this.currentPortfolioDeck && this.underwritingDecisions.size > 0
+            ? this.currentPortfolioDeck.total_configured_budget_inr.toFixed(2)
+            : '50000.00',
           unit: 'INR',
           classification: 'ACTUAL',
           source_lineage_ref: 'treasury://budget/cap'
         },
         allocated_paper_capital_inr: {
-          value: '19105.00',
+          value: this.currentPortfolioDeck && this.underwritingDecisions.size > 0
+            ? this.currentPortfolioDeck.total_allocated_capital_inr.toFixed(2)
+            : '19105.00',
           unit: 'INR',
           classification: 'SIMULATED',
-          source_lineage_ref: 'allocator://pareto/run-001'
+          source_lineage_ref: 'allocator://portfolio_deck'
         },
         unallocated_paper_capital_inr: {
-          value: '30895.00',
+          value: this.currentPortfolioDeck && this.underwritingDecisions.size > 0
+            ? this.currentPortfolioDeck.remaining_budget_inr.toFixed(2)
+            : '30895.00',
           unit: 'INR',
           classification: 'SIMULATED',
-          source_lineage_ref: 'allocator://unallocated/run-001'
+          source_lineage_ref: 'allocator://unallocated'
         },
-        badge: createSemanticStatusBadge('ALLOC_OK', '[OK]', 'OPTIMIZED'),
-        opportunities: capitalOpportunities
+        badge: createSemanticStatusBadge(
+          this.currentPortfolioDeck && this.currentPortfolioDeck.deferred_candidates.length > 0
+            ? 'ALLOC_CONSTRAINED'
+            : 'ALLOC_OK',
+          this.currentPortfolioDeck && this.currentPortfolioDeck.deferred_candidates.length > 0
+            ? '[WARN]'
+            : '[OK]',
+          'OPTIMIZED'
+        ),
+        opportunities: allCapitalOpportunities
       },
       simulation_and_positions: {
         cash_ledger_balance_inr: {

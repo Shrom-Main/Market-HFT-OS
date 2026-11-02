@@ -104,6 +104,7 @@ export interface EconomicEligibilityProfile {
 export interface CandidateObservationSnapshot {
   readonly observation_id: string;
   readonly source_connector_id: string;
+  readonly origin_class?: string;
   readonly observed_at_utc: string;
   readonly prevailing_retail_asp_inr: number | null;
   readonly factory_gate_quote_inr: number | null;
@@ -112,6 +113,155 @@ export interface CandidateObservationSnapshot {
   readonly review_sentiment_summary: string | null;
   readonly raw_payload_snippet?: string;
   readonly payload_sha256: string;
+  readonly applicable_cost_categories?: readonly ApplicableCostCategory[];
+  readonly cost_category_exclusions?: readonly CostCategoryExclusion[];
+  readonly inbound_freight_inr?: number | null;
+  readonly packaging_kitting_inr?: number | null;
+  readonly platform_fee_inr?: number | null;
+  readonly fulfillment_fee_inr?: number | null;
+  readonly statutory_tax_inr?: number | null;
+  readonly return_defect_drag_inr?: number | null;
+  readonly lead_time_days?: number | null;
+  readonly payment_terms_days?: number | null;
+  readonly warehouse_dwell_days?: number | null;
+  readonly settlement_delay_days?: number | null;
+}
+
+export type ApplicableCostCategory =
+  | 'SUPPLIER_PURCHASE'
+  | 'INBOUND_FREIGHT'
+  | 'PACKAGING_KITTING'
+  | 'MARKETPLACE_FEES'
+  | 'STATUTORY_TAX'
+  | 'RETURN_DEFECT_DRAG';
+
+export interface CostCategoryExclusion {
+  readonly category: ApplicableCostCategory;
+  readonly exclusion_basis: string;
+}
+
+export type CostCategoryTreatment =
+  | 'KNOWN_VALUE'
+  | 'KNOWN_ZERO'
+  | 'EXPLICITLY_NOT_APPLICABLE'
+  | 'UNKNOWN_MISSING';
+
+export interface CostCategoryAssessment {
+  readonly category: ApplicableCostCategory;
+  readonly treatment: CostCategoryTreatment;
+  readonly amount_inr: number | null;
+  readonly exclusion_basis: string | null;
+}
+
+export type CapitalAllocationDecision =
+  | 'ALLOCATE_CAPITAL'
+  | 'DO_NOT_ALLOCATE_CAPITAL'
+  | 'NOT_AUTHORIZED_BUDGET_UNCONFIGURED'
+  | 'NOT_AUTHORIZED_BUDGET_EXCEEDED'
+  | 'REJECTED_UNECONOMIC';
+
+export interface PaperCapitalBudgetConfig {
+  readonly available_paper_capital_inr: number;
+  readonly max_single_allocation_inr?: number;
+}
+
+export type CandidateOriginClass =
+  | 'RECORDED_GOLDEN_FIXTURE'
+  | 'LIVE_VERIFIED_CAPTURE'
+  | 'UNATTESTED_USER_INTAKE'
+  | 'SYNTHETIC_SCENARIO'
+  | 'ESTIMATED_PROXY'
+  | 'OPERATOR_SIMULATION_ASSUMPTION';
+
+export type UnderwritingOutcome =
+  | 'ELIGIBLE'
+  | 'INELIGIBLE'
+  | 'INSUFFICIENT_EVIDENCE';
+
+export interface CandidateUnderwritingDecision {
+  readonly decision_id: string;
+  readonly candidate_id: string;
+  readonly canonical_product_id: string;
+  readonly candidate_name: string;
+  readonly category: string;
+  readonly outcome: UnderwritingOutcome;
+  readonly lifecycle_state: OpportunityLifecycleState;
+  readonly evaluation_status: EconomicEvaluationStatus;
+  readonly unit_economics: {
+    readonly prevailing_retail_asp_inr: number | null;
+    readonly factory_gate_quote_inr: number | null;
+    readonly gross_spread_inr: number | null;
+    readonly estimated_margin_bps: number | null;
+    readonly policy_min_margin_bps: number;
+    readonly calculation_method: string;
+    readonly net_contribution_inr: number | null;
+    readonly contribution_margin_bps: number | null;
+    readonly contribution_margin_denominator: 'RETAIL_SELLING_PRICE' | 'LANDED_COST';
+    readonly initial_cash_requirement_inr: number | null;
+    readonly working_capital_exposure_inr: number | null;
+    readonly cash_conversion_cycle_days: number | null;
+    readonly annualized_return_on_working_capital_bps?: number | null;
+    readonly annualized_rowc_interpretation?: string;
+    readonly annualized_rowc_caveat?: string;
+    readonly unit_batch_moq: number | null;
+    readonly purchase_quantity: number | null;
+    readonly applicable_cost_categories: readonly ApplicableCostCategory[];
+    readonly cost_category_assessments?: readonly CostCategoryAssessment[];
+    readonly cost_breakdown: {
+      readonly supplier_purchase_cost_inr: number | null;
+      readonly inbound_freight_inr: number | null;
+      readonly packaging_kitting_inr: number | null;
+      readonly marketplace_fees_inr: number | null;
+      readonly statutory_tax_inr: number | null;
+      readonly return_defect_drag_inr: number | null;
+      readonly non_supplier_variable_costs_inr: number | null;
+      readonly total_variable_deductions_inr: number | null;
+      readonly cost_exclusions: readonly CostCategoryExclusion[];
+      readonly cost_assessments: readonly CostCategoryAssessment[];
+    };
+    readonly missing_cost_inputs: readonly string[];
+  };
+  readonly evidence_summary: {
+    readonly is_sufficient_for_underwriting: boolean;
+    readonly sufficiency_score_bps: number;
+    readonly missing_critical_fields: readonly string[];
+    readonly uncorroborated_fields: readonly string[];
+    readonly source_connector_id: string;
+    readonly origin_class: string;
+    readonly evidence_posture?: 'LIVE_VERIFIED_EMPIRICAL' | 'RECORDED_FIXTURE_BASELINE' | 'SYNTHETIC_SCENARIO' | 'UNATTESTED_INTAKE';
+    readonly is_live_market_verified: boolean;
+    readonly observed_at_utc: string;
+  };
+  readonly capital_allocation?: {
+    readonly initial_cash_requirement_inr: number | null;
+    readonly working_capital_exposure_inr: number | null;
+    readonly unit_batch_moq: number | null;
+    readonly recommended_batch_quantity: number | null;
+    readonly cash_conversion_cycle_days: number | null;
+    readonly annualized_rowc_bps: number | null;
+    readonly annualized_rowc_extrapolation_bps: number | null;
+    readonly annualized_rowc_interpretation: string;
+    readonly annualized_rowc_caveat?: string;
+    readonly break_even_price_inr: number | null;
+    readonly capital_allocation_decision: CapitalAllocationDecision;
+    readonly budget_allocation_notes?: string;
+  };
+  readonly evidence_confidence?: {
+    readonly evidence_posture?: 'LIVE_VERIFIED_EMPIRICAL' | 'RECORDED_FIXTURE_BASELINE' | 'SYNTHETIC_SCENARIO' | 'UNATTESTED_INTAKE';
+    readonly evidence_quality_rating: 'LIVE_VERIFIED_EMPIRICAL' | 'LIVE_EMPIRICAL_CORROBORATED' | 'RECORDED_REFERENCE_FIXTURE' | 'PARTIALLY_CORROBORATED' | 'SYNTHETIC_SCENARIO' | 'UNATTESTED_HOLD';
+    readonly primary_origin_class: string;
+    readonly source_connector_id: string;
+    readonly observed_at_utc: string;
+    readonly is_live_market_verified: boolean;
+    readonly has_logistics_route: boolean;
+    readonly has_regulatory_clearance: boolean;
+  };
+  readonly binding_constraints: readonly string[];
+  readonly failed_checks: readonly string[];
+  readonly explanation: string;
+  readonly required_action_to_reconsider: string | null;
+  readonly evaluated_at_utc: string;
+  readonly jcs_sha256: string;
 }
 
 export interface OpportunityCandidate {
@@ -166,6 +316,18 @@ export interface IngestObservationInput {
   readonly observed_at_utc?: string;
   readonly signal_override?: ObservationChangeSignal;
   readonly origin_class?: string;
+  readonly applicable_cost_categories?: readonly ApplicableCostCategory[];
+  readonly cost_category_exclusions?: readonly CostCategoryExclusion[];
+  readonly inbound_freight_inr?: number | null;
+  readonly packaging_kitting_inr?: number | null;
+  readonly platform_fee_inr?: number | null;
+  readonly fulfillment_fee_inr?: number | null;
+  readonly statutory_tax_inr?: number | null;
+  readonly return_defect_drag_inr?: number | null;
+  readonly lead_time_days?: number | null;
+  readonly payment_terms_days?: number | null;
+  readonly warehouse_dwell_days?: number | null;
+  readonly settlement_delay_days?: number | null;
 }
 
 export interface CandidateFilter {
@@ -197,11 +359,15 @@ const PERMITTED_TRANSITIONS: Readonly<Record<OpportunityLifecycleState, readonly
 
 export interface OpportunityLifecycleEngineOptions {
   readonly pgPool?: Pool;
+  readonly requirePaperBudget?: boolean;
+  readonly defaultPaperBudgetConfig?: PaperCapitalBudgetConfig;
 }
 
 export class OpportunityLifecycleEngine {
   private readonly pgPool?: Pool;
   private isInitialized = false;
+  private readonly requirePaperBudget: boolean;
+  private readonly defaultPaperBudgetConfig?: PaperCapitalBudgetConfig;
 
   // In-memory fallback stores
   private readonly inMemoryCandidates = new Map<string, OpportunityCandidate>();
@@ -209,6 +375,8 @@ export class OpportunityLifecycleEngine {
 
   constructor(options?: OpportunityLifecycleEngineOptions) {
     this.pgPool = options?.pgPool;
+    this.requirePaperBudget = options?.requirePaperBudget ?? false;
+    this.defaultPaperBudgetConfig = options?.defaultPaperBudgetConfig;
   }
 
   /**
@@ -271,6 +439,160 @@ export class OpportunityLifecycleEngine {
   }
 
   /**
+   * Fail-Closed Evidence Provenance Derivation.
+   * Derives trusted origin class from connector identity and prevents untrusted self-promotion.
+   * Synthetic connectors cannot be relabeled as live or fixture.
+   * Recorded fixtures cannot be relabeled as live.
+   * Live claims without authorized live collector fail closed to UNATTESTED_USER_INTAKE.
+   */
+  public static deriveTrustedOriginClass(
+    sourceConnectorId: string,
+    declaredOrigin?: string,
+    existingCandidateOrigin?: string
+  ): CandidateOriginClass {
+    const connIdLower = (sourceConnectorId || '').trim().toLowerCase();
+
+    // 1. Synthetic scenarios cannot be relabeled as live or fixture
+    if (
+      existingCandidateOrigin === 'SYNTHETIC_SCENARIO' ||
+      declaredOrigin === 'SYNTHETIC_SCENARIO' ||
+      connIdLower.includes('synthetic') ||
+      connIdLower.includes('scenario') ||
+      connIdLower.includes('simulated') ||
+      connIdLower.includes('mock')
+    ) {
+      return 'SYNTHETIC_SCENARIO';
+    }
+
+    // 2. Recorded golden fixtures / replay adapters / archives
+    const isFixtureConnector =
+      connIdLower.includes('fixture') ||
+      connIdLower.includes('golden') ||
+      connIdLower.includes('replay') ||
+      connIdLower.includes('archive') ||
+      connIdLower.startsWith('conn:fixture') ||
+      connIdLower.startsWith('fixture://');
+
+    if (isFixtureConnector) {
+      return 'RECORDED_GOLDEN_FIXTURE';
+    }
+
+    // 3. Unattested user intake or manual inputs
+    const isUnattestedConnector =
+      connIdLower.includes('unattested') ||
+      connIdLower.includes('manual') ||
+      connIdLower.includes('user_intake') ||
+      connIdLower.includes('unverified');
+
+    if (isUnattestedConnector) {
+      return 'UNATTESTED_USER_INTAKE';
+    }
+
+    // 3b. Operator simulation assumptions
+    if (
+      declaredOrigin === 'OPERATOR_SIMULATION_ASSUMPTION' ||
+      existingCandidateOrigin === 'OPERATOR_SIMULATION_ASSUMPTION' ||
+      connIdLower.includes('simulation-assumption') ||
+      connIdLower.includes('operator')
+    ) {
+      return 'OPERATOR_SIMULATION_ASSUMPTION';
+    }
+
+    // 4. Authorized live collectors (e.g. conn:live:amazon-in, conn:verified:live-feed)
+    const isAuthorizedLive =
+      connIdLower.startsWith('conn:live:') ||
+      connIdLower.includes(':live-') ||
+      connIdLower.includes(':live:') ||
+      connIdLower === 'conn:live' ||
+      connIdLower.includes('live_verified');
+
+    if (isAuthorizedLive) {
+      return 'LIVE_VERIFIED_CAPTURE';
+    }
+
+    // 5. If caller claimed LIVE_VERIFIED_CAPTURE without an authorized live connector:
+    if (declaredOrigin === 'LIVE_VERIFIED_CAPTURE') {
+      // Demote to RECORDED_GOLDEN_FIXTURE if connector is a known recorded marketplace connector or candidate was fixture
+      if (
+        existingCandidateOrigin === 'RECORDED_GOLDEN_FIXTURE' ||
+        connIdLower.includes('indiamart') ||
+        connIdLower.includes('amazon') ||
+        connIdLower.includes('gem')
+      ) {
+        return 'RECORDED_GOLDEN_FIXTURE';
+      }
+      return 'UNATTESTED_USER_INTAKE';
+    }
+
+    if (declaredOrigin === 'RECORDED_GOLDEN_FIXTURE' || declaredOrigin === 'UNATTESTED_USER_INTAKE' || declaredOrigin === 'OPERATOR_SIMULATION_ASSUMPTION') {
+      return declaredOrigin;
+    }
+
+    if (existingCandidateOrigin === 'RECORDED_GOLDEN_FIXTURE' || existingCandidateOrigin === 'UNATTESTED_USER_INTAKE' || existingCandidateOrigin === 'OPERATOR_SIMULATION_ASSUMPTION') {
+      return existingCandidateOrigin;
+    }
+
+    return 'RECORDED_GOLDEN_FIXTURE';
+  }
+
+  /**
+   * Fail-Closed Semantic Cost Exclusion Validation.
+   * Rationale length alone is NOT proof of genuine inapplicability.
+   * Prohibits generic filler/placeholders and non-excludable costs (e.g. supplier purchase on physical goods).
+   */
+  public static validateCostExclusion(
+    category: OpportunityCategory | string,
+    costCat: ApplicableCostCategory,
+    exclusionBasis: string
+  ): boolean {
+    if (!exclusionBasis || typeof exclusionBasis !== 'string') {
+      return false;
+    }
+    const trimmed = exclusionBasis.trim();
+    if (trimmed.length < 10) {
+      return false;
+    }
+
+    // SUPPLIER_PURCHASE cannot be excluded for physical goods or B2B distribution
+    if (
+      (category === 'PHYSICAL_GOODS' || category === 'B2B_DISTRIBUTION' || !category) &&
+      costCat === 'SUPPLIER_PURCHASE'
+    ) {
+      return false;
+    }
+
+    // Reject generic filler, repetition, or meaningless non-rationales
+    const lower = trimmed.toLowerCase();
+    const genericRejectionPatterns = [
+      'placeholder',
+      'not applicable',
+      'none',
+      'n/a',
+      'na',
+      'dummy',
+      'test test',
+      'asdf',
+      '1234567890',
+      'qwerty',
+      'no cost',
+      'zero cost',
+      'exempt without reason'
+    ];
+    for (const pattern of genericRejectionPatterns) {
+      if (lower === pattern || (pattern.length > 5 && lower.includes(pattern))) {
+        return false;
+      }
+    }
+
+    // Reject all-digit or repetitive character sequences
+    if (/^\d+$/.test(trimmed) || /^([a-zA-Z0-9])\1{5,}$/.test(trimmed)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
    * Computes deterministic, immutable Candidate ID from strategy and canonical product identity.
    * Stable across price changes, quote refreshes, and connector re-runs.
    */
@@ -303,9 +625,16 @@ export class OpportunityLifecycleEngine {
     const payloadHash = sha256(contentToHash);
     const observationId = `OBS-${sha256(candidateId + observedAtUtc + payloadHash).slice(0, 12).toUpperCase()}`;
 
+    const trustedOriginClass = OpportunityLifecycleEngine.deriveTrustedOriginClass(
+      input.source_connector_id,
+      input.origin_class,
+      existing?.current_observation.origin_class
+    );
+
     const newObservation: CandidateObservationSnapshot = {
       observation_id: observationId,
       source_connector_id: input.source_connector_id,
+      origin_class: trustedOriginClass,
       observed_at_utc: observedAtUtc,
       prevailing_retail_asp_inr: input.prevailing_retail_asp_inr ?? existing?.current_observation.prevailing_retail_asp_inr ?? null,
       factory_gate_quote_inr: input.factory_gate_quote_inr ?? existing?.current_observation.factory_gate_quote_inr ?? null,
@@ -313,7 +642,19 @@ export class OpportunityLifecycleEngine {
       observed_seller_count: input.observed_seller_count ?? existing?.current_observation.observed_seller_count ?? null,
       review_sentiment_summary: input.review_sentiment_summary ?? existing?.current_observation.review_sentiment_summary ?? null,
       raw_payload_snippet: rawPayload ? rawPayload.slice(0, 200) : undefined,
-      payload_sha256: payloadHash
+      payload_sha256: payloadHash,
+      applicable_cost_categories: input.applicable_cost_categories ?? existing?.current_observation.applicable_cost_categories,
+      cost_category_exclusions: input.cost_category_exclusions ?? existing?.current_observation.cost_category_exclusions,
+      inbound_freight_inr: input.inbound_freight_inr ?? existing?.current_observation.inbound_freight_inr ?? null,
+      packaging_kitting_inr: input.packaging_kitting_inr ?? existing?.current_observation.packaging_kitting_inr ?? null,
+      platform_fee_inr: input.platform_fee_inr ?? existing?.current_observation.platform_fee_inr ?? null,
+      fulfillment_fee_inr: input.fulfillment_fee_inr ?? existing?.current_observation.fulfillment_fee_inr ?? null,
+      statutory_tax_inr: input.statutory_tax_inr ?? existing?.current_observation.statutory_tax_inr ?? null,
+      return_defect_drag_inr: input.return_defect_drag_inr ?? existing?.current_observation.return_defect_drag_inr ?? null,
+      lead_time_days: input.lead_time_days ?? existing?.current_observation.lead_time_days ?? null,
+      payment_terms_days: input.payment_terms_days ?? existing?.current_observation.payment_terms_days ?? null,
+      warehouse_dwell_days: input.warehouse_dwell_days ?? existing?.current_observation.warehouse_dwell_days ?? null,
+      settlement_delay_days: input.settlement_delay_days ?? existing?.current_observation.settlement_delay_days ?? null
     };
 
     // Delta detection against existing observation
@@ -372,7 +713,14 @@ export class OpportunityLifecycleEngine {
       quote: newObservation.factory_gate_quote_inr,
       asp: newObservation.prevailing_retail_asp_inr,
       category,
-      nowUtc: observedAtUtc
+      nowUtc: observedAtUtc,
+      applicable_cost_categories: newObservation.applicable_cost_categories,
+      cost_category_exclusions: newObservation.cost_category_exclusions,
+      inbound_freight_inr: newObservation.inbound_freight_inr,
+      packaging_kitting_inr: newObservation.packaging_kitting_inr,
+      platform_fee_inr: newObservation.platform_fee_inr ?? newObservation.fulfillment_fee_inr,
+      statutory_tax_inr: newObservation.statutory_tax_inr,
+      return_defect_drag_inr: newObservation.return_defect_drag_inr
     });
 
     // Active signals aggregation: keep stale/conflict flags if not resolved
@@ -510,6 +858,21 @@ export class OpportunityLifecycleEngine {
           `E-OPP-INSUFFICIENT-COMMIT-BLOCKED: Cannot transition candidate '${candidateId}' to PAPER_ELIGIBLE. Evidence sufficiency score is ${candidate.evidence_sufficiency.sufficiency_score_bps} bps (requires 10,000 bps). Missing: [${candidate.evidence_sufficiency.missing_critical_fields.join(', ')}]`
         );
       }
+      if (candidate.active_signals.includes('EVIDENCE_CONFLICT_DETECTED')) {
+        throw new Error(
+          `E-OPP-CONFLICT-COMMIT-BLOCKED: Cannot transition candidate '${candidateId}' to PAPER_ELIGIBLE while unresolved EVIDENCE_CONFLICT_DETECTED signal is active.`
+        );
+      }
+      if (candidate.current_observation.origin_class === 'SYNTHETIC_SCENARIO') {
+        throw new Error(
+          `E-OPP-SYNTHETIC-COMMIT-BLOCKED: Cannot transition candidate '${candidateId}' with synthetic scenario origin to PAPER_ELIGIBLE.`
+        );
+      }
+      if (candidate.active_signals.includes('EVIDENCE_STALE')) {
+        throw new Error(
+          `E-OPP-STALE-COMMIT-BLOCKED: Cannot transition candidate '${candidateId}' to PAPER_ELIGIBLE while EVIDENCE_STALE signal is active.`
+        );
+      }
       if (!candidate.economic_eligibility?.is_economically_eligible) {
         throw new Error(
           `E-OPP-ECONOMIC-ELIGIBILITY-BLOCKED: Cannot transition candidate '${candidateId}' to PAPER_ELIGIBLE. Status: ${candidate.economic_eligibility?.evaluation_status}. Missing inputs: [${candidate.economic_eligibility?.missing_economic_inputs?.join(', ') || 'none'}]. ${candidate.economic_eligibility?.policy_evaluation_notes || ''}`
@@ -523,15 +886,34 @@ export class OpportunityLifecycleEngine {
           `E-OPP-UNATTRACTIVE-COMMIT-BLOCKED: Cannot transition candidate '${candidateId}' to PAPER_ELIGIBLE. Attractiveness rating is '${candidate.commercial_attractiveness.attractiveness_rating}'.`
         );
       }
-      if (candidate.active_signals.includes('EVIDENCE_CONFLICT_DETECTED')) {
-        throw new Error(
-          `E-OPP-CONFLICT-COMMIT-BLOCKED: Cannot transition candidate '${candidateId}' to PAPER_ELIGIBLE while unresolved EVIDENCE_CONFLICT_DETECTED signal is active.`
-        );
-      }
-      if (candidate.active_signals.includes('EVIDENCE_STALE')) {
-        throw new Error(
-          `E-OPP-STALE-COMMIT-BLOCKED: Cannot transition candidate '${candidateId}' to PAPER_ELIGIBLE while EVIDENCE_STALE signal is active.`
-        );
+
+      // Paper budget verification when requirePaperBudget is active
+      if (this.requirePaperBudget) {
+        const isFromAuthorizedCommit = transitionReason?.startsWith('Authorized for paper simulation allocation');
+        if (!isFromAuthorizedCommit) {
+          const effectiveBudget = this.defaultPaperBudgetConfig;
+          if (!effectiveBudget || typeof effectiveBudget.available_paper_capital_inr !== 'number' || effectiveBudget.available_paper_capital_inr <= 0) {
+            throw new Error(
+              `E-OPP-BUDGET-UNCONFIGURED: Direct transition to PAPER_ELIGIBLE requires configured paper budget or invocation via authorizePaperCommit().`
+            );
+          }
+          const moq = candidate.current_observation.unit_batch_moq ?? 1;
+          const quote = candidate.current_observation.factory_gate_quote_inr ?? 0;
+          const freight = candidate.current_observation.inbound_freight_inr ?? 0;
+          const packaging = candidate.current_observation.packaging_kitting_inr ?? 0;
+          const requiredOutlay = (quote + freight + packaging) * moq;
+
+          if (requiredOutlay > effectiveBudget.available_paper_capital_inr) {
+            throw new Error(
+              `E-OPP-BUDGET-EXCEEDED: Candidate '${candidateId}' requires initial cash of ₹${requiredOutlay.toFixed(2)}, which exceeds configured paper budget of ₹${effectiveBudget.available_paper_capital_inr.toFixed(2)}.`
+            );
+          }
+          if (effectiveBudget.max_single_allocation_inr && requiredOutlay > effectiveBudget.max_single_allocation_inr) {
+            throw new Error(
+              `E-OPP-ALLOCATION-LIMIT-EXCEEDED: Candidate '${candidateId}' requires initial cash of ₹${requiredOutlay.toFixed(2)}, which exceeds max single allocation limit of ₹${effectiveBudget.max_single_allocation_inr.toFixed(2)}.`
+            );
+          }
+        }
       }
     }
 
@@ -572,8 +954,9 @@ export class OpportunityLifecycleEngine {
   public async authorizePaperCommit(
     candidateId: string,
     confirmationRationale: string,
-    operatorId?: string
-  ): Promise<{ authorized: boolean; candidate_id: string; commit_event_hash: string }> {
+    operatorId?: string,
+    budgetConfig?: PaperCapitalBudgetConfig | null
+  ): Promise<{ authorized: boolean; candidate_id: string; commit_event_hash: string; allocated_paper_capital_inr?: number }> {
     await this.initialize();
 
     const candidate = await this.getCandidate(candidateId);
@@ -621,10 +1004,42 @@ export class OpportunityLifecycleEngine {
       );
     }
 
+    if (candidate.current_observation.origin_class === 'SYNTHETIC_SCENARIO') {
+      throw new Error(
+        `E-OPP-SYNTHETIC-COMMIT-BLOCKED: Candidate '${candidateId}' has origin_class SYNTHETIC_SCENARIO and cannot authorize paper commitments.`
+      );
+    }
+
     if (candidate.active_signals.includes('EVIDENCE_STALE')) {
       throw new Error(
         `E-OPP-STALE-COMMIT-BLOCKED: Candidate '${candidateId}' has active EVIDENCE_STALE signal.`
       );
+    }
+
+    // Paper capital budget authorization gate
+    const effectiveBudget = budgetConfig ?? this.defaultPaperBudgetConfig;
+    if (this.requirePaperBudget || budgetConfig !== undefined) {
+      if (!effectiveBudget || typeof effectiveBudget.available_paper_capital_inr !== 'number' || effectiveBudget.available_paper_capital_inr <= 0) {
+        throw new Error(
+          `E-OPP-BUDGET-UNCONFIGURED: Paper capital commitment requires explicit available_paper_capital_inr budget configuration.`
+        );
+      }
+      const moq = candidate.current_observation.unit_batch_moq ?? 1;
+      const quote = candidate.current_observation.factory_gate_quote_inr ?? 0;
+      const freight = candidate.current_observation.inbound_freight_inr ?? 0;
+      const packaging = candidate.current_observation.packaging_kitting_inr ?? 0;
+      const requiredOutlay = (quote + freight + packaging) * moq;
+
+      if (requiredOutlay > effectiveBudget.available_paper_capital_inr) {
+        throw new Error(
+          `E-OPP-BUDGET-EXCEEDED: Candidate '${candidateId}' requires initial cash of ₹${requiredOutlay.toFixed(2)}, which exceeds configured paper budget of ₹${effectiveBudget.available_paper_capital_inr.toFixed(2)}.`
+        );
+      }
+      if (effectiveBudget.max_single_allocation_inr && requiredOutlay > effectiveBudget.max_single_allocation_inr) {
+        throw new Error(
+          `E-OPP-ALLOCATION-LIMIT-EXCEEDED: Candidate '${candidateId}' requires initial cash of ₹${requiredOutlay.toFixed(2)}, which exceeds max single allocation limit of ₹${effectiveBudget.max_single_allocation_inr.toFixed(2)}.`
+        );
+      }
     }
 
     // Transition to PAPER_ELIGIBLE if not already
@@ -638,10 +1053,566 @@ export class OpportunityLifecycleEngine {
     const history = await this.getEventHistory(candidateId);
     const lastEvent = history[history.length - 1];
 
+    const moq = candidate.current_observation.unit_batch_moq ?? 1;
+    const quote = candidate.current_observation.factory_gate_quote_inr ?? 0;
+    const freight = candidate.current_observation.inbound_freight_inr ?? 0;
+    const packaging = candidate.current_observation.packaging_kitting_inr ?? 0;
+    const allocatedCapital = (quote + freight + packaging) * moq;
+
     return {
       authorized: true,
       candidate_id: candidateId,
-      commit_event_hash: lastEvent ? lastEvent.event_hash : candidate.jcs_sha256
+      commit_event_hash: lastEvent ? lastEvent.event_hash : candidate.jcs_sha256,
+      allocated_paper_capital_inr: allocatedCapital
+    };
+  }
+
+  /**
+   * Evaluates a candidate against deterministic underwriting criteria,
+   * producing an immutable CandidateUnderwritingDecision with RFC 8785 attestation.
+   */
+  /**
+   * Evaluates a candidate against deterministic underwriting criteria,
+   * producing an immutable CandidateUnderwritingDecision with RFC 8785 attestation.
+   */
+  public async underwriteCandidate(
+    candidateId: string,
+    options?: {
+      budgetConfig?: PaperCapitalBudgetConfig;
+    }
+  ): Promise<CandidateUnderwritingDecision> {
+    await this.initialize();
+
+    const candidate = await this.getCandidate(candidateId);
+    if (!candidate) {
+      throw new Error(`E-OPP-NOT-FOUND: Candidate '${candidateId}' does not exist`);
+    }
+
+    const nowUtc = new Date().toISOString();
+    const evaluatedAtUtc = candidate.current_observation.observed_at_utc || nowUtc;
+
+    const asp = candidate.current_observation.prevailing_retail_asp_inr;
+    const quote = candidate.current_observation.factory_gate_quote_inr;
+    const hasBothPrices = typeof asp === 'number' && !isNaN(asp) && asp > 0 && typeof quote === 'number' && !isNaN(quote) && quote > 0;
+    const grossSpread = hasBothPrices ? Number((asp! - quote!).toFixed(2)) : null;
+    const estimatedMarginBps = hasBothPrices ? Math.round(((asp! - quote!) / asp!) * 10000) : null;
+
+    const failedChecks: string[] = [];
+    const bindingConstraints: string[] = [];
+
+    // Check active disqualifying signals (conflict / stale)
+    if (candidate.active_signals.includes('EVIDENCE_CONFLICT_DETECTED')) {
+      failedChecks.push('ACTIVE_EVIDENCE_CONFLICT_DETECTED');
+      bindingConstraints.push('Active unresolved EVIDENCE_CONFLICT_DETECTED signal');
+    }
+
+    if (candidate.active_signals.includes('EVIDENCE_STALE')) {
+      failedChecks.push('ACTIVE_EVIDENCE_STALE');
+      bindingConstraints.push('Active unresolved EVIDENCE_STALE signal');
+    }
+
+    // Check evidence sufficiency
+    if (!candidate.evidence_sufficiency.is_sufficient_for_underwriting) {
+      failedChecks.push('EVIDENCE_SUFFICIENCY_UNSATISFIED');
+      for (const field of candidate.evidence_sufficiency.missing_critical_fields) {
+        bindingConstraints.push(`Missing mandatory field: ${field}`);
+      }
+      for (const field of candidate.evidence_sufficiency.uncorroborated_fields) {
+        bindingConstraints.push(`Uncorroborated evidence field: ${field}`);
+      }
+      if (candidate.evidence_sufficiency.sufficiency_score_bps < 10000) {
+        bindingConstraints.push(`Evidence sufficiency score: ${candidate.evidence_sufficiency.sufficiency_score_bps} bps (requires 10,000 bps)`);
+      }
+    }
+
+    // Check cost completeness across all material categories for category
+    const obs = candidate.current_observation;
+    const category = candidate.category ?? 'PHYSICAL_GOODS';
+    const missingCostInputs: string[] = [];
+    const costAssessments: CostCategoryAssessment[] = [];
+    const recordedExclusions: CostCategoryExclusion[] = [];
+
+    const exclusionsMap = new Map<ApplicableCostCategory, string>();
+    if (obs.cost_category_exclusions && Array.isArray(obs.cost_category_exclusions)) {
+      for (const ex of obs.cost_category_exclusions) {
+        if (typeof ex?.category === 'string' && typeof ex?.exclusion_basis === 'string') {
+          const basisTrimmed = ex.exclusion_basis.trim();
+          if (OpportunityLifecycleEngine.validateCostExclusion(category, ex.category, basisTrimmed)) {
+            exclusionsMap.set(ex.category, basisTrimmed);
+            recordedExclusions.push({
+              category: ex.category,
+              exclusion_basis: basisTrimmed
+            });
+          }
+        }
+      }
+    }
+
+    // Standard material cost categories conditionally defined by domain category
+    const standardCategories: readonly ApplicableCostCategory[] =
+      category === 'SOFTWARE_DIGITAL'
+        ? ['SUPPLIER_PURCHASE', 'MARKETPLACE_FEES', 'STATUTORY_TAX']
+        : category === 'SERVICE_CONTRACT'
+        ? ['SUPPLIER_PURCHASE', 'STATUTORY_TAX']
+        : [
+            'SUPPLIER_PURCHASE',
+            'INBOUND_FREIGHT',
+            'PACKAGING_KITTING',
+            'MARKETPLACE_FEES',
+            'STATUTORY_TAX',
+            'RETURN_DEFECT_DRAG'
+          ];
+
+    let freightAmount = 0;
+    let packagingAmount = 0;
+    let feesAmount = 0;
+    let taxAmount = 0;
+    let returnAmount = 0;
+
+    for (const cat of standardCategories) {
+      if (cat === 'SUPPLIER_PURCHASE') {
+        if (typeof quote === 'number' && !isNaN(quote) && quote > 0) {
+          costAssessments.push({
+            category: 'SUPPLIER_PURCHASE',
+            treatment: 'KNOWN_VALUE',
+            amount_inr: quote,
+            exclusion_basis: null
+          });
+        } else {
+          costAssessments.push({
+            category: 'SUPPLIER_PURCHASE',
+            treatment: 'UNKNOWN_MISSING',
+            amount_inr: null,
+            exclusion_basis: null
+          });
+          missingCostInputs.push('SUPPLIER_PURCHASE');
+          bindingConstraints.push('Missing required cost input: SUPPLIER_PURCHASE (DATA_REQUIRED)');
+        }
+      } else {
+        const rawVal =
+          cat === 'INBOUND_FREIGHT'
+            ? obs.inbound_freight_inr
+            : cat === 'PACKAGING_KITTING'
+            ? obs.packaging_kitting_inr
+            : cat === 'MARKETPLACE_FEES'
+            ? (obs.platform_fee_inr ?? obs.fulfillment_fee_inr)
+            : cat === 'STATUTORY_TAX'
+            ? obs.statutory_tax_inr
+            : obs.return_defect_drag_inr;
+
+        if (exclusionsMap.has(cat)) {
+          const basis = exclusionsMap.get(cat)!;
+          costAssessments.push({
+            category: cat,
+            treatment: 'EXPLICITLY_NOT_APPLICABLE',
+            amount_inr: 0,
+            exclusion_basis: basis
+          });
+        } else if (typeof rawVal === 'number' && !isNaN(rawVal)) {
+          if (rawVal === 0) {
+            costAssessments.push({
+              category: cat,
+              treatment: 'KNOWN_ZERO',
+              amount_inr: 0,
+              exclusion_basis: null
+            });
+          } else if (rawVal > 0) {
+            costAssessments.push({
+              category: cat,
+              treatment: 'KNOWN_VALUE',
+              amount_inr: rawVal,
+              exclusion_basis: null
+            });
+            if (cat === 'INBOUND_FREIGHT') freightAmount = rawVal;
+            else if (cat === 'PACKAGING_KITTING') packagingAmount = rawVal;
+            else if (cat === 'MARKETPLACE_FEES') feesAmount = rawVal;
+            else if (cat === 'STATUTORY_TAX') taxAmount = rawVal;
+            else if (cat === 'RETURN_DEFECT_DRAG') returnAmount = rawVal;
+          } else {
+            costAssessments.push({
+              category: cat,
+              treatment: 'UNKNOWN_MISSING',
+              amount_inr: null,
+              exclusion_basis: null
+            });
+            missingCostInputs.push(cat);
+            bindingConstraints.push(`Missing required cost input: ${cat} (DATA_REQUIRED)`);
+          }
+        } else {
+          costAssessments.push({
+            category: cat,
+            treatment: 'UNKNOWN_MISSING',
+            amount_inr: null,
+            exclusion_basis: null
+          });
+          missingCostInputs.push(cat);
+          bindingConstraints.push(`Missing required cost input: ${cat} (DATA_REQUIRED)`);
+        }
+      }
+    }
+
+    if (missingCostInputs.length > 0) {
+      failedChecks.push('MANDATORY_COST_INPUT_MISSING');
+    }
+
+    // Precise integer subunit arithmetic (scale 10,000; 1 INR = 10,000 subunits)
+    const SCALE = 10000n;
+    const toSubunits = (val: number): bigint => BigInt(Math.round(val * 10000));
+    const fromSubunits = (subunits: bigint): number => {
+      const isNeg = subunits < 0n;
+      const absVal = isNeg ? -subunits : subunits;
+      const whole = absVal / SCALE;
+      const frac = absVal % SCALE;
+      const num = Number(whole) + Number(frac) / 10000;
+      return isNeg ? -num : num;
+    };
+
+    let netContributionInr: number | null = null;
+    let contributionMarginBps: number | null = null;
+    let nonSupplierVariableCostsInr: number | null = null;
+    let totalDeductionsInr: number | null = null;
+    let initialCashRequirementInr: number | null = null;
+    let workingCapitalExposureInr: number | null = null;
+    let cccDays: number | null = null;
+    const moq = obs.unit_batch_moq ?? null;
+
+    if (hasBothPrices && missingCostInputs.length === 0) {
+      const supplierSub = toSubunits(quote!);
+      const freightSub = toSubunits(freightAmount);
+      const packagingSub = toSubunits(packagingAmount);
+      const feesSub = toSubunits(feesAmount);
+      const taxSub = toSubunits(taxAmount);
+      const returnSub = toSubunits(returnAmount);
+
+      // Non-supplier variable costs
+      const nonSupplierSub = freightSub + packagingSub + feesSub + taxSub + returnSub;
+      nonSupplierVariableCostsInr = fromSubunits(nonSupplierSub);
+
+      // Total variable deductions = supplier purchase + non-supplier variable costs
+      const totalDeductionsSub = supplierSub + nonSupplierSub;
+      totalDeductionsInr = fromSubunits(totalDeductionsSub);
+
+      const aspSub = toSubunits(asp!);
+      const netContributionSub = aspSub - totalDeductionsSub;
+
+      netContributionInr = fromSubunits(netContributionSub);
+      contributionMarginBps = Math.round((Number(netContributionSub) / Number(aspSub)) * 10000);
+
+      // Upfront outlay: supplier purchase + inbound freight + packaging kitting
+      const unitUpfrontSub =
+        category === 'SOFTWARE_DIGITAL' || category === 'SERVICE_CONTRACT'
+          ? supplierSub
+          : supplierSub + freightSub + packagingSub;
+      if (moq !== null && moq > 0) {
+        const initialCashSub = unitUpfrontSub * BigInt(moq);
+        initialCashRequirementInr = fromSubunits(initialCashSub);
+        workingCapitalExposureInr = initialCashRequirementInr;
+      }
+
+      const leadTime = obs.lead_time_days ?? 7;
+      const dwell = obs.warehouse_dwell_days ?? 14;
+      const settlement = obs.settlement_delay_days ?? 14;
+      const terms = obs.payment_terms_days ?? 0;
+      cccDays = Math.max(1, leadTime + dwell + settlement - terms);
+
+      if (netContributionInr <= 0) {
+        failedChecks.push('NEGATIVE_NET_CONTRIBUTION');
+        bindingConstraints.push(`Negative net contribution: ₹${netContributionInr.toFixed(2)} (${contributionMarginBps} bps)`);
+      } else if (contributionMarginBps < POLICY_MIN_MARGIN_BPS) {
+        failedChecks.push('NET_CONTRIBUTION_BELOW_POLICY_HURDLE');
+        bindingConstraints.push(`Policy minimum margin hurdle: ${POLICY_MIN_MARGIN_BPS} bps (10.00%)`);
+        bindingConstraints.push(`Observed contribution margin: ${contributionMarginBps} bps (${(contributionMarginBps / 100).toFixed(2)}%)`);
+      }
+    }
+
+    // Check economic hurdle on gross margin
+    if (hasBothPrices && estimatedMarginBps !== null && estimatedMarginBps < POLICY_MIN_MARGIN_BPS) {
+      failedChecks.push('GROSS_MARGIN_BELOW_POLICY_HURDLE');
+      bindingConstraints.push(`Policy minimum margin hurdle: ${POLICY_MIN_MARGIN_BPS} bps (10.00%)`);
+      bindingConstraints.push(`Observed gross margin: ${estimatedMarginBps} bps (${(estimatedMarginBps / 100).toFixed(2)}%)`);
+    }
+
+    // Determine deterministic outcome
+    let outcome: UnderwritingOutcome;
+    if (candidate.active_signals.includes('EVIDENCE_CONFLICT_DETECTED') || candidate.active_signals.includes('EVIDENCE_STALE')) {
+      outcome = 'INELIGIBLE';
+    } else if (!candidate.evidence_sufficiency.is_sufficient_for_underwriting || missingCostInputs.length > 0) {
+      outcome = 'INSUFFICIENT_EVIDENCE';
+    } else if (
+      netContributionInr !== null &&
+      (netContributionInr <= 0 || contributionMarginBps! < POLICY_MIN_MARGIN_BPS)
+    ) {
+      outcome = 'INELIGIBLE';
+    } else if (estimatedMarginBps !== null && estimatedMarginBps < POLICY_MIN_MARGIN_BPS) {
+      outcome = 'INELIGIBLE';
+    } else if (!candidate.economic_eligibility.is_economically_eligible) {
+      outcome = 'INELIGIBLE';
+    } else {
+      outcome = 'ELIGIBLE';
+    }
+
+    const evaluationStatus: EconomicEvaluationStatus =
+      outcome === 'ELIGIBLE'
+        ? 'EVALUATED_VIABLE'
+        : outcome === 'INSUFFICIENT_EVIDENCE'
+        ? 'UNEVALUABLE_INPUTS_MISSING'
+        : 'EVALUATED_UNATTRACTIVE';
+
+    // Determine actionable guidance to reconsider
+    let requiredAction: string | null = null;
+    if (outcome === 'INSUFFICIENT_EVIDENCE') {
+      const missingEvidence = candidate.evidence_sufficiency.missing_critical_fields;
+      const allMissing = [...missingEvidence, ...missingCostInputs];
+      requiredAction = `Acquire and verify missing evidence fields: [${allMissing.join(', ')}]`;
+    } else if (outcome === 'INELIGIBLE') {
+      if (candidate.active_signals.includes('EVIDENCE_CONFLICT_DETECTED')) {
+        requiredAction = 'Resolve active cross-source evidence conflict with verified authoritative observation.';
+      } else if (candidate.active_signals.includes('EVIDENCE_STALE')) {
+        requiredAction = 'Refresh stale observation data with fresh connector retrieval.';
+      } else if (netContributionInr !== null && netContributionInr <= 0) {
+        requiredAction = `Renegotiate purchase cost or reduce variable expenses: net contribution ₹${netContributionInr.toFixed(2)} is negative.`;
+      } else if (contributionMarginBps !== null && contributionMarginBps < POLICY_MIN_MARGIN_BPS) {
+        requiredAction = `Negotiate factory gate quote or target higher retail pricing to achieve minimum policy margin hurdle of ${POLICY_MIN_MARGIN_BPS} bps (10.00%).`;
+      } else if (estimatedMarginBps !== null && estimatedMarginBps < POLICY_MIN_MARGIN_BPS) {
+        requiredAction = `Negotiate factory gate quote or target higher retail pricing to achieve minimum policy margin hurdle of ${POLICY_MIN_MARGIN_BPS} bps (10.00%).`;
+      } else {
+        requiredAction = 'Address binding constraints and re-evaluate underwriting eligibility.';
+      }
+    }
+
+    const originClass = candidate.current_observation.origin_class ?? 'RECORDED_GOLDEN_FIXTURE';
+    const isLiveMarket = originClass === 'LIVE_VERIFIED_CAPTURE';
+    let rating: 'LIVE_VERIFIED_EMPIRICAL' | 'LIVE_EMPIRICAL_CORROBORATED' | 'RECORDED_REFERENCE_FIXTURE' | 'PARTIALLY_CORROBORATED' | 'SYNTHETIC_SCENARIO' | 'UNATTESTED_HOLD';
+    let evidencePosture: 'LIVE_VERIFIED_EMPIRICAL' | 'RECORDED_FIXTURE_BASELINE' | 'SYNTHETIC_SCENARIO' | 'UNATTESTED_INTAKE';
+    if (originClass === 'SYNTHETIC_SCENARIO') {
+      rating = 'SYNTHETIC_SCENARIO';
+      evidencePosture = 'SYNTHETIC_SCENARIO';
+    } else if (originClass === 'RECORDED_GOLDEN_FIXTURE') {
+      rating = 'RECORDED_REFERENCE_FIXTURE';
+      evidencePosture = 'RECORDED_FIXTURE_BASELINE';
+    } else if (originClass === 'OPERATOR_SIMULATION_ASSUMPTION') {
+      rating = 'PARTIALLY_CORROBORATED';
+      evidencePosture = 'UNATTESTED_INTAKE';
+    } else if (isLiveMarket && candidate.evidence_sufficiency.is_sufficient_for_underwriting) {
+      if (candidate.observation_history_count >= 2) {
+        rating = 'LIVE_EMPIRICAL_CORROBORATED';
+      } else {
+        rating = 'LIVE_VERIFIED_EMPIRICAL';
+      }
+      evidencePosture = 'LIVE_VERIFIED_EMPIRICAL';
+    } else if (candidate.evidence_sufficiency.sufficiency_score_bps > 0) {
+      rating = 'PARTIALLY_CORROBORATED';
+      evidencePosture = isLiveMarket ? 'LIVE_VERIFIED_EMPIRICAL' : 'UNATTESTED_INTAKE';
+    } else {
+      rating = 'UNATTESTED_HOLD';
+      evidencePosture = 'UNATTESTED_INTAKE';
+    }
+
+    const isLiveMarketVerified = isLiveMarket && candidate.evidence_sufficiency.is_sufficient_for_underwriting;
+
+    // Calculate conditional annualized RoWC extrapolation
+    let annualizedRowcBps: number | null = null;
+    let annualizedRowcInterpretation: string;
+    let annualizedRowcCaveat: string | undefined;
+
+    if (
+      netContributionInr !== null &&
+      netContributionInr > 0 &&
+      contributionMarginBps !== null &&
+      contributionMarginBps > 0 &&
+      cccDays !== null &&
+      cccDays > 0
+    ) {
+      annualizedRowcBps = Math.round((contributionMarginBps * 365) / cccDays);
+      annualizedRowcInterpretation = 'CONDITIONAL_ANNUALIZED_EXTRAPOLATION_NOT_REALIZED_RETURN';
+      annualizedRowcCaveat =
+        'Extrapolated velocity metric based on modeled contribution and CCC cycle assumptions; not an expected or realized investment return.';
+    } else {
+      annualizedRowcBps = null;
+      annualizedRowcInterpretation = 'UNAVAILABLE_MISSING_OR_NEGATIVE_CONTRIBUTION';
+    }
+
+    // Generate human-readable explanation
+    let explanation: string;
+    const postureTag = isLiveMarket
+      ? '[LIVE_OBSERVATION]'
+      : originClass === 'SYNTHETIC_SCENARIO'
+      ? '[SYNTHETIC_SIMULATION]'
+      : '[RECORDED_FIXTURE_BASELINE]';
+
+    if (outcome === 'ELIGIBLE') {
+      const netPart = netContributionInr !== null
+        ? `, Net contribution ₹${netContributionInr.toFixed(2)}, Contribution margin ${contributionMarginBps} bps (${((contributionMarginBps ?? 0) / 100).toFixed(2)}%)`
+        : '';
+      const rowcPart = annualizedRowcBps !== null
+        ? ` Annualized RoWC: ${annualizedRowcBps} bps (conditional, annualized extrapolation; not realized return).`
+        : '';
+      const verifiedLiveNote = isLiveMarket ? ' live market verified' : ' deterministic reference baseline (not live market verification)';
+      explanation = `${postureTag} Candidate '${candidate.candidate_name}' satisfies all evidence sufficiency, commercial viability, and policy criteria (${verifiedLiveNote}). Unit economics: Prevailing ASP ₹${asp!.toFixed(2)}, Factory quote ₹${quote!.toFixed(2)}, Gross spread ₹${grossSpread!.toFixed(2)}, Estimated gross margin ${estimatedMarginBps} bps (${((estimatedMarginBps ?? 0) / 100).toFixed(2)}%)${netPart} exceeding policy minimum hurdle of ${POLICY_MIN_MARGIN_BPS} bps (10.00%). Evidence score: ${candidate.evidence_sufficiency.sufficiency_score_bps} bps.${rowcPart}`;
+    } else if (outcome === 'INSUFFICIENT_EVIDENCE') {
+      const reasons: string[] = [];
+      if (candidate.evidence_sufficiency.missing_critical_fields.length > 0) {
+        reasons.push(`Missing critical fields: [${candidate.evidence_sufficiency.missing_critical_fields.join(', ')}]`);
+      }
+      if (missingCostInputs.length > 0) {
+        reasons.push(`Missing required cost inputs: [${missingCostInputs.join(', ')}]`);
+      }
+      explanation = `${postureTag} Candidate '${candidate.candidate_name}' cannot be underwritten due to insufficient verified evidence. ${reasons.join('. ')}. Evidence sufficiency score is ${candidate.evidence_sufficiency.sufficiency_score_bps} bps (requires 10,000 bps).`;
+    } else {
+      if (candidate.active_signals.includes('EVIDENCE_CONFLICT_DETECTED') || candidate.active_signals.includes('EVIDENCE_STALE')) {
+        const active = candidate.active_signals.filter((s) => s === 'EVIDENCE_CONFLICT_DETECTED' || s === 'EVIDENCE_STALE');
+        explanation = `${postureTag} Candidate '${candidate.candidate_name}' is ineligible for underwriting due to active unresolved signals: [${active.join(', ')}].`;
+      } else if (netContributionInr !== null && (netContributionInr <= 0 || contributionMarginBps! < POLICY_MIN_MARGIN_BPS)) {
+        explanation = `${postureTag} Candidate '${candidate.candidate_name}' does not meet minimum policy economic threshold. Unit economics: Prevailing ASP ₹${asp?.toFixed(2) ?? 'N/A'}, Factory quote ₹${quote?.toFixed(2) ?? 'N/A'}, Gross spread ₹${grossSpread?.toFixed(2) ?? 'N/A'}, Net contribution ₹${netContributionInr.toFixed(2)}, Contribution margin ${contributionMarginBps} bps (${((contributionMarginBps ?? 0) / 100).toFixed(2)}%) is below policy minimum hurdle of ${POLICY_MIN_MARGIN_BPS} bps (10.00%).`;
+      } else {
+        explanation = `${postureTag} Candidate '${candidate.candidate_name}' does not meet minimum policy economic threshold. Unit economics: Prevailing ASP ₹${asp?.toFixed(2) ?? 'N/A'}, Factory quote ₹${quote?.toFixed(2) ?? 'N/A'}, Gross spread ₹${grossSpread?.toFixed(2) ?? 'N/A'}, Estimated gross margin ${estimatedMarginBps} bps (${((estimatedMarginBps ?? 0) / 100).toFixed(2)}%) is below policy minimum hurdle of ${POLICY_MIN_MARGIN_BPS} bps (10.00%).`;
+      }
+    }
+
+    const evidenceConfidence = {
+      evidence_posture: evidencePosture,
+      evidence_quality_rating: rating,
+      primary_origin_class: originClass,
+      source_connector_id: candidate.current_observation.source_connector_id,
+      observed_at_utc: candidate.current_observation.observed_at_utc,
+      is_live_market_verified: isLiveMarketVerified,
+      has_logistics_route: !!candidate.evidence_sufficiency.has_logistics_route,
+      has_regulatory_clearance: !!candidate.evidence_sufficiency.has_regulatory_clearance
+    };
+
+    // Determine capital allocation decision distinctly from commercial underwriting
+    let capitalAllocationDecision: CapitalAllocationDecision;
+    let budgetAllocationNotes: string | undefined;
+
+    if (outcome !== 'ELIGIBLE' || originClass === 'SYNTHETIC_SCENARIO') {
+      capitalAllocationDecision = 'DO_NOT_ALLOCATE_CAPITAL';
+      if (originClass === 'SYNTHETIC_SCENARIO') {
+        budgetAllocationNotes = 'Synthetic scenario evidence cannot authorize capital allocation.';
+      } else {
+        budgetAllocationNotes = 'Candidate is commercially ineligible; capital allocation denied.';
+      }
+    } else {
+      // Commercial eligibility established: check explicit paper budget configuration
+      const budgetConfig = options?.budgetConfig;
+      if (
+        !budgetConfig ||
+        typeof budgetConfig.available_paper_capital_inr !== 'number' ||
+        budgetConfig.available_paper_capital_inr <= 0
+      ) {
+        capitalAllocationDecision = 'NOT_AUTHORIZED_BUDGET_UNCONFIGURED';
+        budgetAllocationNotes =
+          'Commercial eligibility established; paper capital allocation unconfigured (available_paper_capital_inr required).';
+      } else {
+        const requiredOutlay = initialCashRequirementInr ?? 0;
+        if (requiredOutlay > budgetConfig.available_paper_capital_inr) {
+          capitalAllocationDecision = 'NOT_AUTHORIZED_BUDGET_EXCEEDED';
+          budgetAllocationNotes = `Initial cash requirement ₹${requiredOutlay.toFixed(2)} exceeds available paper budget of ₹${budgetConfig.available_paper_capital_inr.toFixed(2)}.`;
+          failedChecks.push('PAPER_BUDGET_EXCEEDED');
+          bindingConstraints.push(
+            `Required batch outlay ₹${requiredOutlay.toFixed(2)} exceeds configured budget ₹${budgetConfig.available_paper_capital_inr.toFixed(2)}`
+          );
+        } else if (
+          budgetConfig.max_single_allocation_inr &&
+          requiredOutlay > budgetConfig.max_single_allocation_inr
+        ) {
+          capitalAllocationDecision = 'NOT_AUTHORIZED_BUDGET_EXCEEDED';
+          budgetAllocationNotes = `Initial cash requirement ₹${requiredOutlay.toFixed(2)} exceeds max single allocation limit of ₹${budgetConfig.max_single_allocation_inr.toFixed(2)}.`;
+          failedChecks.push('SINGLE_ALLOCATION_LIMIT_EXCEEDED');
+          bindingConstraints.push(
+            `Required batch outlay ₹${requiredOutlay.toFixed(2)} exceeds single allocation limit ₹${budgetConfig.max_single_allocation_inr.toFixed(2)}`
+          );
+        } else {
+          capitalAllocationDecision = 'ALLOCATE_CAPITAL';
+          budgetAllocationNotes = `Batch outlay of ₹${requiredOutlay.toFixed(2)} authorized within paper budget of ₹${budgetConfig.available_paper_capital_inr.toFixed(2)}.`;
+        }
+      }
+    }
+
+    const capitalAllocation = {
+      initial_cash_requirement_inr: initialCashRequirementInr,
+      working_capital_exposure_inr: workingCapitalExposureInr,
+      unit_batch_moq: moq,
+      recommended_batch_quantity: moq,
+      cash_conversion_cycle_days: cccDays,
+      annualized_rowc_bps: annualizedRowcBps,
+      annualized_rowc_extrapolation_bps: annualizedRowcBps,
+      annualized_rowc_interpretation: annualizedRowcInterpretation,
+      annualized_rowc_caveat: annualizedRowcCaveat,
+      break_even_price_inr: totalDeductionsInr,
+      capital_allocation_decision: capitalAllocationDecision,
+      budget_allocation_notes: budgetAllocationNotes
+    };
+
+    const decisionId = `UWD-${sha256(candidateId + evaluatedAtUtc).slice(0, 16).toUpperCase()}`;
+
+    const decisionPayload = {
+      decision_id: decisionId,
+      candidate_id: candidate.candidate_id,
+      canonical_product_id: candidate.canonical_product_id,
+      candidate_name: candidate.candidate_name,
+      category,
+      outcome,
+      lifecycle_state: candidate.lifecycle_state,
+      evaluation_status: evaluationStatus,
+      unit_economics: {
+        prevailing_retail_asp_inr: asp,
+        factory_gate_quote_inr: quote,
+        gross_spread_inr: grossSpread,
+        estimated_margin_bps: estimatedMarginBps,
+        policy_min_margin_bps: POLICY_MIN_MARGIN_BPS,
+        calculation_method: candidate.economic_eligibility.economic_model_applied || 'PHYSICAL_ARBITRAGE_NET_SPREAD_V1',
+        net_contribution_inr: netContributionInr,
+        contribution_margin_bps: contributionMarginBps,
+        contribution_margin_denominator: 'RETAIL_SELLING_PRICE' as const,
+        initial_cash_requirement_inr: initialCashRequirementInr,
+        working_capital_exposure_inr: workingCapitalExposureInr,
+        cash_conversion_cycle_days: cccDays,
+        annualized_return_on_working_capital_bps: annualizedRowcBps,
+        annualized_rowc_interpretation: annualizedRowcInterpretation,
+        annualized_rowc_caveat: annualizedRowcCaveat,
+        unit_batch_moq: moq,
+        purchase_quantity: moq,
+        applicable_cost_categories: standardCategories,
+        cost_category_assessments: Object.freeze(costAssessments),
+        cost_breakdown: {
+          supplier_purchase_cost_inr: quote,
+          inbound_freight_inr: freightAmount > 0 ? freightAmount : (costAssessments.find(a => a.category === 'INBOUND_FREIGHT')?.treatment === 'KNOWN_ZERO' ? 0 : null),
+          packaging_kitting_inr: packagingAmount > 0 ? packagingAmount : (costAssessments.find(a => a.category === 'PACKAGING_KITTING')?.treatment === 'KNOWN_ZERO' ? 0 : null),
+          marketplace_fees_inr: feesAmount > 0 ? feesAmount : (costAssessments.find(a => a.category === 'MARKETPLACE_FEES')?.treatment === 'KNOWN_ZERO' ? 0 : null),
+          statutory_tax_inr: taxAmount > 0 ? taxAmount : (costAssessments.find(a => a.category === 'STATUTORY_TAX')?.treatment === 'KNOWN_ZERO' ? 0 : null),
+          return_defect_drag_inr: returnAmount > 0 ? returnAmount : (costAssessments.find(a => a.category === 'RETURN_DEFECT_DRAG')?.treatment === 'KNOWN_ZERO' ? 0 : null),
+          non_supplier_variable_costs_inr: nonSupplierVariableCostsInr,
+          total_variable_deductions_inr: totalDeductionsInr,
+          cost_exclusions: Object.freeze(recordedExclusions),
+          cost_assessments: Object.freeze(costAssessments)
+        },
+        missing_cost_inputs: Object.freeze(missingCostInputs)
+      },
+      evidence_summary: {
+        is_sufficient_for_underwriting: candidate.evidence_sufficiency.is_sufficient_for_underwriting,
+        sufficiency_score_bps: candidate.evidence_sufficiency.sufficiency_score_bps,
+        missing_critical_fields: candidate.evidence_sufficiency.missing_critical_fields,
+        uncorroborated_fields: candidate.evidence_sufficiency.uncorroborated_fields,
+        source_connector_id: candidate.current_observation.source_connector_id,
+        origin_class: originClass,
+        evidence_posture: evidencePosture,
+        is_live_market_verified: isLiveMarketVerified,
+        observed_at_utc: candidate.current_observation.observed_at_utc
+      },
+      capital_allocation: capitalAllocation,
+      evidence_confidence: evidenceConfidence,
+      binding_constraints: Object.freeze(bindingConstraints),
+      failed_checks: Object.freeze(failedChecks),
+      explanation,
+      required_action_to_reconsider: requiredAction,
+      evaluated_at_utc: evaluatedAtUtc
+    };
+
+    const jcsSha256 = sha256(canonicalizeJCS(decisionPayload));
+
+    return {
+      ...decisionPayload,
+      jcs_sha256: jcsSha256
     };
   }
 
@@ -783,7 +1754,14 @@ export class OpportunityLifecycleEngine {
             quote: row.current_observation?.factory_gate_quote_inr ?? null,
             asp: row.current_observation?.prevailing_retail_asp_inr ?? null,
             category: row.category,
-            nowUtc: row.updated_at_utc?.toISOString ? row.updated_at_utc.toISOString() : String(row.updated_at_utc)
+            nowUtc: row.updated_at_utc?.toISOString ? row.updated_at_utc.toISOString() : String(row.updated_at_utc),
+            applicable_cost_categories: row.current_observation?.applicable_cost_categories,
+            cost_category_exclusions: row.current_observation?.cost_category_exclusions,
+            inbound_freight_inr: row.current_observation?.inbound_freight_inr,
+            packaging_kitting_inr: row.current_observation?.packaging_kitting_inr,
+            platform_fee_inr: row.current_observation?.platform_fee_inr ?? row.current_observation?.fulfillment_fee_inr,
+            statutory_tax_inr: row.current_observation?.statutory_tax_inr,
+            return_defect_drag_inr: row.current_observation?.return_defect_drag_inr
           });
           return {
             candidate_id: row.candidate_id,
@@ -848,7 +1826,14 @@ export class OpportunityLifecycleEngine {
             quote: row.current_observation?.factory_gate_quote_inr ?? null,
             asp: row.current_observation?.prevailing_retail_asp_inr ?? null,
             category: row.category,
-            nowUtc: row.updated_at_utc?.toISOString ? row.updated_at_utc.toISOString() : String(row.updated_at_utc)
+            nowUtc: row.updated_at_utc?.toISOString ? row.updated_at_utc.toISOString() : String(row.updated_at_utc),
+            applicable_cost_categories: row.current_observation?.applicable_cost_categories,
+            cost_category_exclusions: row.current_observation?.cost_category_exclusions,
+            inbound_freight_inr: row.current_observation?.inbound_freight_inr,
+            packaging_kitting_inr: row.current_observation?.packaging_kitting_inr,
+            platform_fee_inr: row.current_observation?.platform_fee_inr ?? row.current_observation?.fulfillment_fee_inr,
+            statutory_tax_inr: row.current_observation?.statutory_tax_inr,
+            return_defect_drag_inr: row.current_observation?.return_defect_drag_inr
           }),
           current_observation: row.current_observation,
           observation_history_count: row.observation_history_count,
@@ -876,6 +1861,13 @@ export class OpportunityLifecycleEngine {
       if (filter.is_sufficient_for_underwriting !== undefined && c.evidence_sufficiency.is_sufficient_for_underwriting !== filter.is_sufficient_for_underwriting) return false;
       return true;
     });
+  }
+
+  /**
+   * Retrieves all candidates currently in memory.
+   */
+  public getInMemoryCandidates(): OpportunityCandidate[] {
+    return Array.from(this.inMemoryCandidates.values());
   }
 
   /**
@@ -1132,6 +2124,13 @@ export class OpportunityLifecycleEngine {
     asp: number | null;
     category?: OpportunityCategory;
     nowUtc: string;
+    applicable_cost_categories?: readonly ApplicableCostCategory[];
+    cost_category_exclusions?: readonly CostCategoryExclusion[];
+    inbound_freight_inr?: number | null;
+    packaging_kitting_inr?: number | null;
+    platform_fee_inr?: number | null;
+    statutory_tax_inr?: number | null;
+    return_defect_drag_inr?: number | null;
   }): EconomicEligibilityProfile {
     const cat = params.category || 'PHYSICAL_GOODS';
     const hasQuote = typeof params.quote === 'number' && !isNaN(params.quote) && params.quote > 0;
@@ -1227,6 +2226,117 @@ export class OpportunityLifecycleEngine {
     if (!hasQuote) missing.push('factory_gate_quote_inr');
     if (!hasAsp) missing.push('prevailing_retail_asp_inr');
 
+    const hasDeclaredCostModel =
+      (params.applicable_cost_categories !== undefined && params.applicable_cost_categories.length > 0) ||
+      (params.cost_category_exclusions !== undefined && params.cost_category_exclusions.length > 0) ||
+      (typeof params.inbound_freight_inr === 'number' && !isNaN(params.inbound_freight_inr)) ||
+      (typeof params.packaging_kitting_inr === 'number' && !isNaN(params.packaging_kitting_inr)) ||
+      (typeof params.platform_fee_inr === 'number' && !isNaN(params.platform_fee_inr)) ||
+      (typeof params.statutory_tax_inr === 'number' && !isNaN(params.statutory_tax_inr)) ||
+      (typeof params.return_defect_drag_inr === 'number' && !isNaN(params.return_defect_drag_inr));
+
+    if (hasDeclaredCostModel) {
+      const exclusionsMap = new Map<ApplicableCostCategory, string>();
+      if (params.cost_category_exclusions && Array.isArray(params.cost_category_exclusions)) {
+        for (const ex of params.cost_category_exclusions) {
+          if (typeof ex?.category === 'string' && typeof ex?.exclusion_basis === 'string' && ex.exclusion_basis.trim().length >= 10) {
+            exclusionsMap.set(ex.category, ex.exclusion_basis.trim());
+          }
+        }
+      }
+
+      const standardCategories: readonly ApplicableCostCategory[] = [
+        'SUPPLIER_PURCHASE',
+        'INBOUND_FREIGHT',
+        'PACKAGING_KITTING',
+        'MARKETPLACE_FEES',
+        'STATUTORY_TAX',
+        'RETURN_DEFECT_DRAG'
+      ];
+
+      for (const cat of standardCategories) {
+        if (cat === 'SUPPLIER_PURCHASE') {
+          if (!hasQuote) {
+            if (!missing.includes('SUPPLIER_PURCHASE')) missing.push('SUPPLIER_PURCHASE');
+          }
+        } else {
+          const rawVal =
+            cat === 'INBOUND_FREIGHT'
+              ? params.inbound_freight_inr
+              : cat === 'PACKAGING_KITTING'
+              ? params.packaging_kitting_inr
+              : cat === 'MARKETPLACE_FEES'
+              ? params.platform_fee_inr
+              : cat === 'STATUTORY_TAX'
+              ? params.statutory_tax_inr
+              : params.return_defect_drag_inr;
+
+          if (exclusionsMap.has(cat)) {
+            // Explicitly not applicable with substantive basis (>= 10 chars)
+            continue;
+          } else if (typeof rawVal === 'number' && !isNaN(rawVal) && rawVal >= 0) {
+            // Known value or known zero
+            continue;
+          } else {
+            missing.push(cat);
+          }
+        }
+      }
+
+      if (missing.length > 0) {
+        return {
+          is_economically_eligible: false,
+          evaluation_status: 'UNEVALUABLE_INPUTS_MISSING',
+          missing_economic_inputs: Object.freeze(missing),
+          economic_model_applied: 'PHYSICAL_ARBITRAGE_NET_SPREAD_V1',
+          policy_min_margin_bps: POLICY_MIN_MARGIN_BPS,
+          estimated_margin_bps: null,
+          policy_evaluation_notes: `Missing physical arbitrage economic inputs [${missing.join(', ')}]; economic eligibility cannot be evaluated without all mandatory declared cost inputs or substantive exclusion basis.`,
+          last_evaluated_at_utc: params.nowUtc
+        };
+      }
+
+      // Precise integer subunit calculations
+      const SCALE = 10000n;
+      const toSub = (v: number) => BigInt(Math.round(v * 10000));
+      const fromSub = (s: bigint) => {
+        const isNeg = s < 0n;
+        const absS = isNeg ? -s : s;
+        const whole = absS / SCALE;
+        const frac = absS % SCALE;
+        const num = Number(whole) + Number(frac) / 10000;
+        return isNeg ? -num : num;
+      };
+
+      const quoteSub = toSub(params.quote!);
+      const freightSub = exclusionsMap.has('INBOUND_FREIGHT') ? 0n : (typeof params.inbound_freight_inr === 'number' ? toSub(params.inbound_freight_inr) : 0n);
+      const packSub = exclusionsMap.has('PACKAGING_KITTING') ? 0n : (typeof params.packaging_kitting_inr === 'number' ? toSub(params.packaging_kitting_inr) : 0n);
+      const feeSub = exclusionsMap.has('MARKETPLACE_FEES') ? 0n : (typeof params.platform_fee_inr === 'number' ? toSub(params.platform_fee_inr) : 0n);
+      const taxSub = exclusionsMap.has('STATUTORY_TAX') ? 0n : (typeof params.statutory_tax_inr === 'number' ? toSub(params.statutory_tax_inr) : 0n);
+      const dragSub = exclusionsMap.has('RETURN_DEFECT_DRAG') ? 0n : (typeof params.return_defect_drag_inr === 'number' ? toSub(params.return_defect_drag_inr) : 0n);
+
+      const totalDeductionsSub = quoteSub + freightSub + packSub + feeSub + taxSub + dragSub;
+      const aspSub = toSub(params.asp!);
+      const netContributionSub = aspSub - totalDeductionsSub;
+      const netContributionInr = fromSub(netContributionSub);
+      const contributionMarginBps = Math.round((Number(netContributionSub) / Number(aspSub)) * 10000);
+
+      const isViable = netContributionInr > 0 && contributionMarginBps >= POLICY_MIN_MARGIN_BPS;
+
+      return {
+        is_economically_eligible: isViable,
+        evaluation_status: isViable ? 'EVALUATED_VIABLE' : 'EVALUATED_UNATTRACTIVE',
+        missing_economic_inputs: Object.freeze([]),
+        economic_model_applied: 'PHYSICAL_ARBITRAGE_NET_SPREAD_V1',
+        policy_min_margin_bps: POLICY_MIN_MARGIN_BPS,
+        estimated_margin_bps: contributionMarginBps,
+        policy_evaluation_notes: isViable
+          ? `Estimated physical net contribution of ₹${netContributionInr.toFixed(2)} (${contributionMarginBps} bps) satisfies policy threshold (>= ${POLICY_MIN_MARGIN_BPS} bps).`
+          : `Estimated physical net contribution of ₹${netContributionInr.toFixed(2)} (${contributionMarginBps} bps) is below policy minimum threshold of ${POLICY_MIN_MARGIN_BPS} bps (10.00%).`,
+        last_evaluated_at_utc: params.nowUtc
+      };
+    }
+
     if (missing.length > 0) {
       return {
         is_economically_eligible: false,
@@ -1235,7 +2345,7 @@ export class OpportunityLifecycleEngine {
         economic_model_applied: 'PHYSICAL_ARBITRAGE_NET_SPREAD_V1',
         policy_min_margin_bps: POLICY_MIN_MARGIN_BPS,
         estimated_margin_bps: null,
-        policy_evaluation_notes: `Missing physical arbitrage economic inputs [${missing.join(', ')}]; gross margin cannot be evaluated without factory gate quote and prevailing ASP.`,
+        policy_evaluation_notes: `Missing physical arbitrage economic inputs [${missing.join(', ')}]; economic eligibility cannot be evaluated without factory gate quote and prevailing retail ASP.`,
         last_evaluated_at_utc: params.nowUtc
       };
     }

@@ -267,8 +267,12 @@ export class EntityIdentityResolver {
       }
     }
 
-    // 5. Keyword heuristic fallback
-    if (!matchedProd) {
+    // 5. Keyword heuristic fallback (only if no explicit canonical ID scheme is specified)
+    const CANONICAL_SCHEMES = ['prod:', 'software:', 'service:', 'b2b:', 'novel:', 'saas:', 'api:', 'sla:', 'dist:', 'lab:'];
+    const rawCandidateId = candidateId || (typeof extracted.product_id === 'string' ? (extracted.product_id as string) : undefined);
+    const hasExplicitCanonical = Boolean(rawCandidateId && CANONICAL_SCHEMES.some((sch) => rawCandidateId.startsWith(sch)));
+
+    if (!matchedProd && !hasExplicitCanonical) {
       const lower = rawStr.toLowerCase();
       matchedProd = EntityIdentityResolver.CANONICAL_CATALOG.find((p) =>
         p.keywords.some((kw) => lower.includes(kw))
@@ -281,11 +285,7 @@ export class EntityIdentityResolver {
       const hasCategoryHint = Boolean(explicitCategory);
 
       // Distinguish explicit canonical identifiers with recognized URI schemes from raw, source-scoped SKUs
-      const CANONICAL_SCHEMES = ['prod:', 'software:', 'service:', 'b2b:', 'novel:', 'saas:', 'api:', 'sla:', 'dist:', 'lab:'];
-      const rawCandidateId = candidateId || (typeof extracted.product_id === 'string' ? (extracted.product_id as string) : undefined);
-      const explicitCanonicalId = rawCandidateId && CANONICAL_SCHEMES.some((sch) => rawCandidateId.startsWith(sch))
-        ? rawCandidateId
-        : undefined;
+      const explicitCanonicalId = hasExplicitCanonical ? rawCandidateId : undefined;
 
       const rawSku = (
         typeof envelope.target_sku_id === 'string' && envelope.target_sku_id.trim().length > 0
